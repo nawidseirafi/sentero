@@ -1,1 +1,83 @@
-# sentero
+# Sentero
+
+Sentero is a standalone care-signal product extracted from RoboterSteve.
+
+## Architecture
+
+- `backend/`: FastAPI API, authentication, behavior assessment, setup flow, notification channels and sensor mapping.
+- `frontend/`: Vite/React Sentero app.
+- `config/`: standalone Sentero configuration.
+- `docker/`: container and Mosquitto configuration.
+- `data/`: runtime SQLite and adapter data.
+- `docs/`: product documentation.
+
+Sentero does not use RoboterSteve editions, agent registry, orchestrator, agent control or RoboterSteve-specific APIs.
+
+## Sensor Sources
+
+Configure the source through:
+
+```bash
+SENTERO_SENSOR_SOURCE=homeassistant|mqtt|mixed
+```
+
+Development may use Home Assistant. Production is designed for Zigbee2MQTT, Mosquitto, MQTT and ESP32 sensors without Home Assistant.
+
+## Local Development
+
+```bash
+cp .env.example .env
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8080
+```
+
+In another shell:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`.
+
+## Docker
+
+Build the frontend first, then start the stack:
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
+docker compose up --build
+```
+
+## Deployment Build
+
+Create an installable directory and update ZIP artifacts:
+
+```bash
+python3 deployment_build.py --version 0.1.1 --base-url https://example.com/sentero
+```
+
+Outputs:
+
+- `build/sentero/`
+- `build/updates/sentero/stable/latest.json`
+- `build/updates/sentero/stable/releases/sentero-<version>.zip`
+
+## Updates
+
+Sentero has a standalone update API under `/api/sentero/system/update/*`.
+
+Default mode is `dry_run`, so update checks and UI flow work without modifying files. For ZIP-based application updates, publish an `update-manifest.json` and set:
+
+```bash
+SENTERO_UPDATE_MODE=zip
+SENTERO_UPDATE_MANIFEST_URL=https://example.com/sentero/stable/latest.json
+```
+
+The ZIP installer updates application files only and never overwrites `.env`, `data/`, `backups/`, virtualenvs or `node_modules`.

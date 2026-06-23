@@ -1,0 +1,48 @@
+{
+  "product": "Sentero",
+  "current_version": "0.1.0",
+  "latest_version": "0.1.0",
+  "status": "idle",
+  "state": "idle",
+  "last_checked": "2026-06-23T15:54:28+00:00",
+  "release_notes": [
+    "Sentero standalone baseline."
+  ],
+  "steps": [],
+  "message": "Ihre Installation ist auf dem neuesten Stand.",
+  "version": {
+    "edition": "sentero",
+    "app_version": "0.1.0",
+    "version": "0.1.0",
+    "build": "2026.06.23",
+    "commit": "standalone",
+    "channel": "stable",
+    "updated_at": "2026-06-23T00:00:00+00:00"
+  },
+  "channel": "stable",
+  "execution_mode": "dry_run",
+  "update_server_url": "/Users/nawid/Projects/roboterSteve/sentero/update-manifest.json",
+  "latest": {
+    "latest_version": "0.1.0",
+    "download_url": "",
+    "mandatory": false,
+    "release_notes": [
+      "Sentero standalone baseline."
+    ],
+    "channel": "stable",
+    "layers": [
+      "application"
+    ]
+  },
+  "update_available": false,
+  "install": {
+    "status": "idle",
+    "steps": []
+  },
+  "rollback": {
+    "status": "idle",
+    "available": false
+  },
+  "last_error": null,
+  "dev_mode": true
+}

@@ -1,0 +1,30 @@
+sentero:
+  enabled: true
+  behavior:
+    learning_days: 14
+
+sensor_sources:
+  source: ${SENTERO_SENSOR_SOURCE}
+  development:
+    adapter: homeassistant
+  production:
+    adapters:
+      - zigbee2mqtt
+      - mqtt
+
+home_assistant:
+  url: HA_URL
+  token: HA_TOKEN
+
+mqtt:
+  host: MQTT_HOST
+  port: MQTT_PORT
+  username: MQTT_USERNAME
+  password: MQTT_PASSWORD
+  zigbee2mqtt_topic_prefix: ZIGBEE2MQTT_TOPIC_PREFIX
+
+updates:
+  channel: stable
+  mode: dry_run
+  manifest_path: update-manifest.json
+  manifest_url: ""

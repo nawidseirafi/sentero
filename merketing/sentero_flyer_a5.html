@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sentero Flyer DIN A5</title>
+  <style>
+    @page {
+      size: 148mm 210mm;
+      margin: 0;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: #f4f6f2;
+      font-family: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    .page {
+      background: #fbfcf9;
+      color: #152019;
+      height: 210mm;
+      overflow: hidden;
+      position: relative;
+      width: 148mm;
+    }
+
+    .hero {
+      height: 84mm;
+      padding: 9mm 9mm 0;
+      position: relative;
+    }
+
+    .hero-grid {
+      display: grid;
+      gap: 3mm;
+      grid-template-columns: 1.08fr 0.92fr;
+      height: 70mm;
+      position: relative;
+    }
+
+    .photo {
+      border-radius: 9mm;
+      box-shadow: 0 18px 48px rgba(47, 69, 55, 0.16);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .photo img {
+      display: block;
+      height: 100%;
+      object-fit: cover;
+      width: 100%;
+    }
+
+    figure {
+      margin: 0;
+    }
+
+    .photo.mother img {
+      object-position: 55% 42%;
+    }
+
+    .photo.daughter img {
+      object-position: 50% 40%;
+    }
+
+    .photo::after {
+      background: linear-gradient(180deg, rgba(0, 0, 0, 0) 52%, rgba(0, 0, 0, 0.22) 100%);
+      content: "";
+      inset: 0;
+      position: absolute;
+    }
+
+    .photo-label {
+      align-items: center;
+      backdrop-filter: blur(14px);
+      background: rgba(255, 255, 255, 0.82);
+      border-radius: 99px;
+      bottom: 4mm;
+      color: #243129;
+      display: inline-flex;
+      font-size: 7.8pt;
+      font-weight: 700;
+      gap: 1.8mm;
+      left: 4mm;
+      letter-spacing: 0.01em;
+      padding: 2mm 3mm;
+      position: absolute;
+      z-index: 2;
+    }
+
+    .photo-label i,
+    .status-card i {
+      background: #6bbf87;
+      border-radius: 50%;
+      display: inline-block;
+      height: 2.2mm;
+      width: 2.2mm;
+    }
+
+    .status-card {
+      align-items: center;
+      background: rgba(255, 255, 255, 0.93);
+      border: 0.35mm solid rgba(107, 191, 135, 0.28);
+      border-radius: 6mm;
+      box-shadow: 0 12px 34px rgba(47, 69, 55, 0.18);
+      display: flex;
+      gap: 2.4mm;
+      left: 50%;
+      padding: 3mm 4mm;
+      position: absolute;
+      top: 58mm;
+      transform: translateX(-50%);
+      width: 58mm;
+      z-index: 5;
+    }
+
+    .status-card div {
+      display: grid;
+      gap: 0.4mm;
+      min-width: 0;
+    }
+
+    .status-card strong {
+      color: #152019;
+      font-size: 8.4pt;
+      line-height: 1.05;
+    }
+
+    .status-card span {
+      color: #667268;
+      font-size: 6.6pt;
+      font-weight: 600;
+    }
+
+    .content {
+      padding: 3mm 12mm 0;
+    }
+
+    .headline {
+      font-size: 27pt;
+      font-weight: 820;
+      letter-spacing: -0.02em;
+      line-height: 0.92;
+      margin: 0;
+      text-transform: uppercase;
+    }
+
+    .headline em {
+      color: #6bbf87;
+      font-style: normal;
+    }
+
+    .subhead {
+      color: #354238;
+      font-size: 12.8pt;
+      font-weight: 680;
+      letter-spacing: -0.01em;
+      line-height: 1.18;
+      margin: 5mm 0 0;
+      max-width: 110mm;
+    }
+
+    .intro {
+      color: #526158;
+      font-size: 9.7pt;
+      font-weight: 470;
+      line-height: 1.42;
+      margin: 4.2mm 0 0;
+      max-width: 104mm;
+    }
+
+    .promise {
+      background: linear-gradient(135deg, rgba(107, 191, 135, 0.13), rgba(255, 255, 255, 0.72));
+      border: 0.3mm solid rgba(107, 191, 135, 0.2);
+      border-radius: 6mm;
+      color: #243129;
+      display: grid;
+      font-size: 9.2pt;
+      font-weight: 610;
+      gap: 1.7mm;
+      line-height: 1.33;
+      margin-top: 5mm;
+      padding: 4.4mm 5mm;
+    }
+
+    .promise span {
+      color: #5d6b62;
+      font-weight: 520;
+    }
+
+    .benefits {
+      display: grid;
+      gap: 2.1mm;
+      grid-template-columns: 1fr 1fr;
+      list-style: none;
+      margin: 5mm 0 0;
+      padding: 0;
+    }
+
+    .benefits li {
+      align-items: center;
+      color: #27342c;
+      display: flex;
+      font-size: 8.6pt;
+      font-weight: 680;
+      gap: 2mm;
+      line-height: 1.18;
+    }
+
+    .benefits li::before {
+      align-items: center;
+      background: #6bbf87;
+      border-radius: 50%;
+      color: white;
+      content: "✓";
+      display: inline-flex;
+      flex: 0 0 4.7mm;
+      font-size: 7.2pt;
+      font-weight: 850;
+      height: 4.7mm;
+      justify-content: center;
+      width: 4.7mm;
+    }
+
+    .story {
+      color: #3f4d44;
+      font-size: 9.1pt;
+      font-weight: 470;
+      line-height: 1.43;
+      margin: 5.3mm 0 0;
+      max-width: 112mm;
+    }
+
+    .story strong {
+      color: #17241c;
+      font-weight: 750;
+    }
+
+    .footer {
+      align-items: center;
+      bottom: 8mm;
+      display: flex;
+      justify-content: space-between;
+      left: 12mm;
+      position: absolute;
+      right: 12mm;
+    }
+
+    .brand {
+      align-items: center;
+      display: flex;
+      gap: 2.5mm;
+    }
+
+    .brand-mark {
+      align-items: center;
+      background: #6bbf87;
+      border-radius: 3.4mm;
+      color: white;
+      display: inline-flex;
+      font-size: 11pt;
+      font-weight: 850;
+      height: 8mm;
+      justify-content: center;
+      letter-spacing: -0.03em;
+      width: 8mm;
+    }
+
+    .brand strong {
+      color: #152019;
+      display: block;
+      font-size: 12.2pt;
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
+
+    .brand span,
+    .footer-line {
+      color: #69766d;
+      font-size: 7.5pt;
+      font-weight: 650;
+    }
+
+    .accent {
+      background: #6bbf87;
+      border-radius: 99px;
+      bottom: 0;
+      height: 1.6mm;
+      left: 12mm;
+      position: absolute;
+      right: 12mm;
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero" aria-label="Sentero Familie">
+      <div class="hero-grid">
+        <figure class="photo mother">
+          <img src="Margarete_2.png" alt="Margarete zuhause" />
+          <figcaption class="photo-label"><i></i> Margarete zuhause</figcaption>
+        </figure>
+        <figure class="photo daughter">
+          <img src="Daniela.png" alt="Daniela schaut beruhigt" />
+          <figcaption class="photo-label"><i></i> Daniela bleibt verbunden</figcaption>
+        </figure>
+      </div>
+      <aside class="status-card" aria-label="Beruhigender Status">
+        <i></i>
+        <div>
+          <strong>Alles in Ordnung</strong>
+          <span>Ein ruhiger Blick in den Alltag</span>
+        </div>
+      </aside>
+    </section>
+
+    <section class="content">
+      <h1 class="headline">MEHR RUHE.<br><em>WENIGER SORGEN.</em></h1>
+      <p class="subhead">Ein beruhigendes Fenster in den Alltag Ihrer Liebsten.</p>
+      <p class="intro">Sentero erkennt diskret, ob der Alltag wie gewohnt verläuft.</p>
+
+      <div class="promise">
+        <strong>Ohne Kamera. Ohne Cloud-Zwang. Ohne komplizierte Technik.</strong>
+        <span>Für Angehörige, die nicht kontrollieren möchten, sondern einfach beruhigt sein wollen.</span>
+      </div>
+
+      <ul class="benefits">
+        <li>Keine Kamera</li>
+        <li>Lokal verarbeitet</li>
+        <li>Datenschutzfreundlich</li>
+        <li>Benachrichtigungen für Angehörige</li>
+        <li>Einfache Einrichtung</li>
+      </ul>
+
+      <p class="story">
+        <strong>Viele ältere Menschen möchten selbstständig leben.</strong><br>
+        Viele Angehörige möchten einfach wissen, dass alles in Ordnung ist.
+        Sentero verbindet beides. Unauffällige Sensoren erkennen, ob der Alltag
+        wie gewohnt verläuft und informieren Angehörige nur dann, wenn etwas
+        ungewöhnlich erscheint.
+      </p>
+    </section>
+
+    <footer class="footer">
+      <div class="brand">
+        <span class="brand-mark">S</span>
+        <div>
+          <strong>Sentero</strong>
+          <span>Mehr Ruhe. Weniger Sorgen.</span>
+        </div>
+      </div>
+      <div class="footer-line">Für Zuhause. Für Angehörige. Für ein gutes Gefühl.</div>
+    </footer>
+    <div class="accent"></div>
+  </main>
+</body>
+</html>

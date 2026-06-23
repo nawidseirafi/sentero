@@ -1,0 +1,14 @@
+{
+  "channels": {
+    "stable": {
+      "latest_version": "0.1.0",
+      "download_url": "",
+      "mandatory": false,
+      "release_notes": [
+        "Sentero standalone baseline."
+      ],
+      "layers": ["application"]
+    }
+  }
+}
+

@@ -1,0 +1,43 @@
+services:
+  sentero:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    env_file:
+      - .env
+    environment:
+      SENTERO_SENSOR_SOURCE: ${SENTERO_SENSOR_SOURCE:-mqtt}
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    depends_on:
+      - mosquitto
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+
+  zigbee2mqtt:
+    image: koenkk/zigbee2mqtt:latest
+    environment:
+      TZ: Europe/Berlin
+    volumes:
+      - ./data/zigbee2mqtt:/app/data
+    depends_on:
+      - mosquitto
+    profiles:
+      - production
+
+volumes:
+  mosquitto-data:
+  mosquitto-log:
+
