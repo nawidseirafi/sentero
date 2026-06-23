@@ -39,14 +39,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Only these endpoints may be called without an authenticated Sentero session.
+# Every other /api/* endpoint is protected by the middleware below.
 PUBLIC_PATHS = {
     "/health",
-    "/api/sentero/auth/status",
-    "/api/sentero/auth/setup",
     "/api/sentero/auth/login",
-    "/api/sentero/auth/logout",
+    "/api/sentero/auth/me",
+    "/api/sentero/auth/setup",
+    "/api/sentero/auth/status",
     "/api/sentero/auth/forgot-password",
     "/api/sentero/auth/reset-password",
+    "/api/sentero/auth/logout"
 }
 
 auth_service = SenteroAuthService(DeviceMappingService())
@@ -54,12 +57,21 @@ auth_service = SenteroAuthService(DeviceMappingService())
 
 @app.middleware("http")
 async def require_sentero_auth(request, call_next):
-    path = request.url.path
+    path = request.url.path.rstrip("/") or "/"
+
+    # Let CORS preflight requests pass so browsers can reach protected endpoints
+    # with authenticated requests afterwards.
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
     if path.startswith("/api/") and path not in PUBLIC_PATHS:
         try:
-            auth_service.user_from_request(request)
+            auth_service.user_from_request(request, required=True)
         except Exception as exc:
-            return JSONResponse({"detail": getattr(exc, "detail", "Nicht angemeldet.")}, status_code=getattr(exc, "status_code", 401))
+            return JSONResponse(
+                {"detail": getattr(exc, "detail", "Nicht angemeldet.")},
+                status_code=getattr(exc, "status_code", 401),
+            )
     return await call_next(request)
 
 

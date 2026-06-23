@@ -22,7 +22,6 @@ class SenteroRouter(APIRouter):
             super().add_api_route(path, endpoint, **kwargs)
             return
         super().add_api_route(f"/api/sentero{path}", endpoint, **kwargs)
-        super().add_api_route(f"/api/sentero{path}", endpoint, **kwargs)
 
 
 router = SenteroRouter(tags=["sentero"])
