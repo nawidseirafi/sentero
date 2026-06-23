@@ -4,7 +4,7 @@
   "latest_version": "0.1.0",
   "status": "idle",
   "state": "idle",
-  "last_checked": "2026-06-23T15:54:28+00:00",
+  "last_checked": "2026-06-23T16:37:53+00:00",
   "release_notes": [
     "Sentero standalone baseline."
   ],
@@ -21,7 +21,7 @@
   },
   "channel": "stable",
   "execution_mode": "dry_run",
-  "update_server_url": "/Users/nawid/Projects/roboterSteve/sentero/update-manifest.json",
+  "update_server_url": "/Users/nawid/Projects/sentero/update-manifest.json",
   "latest": {
     "latest_version": "0.1.0",
     "download_url": "",
