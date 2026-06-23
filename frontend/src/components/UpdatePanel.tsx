@@ -2,49 +2,54 @@ import { useEffect, useState } from 'react';
 import { Activity, CheckCircle2, History, RefreshCw, ShieldAlert } from 'lucide-react';
 import { api, type UpdateStatus, type UpdateStep } from '@shared/api/client';
 
-export function UpdatePanel() {
+type Props = {
+  variant?: 'sentero';
+};
+
+export function UpdatePanel({ variant = 'sentero' }: Props) {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
 
-  async function load() {
+  const load = async () => {
     setError('');
     try {
       setStatus(await api.senteroUpdateStatus());
     } catch {
       setError('Update-Status konnte nicht geladen werden.');
     }
-  }
+  };
 
   useEffect(() => {
     void load();
   }, []);
 
-  async function checkUpdates() {
+  const checkUpdates = async () => {
     setBusy('check');
     setError('');
     try {
       await api.senteroCheckUpdates();
       await load();
     } catch {
-      setError('Die Update-Pruefung ist fehlgeschlagen.');
+      setError('Die Update-Pruefung ist fehlgeschlagen. Bitte versuchen Sie es spaeter erneut.');
     } finally {
       setBusy('');
     }
-  }
+  };
 
-  async function installUpdate() {
+  const installUpdate = async () => {
     setBusy('install');
     setError('');
     try {
-      setStatus(await api.senteroInstallUpdate());
+      const result = await api.senteroInstallUpdate();
+      setStatus(result);
       await load();
     } catch {
-      setError('Das Update konnte nicht vollstaendig installiert werden.');
+      setError('Das Update konnte nicht vollstaendig installiert werden. Bitte versuchen Sie es erneut oder kontaktieren Sie den Support.');
     } finally {
       setBusy('');
     }
-  }
+  };
 
   const product = status?.product || 'Sentero';
   const uiState = status?.status || status?.state || 'idle';
@@ -52,14 +57,17 @@ export function UpdatePanel() {
   const isSuccess = uiState === 'success' || uiState === 'completed';
   const isFailed = uiState === 'failed' || uiState === 'error';
   const updateAvailable = Boolean(status?.update_available);
+  const title = titleForState(uiState, updateAvailable);
+  const text = textForState(product, status, uiState, updateAvailable);
+  const rootClass = `panel settings-card update-panel ${variant === 'sentero' ? 'sentero-update-panel' : ''}`;
 
   return (
-    <section className="sentero-update-panel">
+    <section className={rootClass}>
       <div className="update-panel-head">
         <div>
           <p className="eyebrow">Updates</p>
-          <h2>{titleForState(uiState, updateAvailable)}</h2>
-          <p>{textForState(product, status, uiState, updateAvailable)}</p>
+          <h2>{title}</h2>
+          <p>{text}</p>
         </div>
         <button className="button secondary" type="button" onClick={checkUpdates} disabled={Boolean(busy)}>
           {busy === 'check' ? <Activity size={16} /> : <RefreshCw size={16} />} Nach Updates suchen
@@ -68,7 +76,7 @@ export function UpdatePanel() {
 
       {error && <div className="update-alert error"><ShieldAlert size={18} /> {error}</div>}
       {isSuccess && <div className="update-alert success"><CheckCircle2 size={18} /> {product} wurde erfolgreich aktualisiert.</div>}
-      {isFailed && <div className="update-alert error"><ShieldAlert size={18} /> Das Update konnte nicht vollstaendig installiert werden.</div>}
+      {isFailed && <div className="update-alert error"><ShieldAlert size={18} /> Das Update konnte nicht vollstaendig installiert werden. Bitte kontaktieren Sie den Support.</div>}
 
       <div className="update-version-grid update-version-grid-simple">
         <VersionItem label="Produkt" value={product} />
@@ -108,6 +116,8 @@ export function UpdatePanel() {
           </button>
         )}
       </div>
+
+      {status?.dev_mode && <DeveloperDetails status={status} />}
     </section>
   );
 }
@@ -122,9 +132,43 @@ function VersionItem({ label, value }: { label: string; value: string }) {
 }
 
 function ReleaseNotes({ notes }: { notes?: string[] | string }) {
-  const items = Array.isArray(notes) ? notes : typeof notes === 'string' ? notes.split('\n').filter(Boolean) : [];
+  const items = Array.isArray(notes)
+    ? notes
+    : typeof notes === 'string'
+      ? notes.split('\n').filter(Boolean)
+      : [];
   if (!items.length) return <p>Details zu diesem Update werden nach der Pruefung angezeigt.</p>;
-  return <ul className="update-release-notes">{items.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul>;
+  return (
+    <ul className="update-release-notes">
+      {items.map((item, index) => <li key={`${item}-${index}`}>{renderMarkdownLine(item)}</li>)}
+    </ul>
+  );
+}
+
+function DeveloperDetails({ status }: { status: UpdateStatus }) {
+  const version = status.version;
+  return (
+    <details className="update-developer-details">
+      <summary>Technische Details</summary>
+      <div className="update-version-grid">
+        <VersionItem label="Version" value={version?.version || version?.app_version || '-'} />
+        <VersionItem label="Build" value={version?.build || '-'} />
+        <VersionItem label="Edition" value={version?.edition || '-'} />
+        <VersionItem label="Commit" value={version?.commit || '-'} />
+        <VersionItem label="Modus" value={status.execution_mode || '-'} />
+      </div>
+    </details>
+  );
+}
+
+function renderMarkdownLine(value: string) {
+  const parts = value.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    return <span key={index}>{part}</span>;
+  });
 }
 
 function defaultSteps(): UpdateStep[] {
@@ -132,6 +176,7 @@ function defaultSteps(): UpdateStep[] {
     { key: 'prepare', label: 'Vorbereitung', status: 'pending' },
     { key: 'backup', label: 'Sicherung', status: 'pending' },
     { key: 'install', label: 'Installation', status: 'pending' },
+    { key: 'restart', label: 'Neustart', status: 'pending' },
     { key: 'done', label: 'Fertig', status: 'pending' },
   ];
 }
@@ -148,8 +193,8 @@ function titleForState(state: string, updateAvailable: boolean) {
 function textForState(product: string, status: UpdateStatus | null, state: string, updateAvailable: boolean) {
   if (state === 'running') return `${product} wird aktualisiert. Bitte warten Sie, bis der Vorgang abgeschlossen ist.`;
   if (state === 'success' || state === 'completed') return `${product} wurde erfolgreich aktualisiert.`;
-  if (state === 'failed' || state === 'error') return status?.last_error || 'Das Update konnte nicht vollstaendig installiert werden.';
-  if (state === 'check_failed') return status?.message || 'Die Update-Pruefung konnte nicht abgeschlossen werden.';
+  if (state === 'failed' || state === 'error') return 'Das Update konnte nicht vollstaendig installiert werden. Bitte versuchen Sie es erneut oder kontaktieren Sie den Support.';
+  if (state === 'check_failed') return status?.message || 'Die Update-Pruefung konnte nicht abgeschlossen werden. Bitte versuchen Sie es spaeter erneut.';
   if (updateAvailable) return `Eine neue Version von ${product} ist verfuegbar.`;
   return status?.message || 'Ihre Installation ist auf dem neuesten Stand.';
 }
@@ -166,15 +211,12 @@ function stepStatusLabel(status: string) {
   if (status === 'running') return 'Wird ausgefuehrt';
   if (status === 'success' || status === 'completed') return 'Abgeschlossen';
   if (status === 'failed' || status === 'error') return 'Fehlgeschlagen';
-  return 'Wartet';
+  return 'Ausstehend';
 }
 
 function formatDate(value?: string | null) {
-  if (!value) return '-';
-  try {
-    return new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
-  } catch {
-    return value;
-  }
+  if (!value) return 'Noch nicht geprueft';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(date);
 }
-
