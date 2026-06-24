@@ -449,6 +449,11 @@ def notification_logs(limit: int = Query(100, ge=1, le=500)):
     return notification_service.logs(limit=limit)
 
 
+@router.post("/notifications/system/check", tags=[TAG_NOTIFICATIONS])
+def notification_system_check():
+    return notification_service.notify_system_warnings()
+
+
 @router.post("/setup/complete", tags=[TAG_SETUP])
 def setup_complete():
     try:

@@ -20,6 +20,7 @@ CHANNELS = ("email", "telegram", "whatsapp")
 SEVERITIES = ("green", "yellow", "orange", "red")
 SECRET_KEYS = {"access_token", "bot_token", "smtp_password", "password", "token"}
 EMAIL_FROM = "Sentero <noreply@sentero.de>"
+BATTERY_WARNING_THRESHOLD = 30
 
 
 class NotificationProvider(ABC):
@@ -169,6 +170,100 @@ class NotificationService:
                 text = email_text if channel == "email" else short_text
                 self._send_with_log(contact, channel, severity, title, text, fallback=severity == "red")
 
+    def notify_system_warnings(self, sensors: list[dict[str, Any]] | None = None, battery_threshold: int = BATTERY_WARNING_THRESHOLD) -> dict[str, Any]:
+        if not self._critical_notifications_enabled():
+            return {"sent": 0, "warnings": [], "skipped": "critical_notifications_disabled"}
+
+        sensor_rows = sensors if sensors is not None else self.mapping.roles(dev=True, include_state=True)
+        active_warnings = self._system_warnings(sensor_rows, battery_threshold=battery_threshold)
+        active_keys = {warning["key"] for warning in active_warnings}
+        self._resolve_inactive_system_warnings(active_keys)
+
+        contacts = self._trusted_contacts()
+        sent = 0
+        for warning in active_warnings:
+            state = self._system_warning_state(warning["key"])
+            if state and state.get("status") == "active" and state.get("last_sent_at"):
+                self._touch_system_warning(warning)
+                continue
+
+            self._upsert_system_warning(warning, sent_now=False)
+            delivered = self._send_system_warning(warning, contacts)
+            if delivered:
+                sent += delivered
+                self._upsert_system_warning(warning, sent_now=True)
+
+        return {"sent": sent, "warnings": active_warnings}
+
+    def _system_warnings(self, sensors: list[dict[str, Any]], battery_threshold: int) -> list[dict[str, Any]]:
+        warnings: list[dict[str, Any]] = []
+        for sensor in sensors:
+            if not sensor.get("configured", sensor.get("active", True)):
+                continue
+            role = str(sensor.get("role") or "").strip()
+            if not role:
+                continue
+            label = str(sensor.get("label") or sensor.get("friendly_name") or role).strip()
+            room = str(sensor.get("room") or "").strip()
+            battery = sensor.get("battery_level")
+            if isinstance(battery, (int, float)) and battery < battery_threshold:
+                warnings.append({
+                    "key": f"battery_low:{role}",
+                    "type": "battery_low",
+                    "severity": "orange",
+                    "title": "Sentero Sensor-Batterie schwach",
+                    "summary": f"Die Batterie von {label} liegt bei {int(battery)}%.",
+                    "recommendation": "Bitte wechseln Sie die Batterie zeitnah, damit Sentero zuverlässig bleibt.",
+                    "role": role,
+                    "label": label,
+                    "room": room,
+                    "battery_level": int(battery),
+                })
+            if sensor.get("reachable") is False:
+                warnings.append({
+                    "key": f"sensor_unreachable:{role}",
+                    "type": "sensor_unreachable",
+                    "severity": "red",
+                    "title": "Sentero Sensor nicht erreichbar",
+                    "summary": f"{label} ist aktuell nicht erreichbar.",
+                    "recommendation": "Bitte prüfen Sie Stromversorgung, Funkverbindung oder Gateway, damit Warnungen zuverlässig erkannt werden.",
+                    "role": role,
+                    "label": label,
+                    "room": room,
+                    "battery_level": battery if isinstance(battery, (int, float)) else None,
+                })
+        return warnings
+
+    def _send_system_warning(self, warning: dict[str, Any], contacts: list[dict[str, Any]]) -> int:
+        delivered = 0
+        title = str(warning.get("title") or "Sentero Systemwarnung")
+        email_text = self._system_warning_email_text(warning)
+        short_text = f"{warning.get('summary')} {warning.get('recommendation')}".strip()
+        severity = str(warning.get("severity") or "orange")
+        for contact in contacts:
+            if not bool(contact.get("notification_enabled", 1)):
+                continue
+            for channel in self._channels_for_contact(contact, severity):
+                text = email_text if channel == "email" else short_text
+                before = self._log_count()
+                self._send_with_log(contact, channel, severity, title, text, fallback=severity == "red")
+                if self._log_count() > before:
+                    delivered += 1
+        return delivered
+
+    def _system_warning_email_text(self, warning: dict[str, Any]) -> str:
+        lines = [
+            str(warning.get("summary") or "Sentero hat eine Systemwarnung erkannt."),
+            "",
+            f"Sensor: {warning.get('label') or warning.get('role')}",
+        ]
+        if warning.get("room"):
+            lines.append(f"Raum: {warning.get('room')}")
+        if warning.get("battery_level") is not None:
+            lines.append(f"Batterie: {warning.get('battery_level')}%")
+        lines.extend(["", str(warning.get("recommendation") or "Bitte prüfen Sie das System.")])
+        return "\n".join(lines).strip()
+
     def _send_with_log(self, contact: dict[str, Any], channel: str, severity: str, title: str, text: str, fallback: bool) -> None:
         setting = self._setting(channel)
         if not setting.get("enabled"):
@@ -196,6 +291,67 @@ class NotificationService:
             return {"channel": channel, "enabled": False, "config": {}}
         data = dict(row)
         return {"channel": channel, "enabled": bool(data.get("enabled")), "config": self._decode_json(data.get("config_json"))}
+
+    def _trusted_contacts(self) -> list[dict[str, Any]]:
+        with self.mapping.connect() as con:
+            rows = con.execute("select * from trusted_contacts where active = 1 order by primary_contact desc, id").fetchall()
+        return [dict(row) for row in rows]
+
+    def _critical_notifications_enabled(self) -> bool:
+        with self.mapping.connect() as con:
+            row = con.execute("select critical from notification_preferences where id = 1").fetchone()
+        return bool(row is None or row["critical"])
+
+    def _system_warning_state(self, key: str) -> dict[str, Any] | None:
+        with self.mapping.connect() as con:
+            row = con.execute("select * from system_warning_state where warning_key = ?", (key,)).fetchone()
+        return dict(row) if row else None
+
+    def _upsert_system_warning(self, warning: dict[str, Any], sent_now: bool) -> None:
+        timestamp = now()
+        existing = self._system_warning_state(str(warning["key"]))
+        first_seen = existing.get("first_seen_at") if existing else timestamp
+        last_sent = timestamp if sent_now else (existing.get("last_sent_at") if existing else None)
+        with self.mapping.connect() as con:
+            con.execute(
+                """insert into system_warning_state
+                   (warning_key, status, first_seen_at, last_seen_at, last_sent_at, resolved_at, payload_json)
+                   values (?, 'active', ?, ?, ?, null, ?)
+                   on conflict(warning_key) do update set
+                       status = 'active',
+                       last_seen_at = excluded.last_seen_at,
+                       last_sent_at = coalesce(excluded.last_sent_at, system_warning_state.last_sent_at),
+                       resolved_at = null,
+                       payload_json = excluded.payload_json""",
+                (warning["key"], first_seen, timestamp, last_sent, json.dumps(warning, ensure_ascii=False, sort_keys=True)),
+            )
+            con.commit()
+
+    def _touch_system_warning(self, warning: dict[str, Any]) -> None:
+        with self.mapping.connect() as con:
+            con.execute(
+                "update system_warning_state set last_seen_at = ?, payload_json = ? where warning_key = ?",
+                (now(), json.dumps(warning, ensure_ascii=False, sort_keys=True), warning["key"]),
+            )
+            con.commit()
+
+    def _resolve_inactive_system_warnings(self, active_keys: set[str]) -> None:
+        timestamp = now()
+        with self.mapping.connect() as con:
+            rows = con.execute("select warning_key from system_warning_state where status = 'active'").fetchall()
+            for row in rows:
+                key = str(row["warning_key"] or "")
+                if key not in active_keys:
+                    con.execute(
+                        "update system_warning_state set status = 'resolved', resolved_at = ?, last_seen_at = ? where warning_key = ?",
+                        (timestamp, timestamp, key),
+                    )
+            con.commit()
+
+    def _log_count(self) -> int:
+        with self.mapping.connect() as con:
+            row = con.execute("select count(*) as count from notification_logs").fetchone()
+        return int(row["count"] if row else 0)
 
     def _merge_secret_config(self, channel: str, config: dict[str, Any]) -> dict[str, Any]:
         existing = self._setting(channel).get("config") or {}

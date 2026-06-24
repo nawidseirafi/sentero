@@ -148,6 +148,7 @@ class SenteroBehaviorAgent:
             ha_snapshot = []
         if not dry_run:
             self._record_snapshot(sensor_snapshot, ha_snapshot)
+            self._notify_system_warnings(sensor_snapshot)
             self._cleanup_old_data()
         history = self._history(days=30)
         daily_summary = self._upsert_daily_summary(history, dry_run=dry_run)
@@ -418,6 +419,18 @@ class SenteroBehaviorAgent:
         stored["email_subject"] = assessment.get("email_subject") or ""
         stored["email_body"] = assessment.get("email_body") or ""
         return stored
+
+    def _notify_system_warnings(self, sensor_snapshot: list[dict[str, Any]]) -> None:
+        try:
+            result = self.notifications.notify_system_warnings(sensor_snapshot)
+            if result.get("warnings"):
+                logger.info(
+                    "Sentero system warnings checked warnings=%s sent=%s",
+                    len(result.get("warnings") or []),
+                    result.get("sent"),
+                )
+        except Exception as exc:
+            logger.info("Sentero system warning check failed: %s", exc)
 
     def _notify_if_needed(self, assessment: dict[str, Any], contacts: list[dict[str, Any]]) -> None:
         if not self.mapping.roles(dev=True, include_state=False):

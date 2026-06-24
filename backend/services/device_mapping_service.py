@@ -794,6 +794,15 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         error_message text,
         created_at text not null
     )''')
+    con.execute('''create table if not exists system_warning_state (
+        warning_key text primary key,
+        status text not null,
+        first_seen_at text not null,
+        last_seen_at text not null,
+        last_sent_at text,
+        resolved_at text,
+        payload_json text not null default '{}'
+    )''')
     con.execute('''create table if not exists sentero_users (
         id integer primary key autoincrement,
         email text not null unique,
