@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request, Response
 
-from .device_mapping_service import DeviceMappingService, now
+from backend.services.device_mapping_service import DeviceMappingService, now
 
 SESSION_COOKIE = "sentero_session"
 SESSION_DAYS = 30

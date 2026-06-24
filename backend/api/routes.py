@@ -4,27 +4,39 @@ import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from backend.services.auth_service import SenteroAuthService
+from backend.services.commissioning_service import CommissioningService
+from backend.services.device_mapping_service import DeviceMappingService
+from backend.services.matter_service import MatterCommissioningUnavailable
+from backend.services.notification_service import NotificationService
+from backend.services.service import SenteroService
+from backend.services.setup_service import SenteroSetupService
+from backend.services.update_service import SenteroUpdateService
 
-from .auth_service import SenteroAuthService
-from .commissioning_service import CommissioningService
-from .device_mapping_service import DeviceMappingService
-from .matter_service import MatterCommissioningUnavailable
-from .notification_service import NotificationService
-from .service import SenteroService
-from .setup_service import SenteroSetupService
-from .update_service import SenteroUpdateService
+API_PREFIX = "/api/sentero"
 
+TAG_AUTH = "auth"
+TAG_SYSTEM = "system"
+TAG_MATTER = "matter"
+TAG_SETUP = "setup"
+TAG_NOTIFICATIONS = "notifications"
+TAG_SENSORS = "sensors"
+TAG_BEHAVIOR = "behavior"
+TAG_SENTERO = "sentero"
 
-class SenteroRouter(APIRouter):
-    def add_api_route(self, path: str, endpoint: Any, **kwargs: Any) -> None:
-        if path.startswith("/api/"):
-            super().add_api_route(path, endpoint, **kwargs)
-            return
-        super().add_api_route(f"/api/sentero{path}", endpoint, **kwargs)
+OPENAPI_TAGS = [
+    {"name": TAG_AUTH, "description": "Authentication, setup account and current user session."},
+    {"name": TAG_SYSTEM, "description": "System version and update lifecycle."},
+    {"name": TAG_SENTERO, "description": "Core Sentero runtime status and agent execution."},
+    {"name": TAG_BEHAVIOR, "description": "Behavior assessments, learning state and daily timeline."},
+    {"name": TAG_SETUP, "description": "Household setup, rooms, contacts and pairing workflow."},
+    {"name": TAG_MATTER, "description": "Matter commissioning and device assignment."},
+    {"name": TAG_SENSORS, "description": "Sensor roles and role checks."},
+    {"name": TAG_NOTIFICATIONS, "description": "Notification channels, tests and logs."},
+]
 
-
-router = SenteroRouter(tags=["sentero"])
+router = APIRouter(prefix=API_PREFIX)
 device_mapping_service = DeviceMappingService()
 setup_service = SenteroSetupService(device_mapping_service)
 sentero_service = SenteroService(device_mapping_service)
@@ -97,7 +109,7 @@ class SensorRoleNamePayload(BaseModel):
 
 class ChannelSettingsPayload(BaseModel):
     enabled: bool = False
-    config: dict[str, Any] = {}
+    config: dict[str, Any] = Field(default_factory=dict)
 
 
 class SenteroSetupPayload(BaseModel):
@@ -156,67 +168,67 @@ def is_dev_mode(dev: bool = False) -> bool:
     return dev or os.getenv("SENTERO_DEV_MODE", "").lower() in {"1", "true", "yes", "on"}
 
 
-@router.get("/api/sentero/auth/status")
+@router.get("/auth/status", tags=[TAG_AUTH])
 def sentero_auth_status(request: Request):
     return auth_service.status(request)
 
 
-@router.post("/api/sentero/auth/setup")
+@router.post("/auth/setup", tags=[TAG_AUTH])
 def sentero_auth_setup(payload: SenteroSetupPayload, request: Request, response: Response):
     return auth_service.setup(model_data(payload), response, request)
 
 
-@router.post("/api/sentero/auth/login")
+@router.post("/auth/login", tags=[TAG_AUTH])
 def sentero_auth_login(payload: SenteroLoginPayload, request: Request, response: Response):
     return auth_service.login(model_data(payload), response, request)
 
 
-@router.post("/api/sentero/auth/logout")
+@router.post("/auth/logout", tags=[TAG_AUTH])
 def sentero_auth_logout(request: Request, response: Response):
     return auth_service.logout(request, response)
 
 
-@router.get("/api/sentero/auth/me")
+@router.get("/auth/me", tags=[TAG_AUTH])
 def sentero_auth_me(request: Request):
     return auth_service.me(request)
 
 
-@router.put("/api/sentero/auth/me")
+@router.put("/auth/me", tags=[TAG_AUTH])
 def sentero_auth_update_me(payload: UpdateMePayload, request: Request):
     return auth_service.update_me(model_data(payload), request)
 
 
-@router.post("/api/sentero/auth/change-password")
+@router.post("/auth/change-password", tags=[TAG_AUTH])
 def sentero_auth_change_password(payload: ChangePasswordPayload, request: Request):
     return auth_service.change_password(model_data(payload), request)
 
 
-@router.post("/api/sentero/auth/forgot-password")
+@router.post("/auth/forgot-password", tags=[TAG_AUTH])
 def sentero_auth_forgot_password(payload: ForgotPasswordPayload, request: Request):
     return auth_service.forgot_password(model_data(payload), request)
 
 
-@router.post("/api/sentero/auth/reset-password")
+@router.post("/auth/reset-password", tags=[TAG_AUTH])
 def sentero_auth_reset_password(payload: ResetPasswordPayload):
     return auth_service.reset_password(model_data(payload))
 
 
-@router.get("/api/sentero/system/update/status")
+@router.get("/system/update/status", tags=[TAG_SYSTEM])
 def sentero_update_status():
     return update_service.status()
 
 
-@router.get("/api/sentero/system/update/check")
+@router.get("/system/update/check", tags=[TAG_SYSTEM])
 def sentero_update_check(channel: str | None = None):
     return update_service.check_for_updates(channel=channel)
 
 
-@router.post("/api/sentero/system/update/check")
+@router.post("/system/update/check", tags=[TAG_SYSTEM])
 def sentero_update_check_post(payload: UpdateCheckRequest):
     return update_service.check_for_updates(channel=payload.channel)
 
 
-@router.post("/api/sentero/system/update/install")
+@router.post("/system/update/install", tags=[TAG_SYSTEM])
 def sentero_update_install(payload: UpdateInstallRequest, request: Request):
     user = auth_service.user_from_request(request, required=True)
     if str(user.get("role") or "") not in {"owner", "admin"}:
@@ -224,57 +236,57 @@ def sentero_update_install(payload: UpdateInstallRequest, request: Request):
     return update_service.install_update(username=str(user.get("email") or "sentero"), layer=payload.layer or "auto")
 
 
-@router.get("/status")
+@router.get("/status", tags=[TAG_SENTERO])
 def sentero_status():
     return sentero_service.status()
 
 
-@router.post("/run")
+@router.post("/run", tags=[TAG_SENTERO])
 def run_sentero_agent():
     return sentero_service.run(dry_run=False)
 
 
-@router.get("/behavior/latest")
+@router.get("/behavior/latest", tags=[TAG_BEHAVIOR])
 def sentero_behavior_latest():
     return {"assessment": sentero_service.latest_behavior(), "learning": sentero_service.behavior_learning_status()}
 
 
-@router.get("/behavior/history")
+@router.get("/behavior/history", tags=[TAG_BEHAVIOR])
 def sentero_behavior_history(limit: int = Query(20, ge=1, le=100)):
     return {"assessments": sentero_service.behavior_history(limit=limit)}
 
 
-@router.get("/behavior/timeline")
+@router.get("/behavior/timeline", tags=[TAG_BEHAVIOR])
 def sentero_behavior_timeline():
     return sentero_service.behavior_timeline_today()
 
 
-@router.get("/setup/status")
+@router.get("/setup/status", tags=[TAG_SETUP])
 def setup_status():
     return setup_service.status()
 
 
-@router.post("/setup/start")
+@router.post("/setup/start", tags=[TAG_SETUP])
 def setup_start():
     return setup_service.set_step("profile", "welcome", complete=False)
 
 
-@router.post("/setup/profile")
+@router.post("/setup/profile", tags=[TAG_SETUP])
 def setup_profile(payload: ProfilePayload):
     return setup_service.profile(model_data(payload))
 
 
-@router.get("/setup/rooms")
+@router.get("/setup/rooms", tags=[TAG_SETUP])
 def setup_rooms():
     return {"rooms": ["living_room", "kitchen", "bathroom", "bedroom", "hallway", "entrance"]}
 
 
-@router.post("/setup/rooms")
+@router.post("/setup/rooms", tags=[TAG_SETUP])
 def setup_rooms_save(payload: RoomsPayload):
     return setup_service.rooms(payload.rooms)
 
 
-@router.post("/setup/discovery/start")
+@router.post("/setup/discovery/start", tags=[TAG_SETUP])
 def discovery_start(payload: DiscoveryStartPayload):
     try:
         return device_mapping_service.start_pairing(payload.role, payload.room, payload.pairing_code)
@@ -282,7 +294,7 @@ def discovery_start(payload: DiscoveryStartPayload):
         raise api_error(exc) from exc
 
 
-@router.post("/setup/pairing/matter/start")
+@router.post("/setup/pairing/matter/start", tags=[TAG_MATTER])
 def matter_pairing_start(payload: DiscoveryStartPayload):
     try:
         return device_mapping_service.start_pairing(payload.role, payload.room, payload.pairing_code)
@@ -290,7 +302,7 @@ def matter_pairing_start(payload: DiscoveryStartPayload):
         raise api_error(exc) from exc
 
 
-@router.post("/setup/pairing/zigbee/start")
+@router.post("/setup/pairing/zigbee/start", tags=[TAG_SETUP])
 def zigbee_pairing_start(payload: ZigbeePairingStartPayload):
     try:
         return device_mapping_service.start_zigbee_pairing(payload.role, payload.room, duration=payload.duration or 60)
@@ -298,7 +310,7 @@ def zigbee_pairing_start(payload: ZigbeePairingStartPayload):
         raise api_error(exc) from exc
 
 
-@router.post("/matter/start")
+@router.post("/matter/start", tags=[TAG_MATTER])
 def matter_start(payload: MatterStartPayload):
     try:
         return commissioning_service.start(setup_code=payload.setup_code, qr_payload=payload.qr_payload)
@@ -308,7 +320,7 @@ def matter_start(payload: MatterStartPayload):
         raise api_error(exc) from exc
 
 
-@router.get("/matter/capabilities")
+@router.get("/matter/capabilities", tags=[TAG_MATTER])
 def matter_capabilities(dev: bool = Query(False)):
     try:
         return commissioning_service.capabilities(dev=is_dev_mode(dev))
@@ -316,7 +328,7 @@ def matter_capabilities(dev: bool = Query(False)):
         raise api_error(exc) from exc
 
 
-@router.get("/matter/status/{commissioning_id}")
+@router.get("/matter/status/{commissioning_id}", tags=[TAG_MATTER])
 def matter_status(commissioning_id: str, dev: bool = Query(False)):
     try:
         return commissioning_service.status(commissioning_id, dev=is_dev_mode(dev))
@@ -326,7 +338,7 @@ def matter_status(commissioning_id: str, dev: bool = Query(False)):
         raise api_error(exc) from exc
 
 
-@router.get("/matter/device/{commissioning_id}")
+@router.get("/matter/device/{commissioning_id}", tags=[TAG_MATTER])
 def matter_device(commissioning_id: str, dev: bool = Query(False)):
     try:
         return commissioning_service.device(commissioning_id, dev=is_dev_mode(dev))
@@ -336,7 +348,7 @@ def matter_device(commissioning_id: str, dev: bool = Query(False)):
         raise api_error(exc) from exc
 
 
-@router.post("/matter/device/{commissioning_id}/assign")
+@router.post("/matter/device/{commissioning_id}/assign", tags=[TAG_MATTER])
 def matter_assign(commissioning_id: str, payload: MatterAssignPayload):
     try:
         return commissioning_service.assign(commissioning_id, room=payload.room, role=payload.role)
@@ -346,7 +358,7 @@ def matter_assign(commissioning_id: str, payload: MatterAssignPayload):
         raise api_error(exc) from exc
 
 
-@router.get("/setup/discovery/{session_id}/candidates")
+@router.get("/setup/discovery/{session_id}/candidates", tags=[TAG_SETUP])
 def discovery_candidates(session_id: int, dev: bool = Query(False)):
     try:
         return device_mapping_service.candidates(session_id, dev=dev)
@@ -356,7 +368,7 @@ def discovery_candidates(session_id: int, dev: bool = Query(False)):
         raise api_error(exc) from exc
 
 
-@router.post("/setup/discovery/{session_id}/confirm")
+@router.post("/setup/discovery/{session_id}/confirm", tags=[TAG_SETUP])
 def discovery_confirm(session_id: int, payload: ConfirmPayload, dev: bool = Query(False)):
     try:
         return device_mapping_service.confirm(session_id, payload.entity_id, name=payload.name, room=payload.room, dev=dev)
@@ -366,12 +378,12 @@ def discovery_confirm(session_id: int, payload: ConfirmPayload, dev: bool = Quer
         raise api_error(exc) from exc
 
 
-@router.post("/setup/sensors")
+@router.post("/setup/sensors", tags=[TAG_SENSORS])
 def setup_sensors():
     return setup_service.sensors()
 
 
-@router.post("/setup/contact")
+@router.post("/setup/contact", tags=[TAG_SETUP])
 def setup_contact(payload: ContactPayload):
     try:
         return setup_service.contact(model_data(payload))
@@ -379,7 +391,7 @@ def setup_contact(payload: ContactPayload):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.put("/setup/contact/{contact_id}")
+@router.put("/setup/contact/{contact_id}", tags=[TAG_SETUP])
 def setup_contact_update(contact_id: int, payload: ContactPayload):
     try:
         return setup_service.update_contact(contact_id, model_data(payload))
@@ -387,57 +399,57 @@ def setup_contact_update(contact_id: int, payload: ContactPayload):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.delete("/setup/contact/{contact_id}")
+@router.delete("/setup/contact/{contact_id}", tags=[TAG_SETUP])
 def setup_contact_delete(contact_id: int):
     return setup_service.delete_contact(contact_id)
 
 
-@router.post("/setup/notifications")
+@router.post("/setup/notifications", tags=[TAG_SETUP])
 def setup_notifications(payload: NotificationPayload):
     return setup_service.notifications(model_data(payload))
 
 
-@router.get("/notifications/channels")
+@router.get("/notifications/channels", tags=[TAG_NOTIFICATIONS])
 def notification_channels():
     return notification_service.channels()
 
 
-@router.post("/notifications/channels/email")
+@router.post("/notifications/channels/email", tags=[TAG_NOTIFICATIONS])
 def notification_channel_email(payload: ChannelSettingsPayload):
     return notification_service.save_channel("email", True, payload.config)
 
 
-@router.post("/notifications/channels/telegram")
+@router.post("/notifications/channels/telegram", tags=[TAG_NOTIFICATIONS])
 def notification_channel_telegram(payload: ChannelSettingsPayload):
     return notification_service.save_channel("telegram", payload.enabled, payload.config)
 
 
-@router.post("/notifications/channels/whatsapp")
+@router.post("/notifications/channels/whatsapp", tags=[TAG_NOTIFICATIONS])
 def notification_channel_whatsapp(payload: ChannelSettingsPayload):
     return notification_service.save_channel("whatsapp", payload.enabled, payload.config)
 
 
-@router.post("/notifications/test/email")
+@router.post("/notifications/test/email", tags=[TAG_NOTIFICATIONS])
 def notification_test_email(dev: bool = Query(False)):
     return notification_service.test("email", dev=is_dev_mode(dev))
 
 
-@router.post("/notifications/test/telegram")
+@router.post("/notifications/test/telegram", tags=[TAG_NOTIFICATIONS])
 def notification_test_telegram(dev: bool = Query(False)):
     return notification_service.test("telegram", dev=is_dev_mode(dev))
 
 
-@router.post("/notifications/test/whatsapp")
+@router.post("/notifications/test/whatsapp", tags=[TAG_NOTIFICATIONS])
 def notification_test_whatsapp(dev: bool = Query(False)):
     return notification_service.test("whatsapp", dev=is_dev_mode(dev))
 
 
-@router.get("/notifications/logs")
+@router.get("/notifications/logs", tags=[TAG_NOTIFICATIONS])
 def notification_logs(limit: int = Query(100, ge=1, le=500)):
     return notification_service.logs(limit=limit)
 
 
-@router.post("/setup/complete")
+@router.post("/setup/complete", tags=[TAG_SETUP])
 def setup_complete():
     try:
         return setup_service.complete()
@@ -445,12 +457,12 @@ def setup_complete():
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/sensor-roles")
+@router.get("/sensor-roles", tags=[TAG_SENSORS])
 def sensor_roles(dev: bool = Query(False), include_state: bool = Query(False)):
     return {"sensor_roles": device_mapping_service.roles(dev=dev, include_state=include_state)}
 
 
-@router.post("/sensor-roles")
+@router.post("/sensor-roles", tags=[TAG_SENSORS])
 def sensor_role_save(payload: dict[str, Any]):
     try:
         return device_mapping_service.upsert_role(payload)
@@ -458,7 +470,7 @@ def sensor_role_save(payload: dict[str, Any]):
         raise api_error(exc) from exc
 
 
-@router.delete("/sensor-roles/{role}")
+@router.delete("/sensor-roles/{role}", tags=[TAG_SENSORS])
 def sensor_role_delete(role: str):
     try:
         return device_mapping_service.delete_role(role)
@@ -468,7 +480,7 @@ def sensor_role_delete(role: str):
         raise api_error(exc) from exc
 
 
-@router.post("/sensor-roles/{role}/test")
+@router.post("/sensor-roles/{role}/test", tags=[TAG_SENSORS])
 def sensor_role_test(role: str):
     try:
         return device_mapping_service.test_role(role)
@@ -478,7 +490,7 @@ def sensor_role_test(role: str):
         raise api_error(exc) from exc
 
 
-@router.put("/sensor-roles/{role}/name")
+@router.put("/sensor-roles/{role}/name", tags=[TAG_SENSORS])
 def sensor_role_rename(role: str, payload: SensorRoleNamePayload):
     try:
         return device_mapping_service.rename_role(role, payload.name)

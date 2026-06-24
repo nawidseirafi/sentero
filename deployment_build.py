@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -51,9 +52,11 @@ NEVER_COPY_SUFFIXES = {".pyc", ".pyo", ".db", ".db-shm", ".db-wal", ".sqlite", "
 
 
 def main() -> int:
+    load_env_file(ROOT / ".env")
+
     parser = argparse.ArgumentParser(description="Build standalone Sentero deployment artifacts")
     parser.add_argument("--version", default="", help="Override version.json version")
-    parser.add_argument("--base-url", default=os.environ.get("SENTERO_UPDATE_BASE_URL", ""), help="Public base URL for generated update manifest")
+    parser.add_argument("--base-url", default=default_update_base_url(), help="Public base URL for generated update manifest")
     parser.add_argument("--no-zip", action="store_true", help="Only create build/sentero without update ZIP artifacts")
     parser.add_argument("--skip-frontend-build", action="store_true", help="Reuse frontend/dist instead of running npm run build")
     args = parser.parse_args()
@@ -157,7 +160,7 @@ def write_env_file(path: Path) -> None:
                 "SENTERO_SENSOR_SOURCE=mqtt",
                 "SENTERO_UPDATE_CHANNEL=stable",
                 "SENTERO_UPDATE_MODE=dry_run",
-                "SENTERO_UPDATE_MANIFEST_URL=",
+                "UPDATE_BASE_URL=",
                 "",
             ]
         ),
@@ -201,6 +204,7 @@ def create_update_artifacts(version: str, base_url: str) -> None:
 
     latest = latest_manifest(version=version, zip_path=zip_path, base_url=base_url)
     (UPDATE_DIR / "latest.json").write_text(json.dumps(latest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    base_url = base_url.rstrip("/")
     (UPDATE_DIR / "deployment-manifest.json").write_text(
         json.dumps(
             {
@@ -208,6 +212,9 @@ def create_update_artifacts(version: str, base_url: str) -> None:
                 "version": version,
                 "created_at": utc_now(),
                 "artifact": str(zip_path.relative_to(BUILD_DIR)),
+                "artifact_url": f"{base_url}/stable/releases/{zip_path.name}",
+                "manifest": str((UPDATE_DIR / "latest.json").relative_to(BUILD_DIR)),
+                "manifest_url": f"{base_url}/stable/latest.json",
                 "target": str(TARGET_DIR.relative_to(BUILD_DIR)),
             },
             ensure_ascii=False,
@@ -220,7 +227,11 @@ def create_update_artifacts(version: str, base_url: str) -> None:
 
 def latest_manifest(version: str, zip_path: Path, base_url: str) -> dict[str, Any]:
     filename = zip_path.name
-    download_url = f"{base_url.rstrip('/')}/stable/releases/{filename}" if base_url else str(zip_path)
+    if not base_url:
+        raise SystemExit(
+            "No public update base URL configured. Set UPDATE_BASE_URL in .env or pass --base-url."
+        )
+    download_url = f"{base_url.rstrip('/')}/stable/releases/{filename}"
     return {
         "channels": {
             "stable": {
@@ -232,6 +243,44 @@ def latest_manifest(version: str, zip_path: Path, base_url: str) -> dict[str, An
             }
         }
     }
+
+
+def load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def default_update_base_url() -> str:
+    explicit = (
+        os.environ.get("UPDATE_BASE_URL", "")
+        or os.environ.get("SENTERO_UPDATE_BASE_URL", "")
+    ).strip()
+    if explicit:
+        return explicit.rstrip("/")
+
+    manifest_url = (
+        os.environ.get("SENTERO_UPDATE_MANIFEST_URL", "")
+        or os.environ.get("UPDATE_MANIFEST_URL", "")
+    ).strip()
+    if not manifest_url:
+        return ""
+
+    parsed = urlparse(manifest_url)
+    if parsed.scheme not in {"http", "https"}:
+        return ""
+
+    suffix = "/stable/latest.json"
+    if parsed.path.endswith(suffix):
+        return manifest_url[: -len(suffix)].rstrip("/")
+    if parsed.path.endswith("/latest.json"):
+        return manifest_url[: -len("/latest.json")].rstrip("/")
+    return manifest_url.rstrip("/")
 
 
 def current_version() -> str:

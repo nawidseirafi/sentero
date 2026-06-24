@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from .behavior_agent import SenteroBehaviorAgent
-from .device_mapping_service import DeviceMappingService
+from backend.behavior_agent import SenteroBehaviorAgent
+from backend.services.device_mapping_service import DeviceMappingService
 
 
 class SenteroService:

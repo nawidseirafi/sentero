@@ -4,15 +4,20 @@ import json
 import os
 import shutil
 import tempfile
+import urllib.parse
 import urllib.request
 import zipfile
 from datetime import datetime, timezone
+from itertools import zip_longest
 from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 
-from .paths import CONFIG_PATH, DATA_DIR, PROJECT_DIR
+from backend.paths import CONFIG_PATH, DATA_DIR, ENV_PATH, PROJECT_DIR
+
+load_dotenv(ENV_PATH)
 
 VERSION_FILE = PROJECT_DIR / "version.json"
 MANIFEST_FILE = PROJECT_DIR / "update-manifest.json"
@@ -163,9 +168,17 @@ class SenteroUpdateService:
         state = {**status, "status": "running", "state": "running", "steps": steps, "install": {"status": "running", "layer": layer, "steps": steps, "started_at": utc_now()}}
         self._write_json(STATE_FILE, state)
         try:
+            self._step(steps, "prepare", "running")
+            self._persist_install_progress(state, steps, layer)
             self._step(steps, "prepare", "success")
+
+            self._step(steps, "backup", "running")
+            self._persist_install_progress(state, steps, layer)
             backup = self._backup()
             self._step(steps, "backup", "success")
+
+            self._step(steps, "install", "running")
+            self._persist_install_progress(state, steps, layer)
             if self.execution_mode() == "dry_run":
                 self._step(steps, "install", "success")
             elif self.execution_mode() == "zip":
@@ -173,6 +186,9 @@ class SenteroUpdateService:
                 self._step(steps, "install", "success")
             else:
                 raise RuntimeError(f"Unsupported update mode: {self.execution_mode()}")
+
+            self._step(steps, "done", "running")
+            self._persist_install_progress(state, steps, layer)
             self._step(steps, "done", "success")
             final = {
                 **state,
@@ -209,7 +225,16 @@ class SenteroUpdateService:
         return mode if mode in {"dry_run", "zip"} else "dry_run"
 
     def manifest_url(self) -> str:
-        return str(os.getenv("SENTERO_UPDATE_MANIFEST_URL") or self._update_config().get("manifest_url") or "").strip()
+        configured = str(
+            os.getenv("SENTERO_UPDATE_MANIFEST_URL")
+            or os.getenv("UPDATE_MANIFEST_URL")
+            or self._update_config().get("manifest_url")
+            or ""
+        ).strip()
+        if configured:
+            return configured
+        base_url = str(os.getenv("UPDATE_BASE_URL") or os.getenv("SENTERO_UPDATE_BASE_URL") or "").strip()
+        return f"{base_url.rstrip('/')}/stable/latest.json" if base_url else ""
 
     def manifest_path(self) -> Path:
         raw = os.getenv("SENTERO_UPDATE_MANIFEST_PATH") or self._update_config().get("manifest_path")
@@ -254,11 +279,10 @@ class SenteroUpdateService:
             raise ValueError("Update manifest has no download_url")
         with tempfile.TemporaryDirectory(prefix="sentero-update-") as tmp:
             archive_path = Path(tmp) / "update.zip"
-            with urllib.request.urlopen(url, timeout=60) as response:
-                archive_path.write_bytes(response.read())
+            self._download_update(url, archive_path)
             extract_dir = Path(tmp) / "extract"
             with zipfile.ZipFile(archive_path) as archive:
-                archive.extractall(extract_dir)
+                self._extract_zip_safely(archive, extract_dir)
             root = self._single_root(extract_dir)
             for name in COPY_NAMES:
                 source = root / name
@@ -315,7 +339,12 @@ class SenteroUpdateService:
         return channel if channel in VALID_CHANNELS else DEFAULT_CHANNEL
 
     def _is_newer(self, latest: str, current: str) -> bool:
-        return self._version_tuple(latest) > self._version_tuple(current)
+        latest_parts = self._version_tuple(latest)
+        current_parts = self._version_tuple(current)
+        for latest_part, current_part in zip_longest(latest_parts, current_parts, fillvalue=0):
+            if latest_part != current_part:
+                return latest_part > current_part
+        return False
 
     def _version_tuple(self, value: str) -> tuple[int, ...]:
         parts: list[int] = []
@@ -325,6 +354,42 @@ class SenteroUpdateService:
             except ValueError:
                 break
         return tuple(parts or [0])
+
+    def _download_update(self, url: str, archive_path: Path) -> None:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme in {"http", "https"}:
+            with urllib.request.urlopen(url, timeout=60) as response:
+                archive_path.write_bytes(response.read())
+            return
+        if parsed.scheme == "file":
+            source = Path(urllib.request.url2pathname(parsed.path))
+        elif not parsed.scheme:
+            source = Path(url).expanduser()
+            if not source.is_absolute():
+                source = PROJECT_DIR / source
+        else:
+            raise ValueError(f"Unsupported update download URL: {url}")
+        if not source.exists() or not source.is_file():
+            raise FileNotFoundError(f"Update archive not found: {source}")
+        shutil.copy2(source, archive_path)
+
+    def _extract_zip_safely(self, archive: zipfile.ZipFile, extract_dir: Path) -> None:
+        extract_root = extract_dir.resolve()
+        for member in archive.infolist():
+            target = (extract_dir / member.filename).resolve()
+            if target != extract_root and extract_root not in target.parents:
+                raise ValueError(f"Unsafe path in update archive: {member.filename}")
+        archive.extractall(extract_dir)
+
+    def _persist_install_progress(self, state: dict[str, Any], steps: list[dict[str, str]], layer: str) -> None:
+        current = {
+            **state,
+            "status": "running",
+            "state": "running",
+            "steps": steps,
+            "install": {**(state.get("install") or {}), "status": "running", "layer": layer, "steps": steps},
+        }
+        self._write_json(STATE_FILE, current)
 
     def _step(self, steps: list[dict[str, str]], key: str, status: str) -> None:
         for step in steps:

@@ -60,7 +60,7 @@ docker compose up --build
 Create an installable directory and update ZIP artifacts:
 
 ```bash
-python3 deployment_build.py --version 0.1.1 --base-url https://example.com/sentero
+python3 deployment_build.py --version 0.1.1
 ```
 
 Outputs:
@@ -73,11 +73,13 @@ Outputs:
 
 Sentero has a standalone update API under `/api/sentero/system/update/*`.
 
-Default mode is `dry_run`, so update checks and UI flow work without modifying files. For ZIP-based application updates, publish an `update-manifest.json` and set:
+Default mode is `dry_run`, so update checks and UI flow work without modifying files. For ZIP-based application updates, publish `build/updates/sentero/stable/latest.json` and the matching ZIP files under `stable/releases/`, then set:
 
 ```bash
 SENTERO_UPDATE_MODE=zip
-SENTERO_UPDATE_MANIFEST_URL=https://example.com/sentero/stable/latest.json
+UPDATE_BASE_URL=https://example.com/sentero
 ```
+
+The runtime derives `https://example.com/sentero/stable/latest.json`; the build derives ZIP download URLs like `https://example.com/sentero/stable/releases/sentero-<version>.zip`.
 
 The ZIP installer updates application files only and never overwrites `.env`, `data/`, `backups/`, virtualenvs or `node_modules`.

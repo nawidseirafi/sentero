@@ -12,7 +12,7 @@ from typing import Any
 
 from .device_discovery_service import DeviceDiscoveryService
 from .device_mapping_service import DB_PATH, DB_TIMEOUT_SECONDS, DeviceMappingService, configure_sqlite_connection, now
-from .matter_service import MatterCommissioningUnavailable, MatterService
+from backend.services.matter_service import MatterCommissioningUnavailable, MatterService
 
 logger = logging.getLogger(__name__)
 

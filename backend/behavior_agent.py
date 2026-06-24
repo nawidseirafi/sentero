@@ -11,8 +11,8 @@ from .config import load_agent_section
 from .services.llm.factory import create_llm_client
 from .services.messaging import MessagingService
 
-from .device_mapping_service import DeviceMappingService, now
-from .notification_service import NotificationService
+from backend.services.device_mapping_service import DeviceMappingService, now
+from backend.services.notification_service import NotificationService
 
 logger = logging.getLogger(__name__)
 

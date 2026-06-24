@@ -10,9 +10,9 @@ from typing import Any
 
 import requests
 
-from .services.messaging import MessagingService
+from backend.services.messaging import MessagingService
 
-from .device_mapping_service import DeviceMappingService, now
+from backend.services.device_mapping_service import DeviceMappingService, now
 
 logger = logging.getLogger(__name__)
 

@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .auth_service import SenteroAuthService
-from .device_mapping_service import DeviceMappingService
+from backend.services.auth_service import SenteroAuthService
+from backend.services.device_mapping_service import DeviceMappingService
 from .paths import FRONTEND_DIST
-from .routes import router
+from backend.api.routes import OPENAPI_TAGS, router
 
 
 class SPAStaticFiles(StaticFiles):
@@ -29,7 +30,7 @@ class SPAStaticFiles(StaticFiles):
         return response
 
 
-app = FastAPI(title="Sentero API", version="0.1.0")
+app = FastAPI(title="Sentero API", version="0.1.0", openapi_tags=OPENAPI_TAGS)
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,8 +50,9 @@ PUBLIC_PATHS = {
     "/api/sentero/auth/status",
     "/api/sentero/auth/forgot-password",
     "/api/sentero/auth/reset-password",
-    "/api/sentero/auth/logout"
+    "/api/sentero/auth/logout",
 }
+AUTH_SCHEME_NAME = "HTTPBearer"
 
 auth_service = SenteroAuthService(DeviceMappingService())
 
@@ -76,6 +78,40 @@ async def require_sentero_auth(request, call_next):
 
 
 app.include_router(router)
+
+
+def custom_openapi() -> dict:
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        openapi_version=app.openapi_version,
+        description=app.description,
+        routes=app.routes,
+        tags=OPENAPI_TAGS,
+    )
+    security_schemes = schema.setdefault("components", {}).setdefault("securitySchemes", {})
+    security_schemes.setdefault(AUTH_SCHEME_NAME, {"type": "http", "scheme": "bearer"})
+
+    protected_security = {AUTH_SCHEME_NAME: []}
+    for path, operations in schema.get("paths", {}).items():
+        normalized_path = path.rstrip("/") or "/"
+        if not normalized_path.startswith("/api/") or normalized_path in PUBLIC_PATHS:
+            continue
+        for operation in operations.values():
+            if not isinstance(operation, dict):
+                continue
+            security = operation.setdefault("security", [])
+            if protected_security not in security:
+                security.insert(0, protected_security)
+
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 
 @app.get("/health")

@@ -5,7 +5,7 @@ import re
 import socket
 from typing import Any
 
-from .services.homeassistant_service import HomeAssistantService
+from backend.services.homeassistant_service import HomeAssistantService
 
 
 class MatterCommissioningUnavailable(RuntimeError):

@@ -1,15 +1,15 @@
 {
   "product": "Sentero",
   "current_version": "0.1.0",
-  "latest_version": "0.1.0",
-  "status": "idle",
-  "state": "idle",
-  "last_checked": "2026-06-23T20:53:23+00:00",
+  "latest_version": "0.1.1",
+  "status": "update_available",
+  "state": "update_available",
+  "last_checked": "2026-06-24T22:01:01+00:00",
   "release_notes": [
-    "Sentero standalone baseline."
+    "Sentero 0.1.1 deployment build."
   ],
   "steps": [],
-  "message": "Ihre Installation ist auf dem neuesten Stand.",
+  "message": "Ein Update ist verfuegbar.",
   "version": {
     "edition": "sentero",
     "app_version": "0.1.0",
@@ -21,20 +21,20 @@
   },
   "channel": "stable",
   "execution_mode": "dry_run",
-  "update_server_url": "/Users/nawid/Projects/sentero/update-manifest.json",
+  "update_server_url": "https://seirafi.de/robotersteve/sentero/stable/latest.json",
   "latest": {
-    "latest_version": "0.1.0",
-    "download_url": "",
+    "latest_version": "0.1.1",
+    "download_url": "https://seirafi.de/robotersteve/sentero/stable/releases/sentero-0.1.1.zip",
     "mandatory": false,
     "release_notes": [
-      "Sentero standalone baseline."
+      "Sentero 0.1.1 deployment build."
     ],
     "channel": "stable",
     "layers": [
       "application"
     ]
   },
-  "update_available": false,
+  "update_available": true,
   "install": {
     "status": "idle",
     "steps": []

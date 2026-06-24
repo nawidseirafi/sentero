@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .paths import DATA_DIR
-from .services.homeassistant_service import HomeAssistantService
+from backend.paths import DATA_DIR
+from backend.services.homeassistant_service import HomeAssistantService
 
 DB_PATH = DATA_DIR / 'sentero.db'
 DB_TIMEOUT_SECONDS = 30
