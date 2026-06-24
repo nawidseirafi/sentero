@@ -5,14 +5,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
-from backend.services.auth_service import SenteroAuthService
-from backend.services.commissioning_service import CommissioningService
-from backend.services.device_mapping_service import DeviceMappingService
+from backend.services.container import get_services
 from backend.services.matter_service import MatterCommissioningUnavailable
-from backend.services.notification_service import NotificationService
-from backend.services.service import SenteroService
-from backend.services.setup_service import SenteroSetupService
-from backend.services.update_service import SenteroUpdateService
 
 API_PREFIX = "/api/sentero"
 
@@ -37,13 +31,6 @@ OPENAPI_TAGS = [
 ]
 
 router = APIRouter(prefix=API_PREFIX)
-device_mapping_service = DeviceMappingService()
-setup_service = SenteroSetupService(device_mapping_service)
-sentero_service = SenteroService(device_mapping_service)
-commissioning_service = CommissioningService(mapping=device_mapping_service)
-notification_service = NotificationService(device_mapping_service)
-auth_service = SenteroAuthService(device_mapping_service)
-update_service = SenteroUpdateService()
 
 
 class ProfilePayload(BaseModel):
@@ -170,110 +157,110 @@ def is_dev_mode(dev: bool = False) -> bool:
 
 @router.get("/auth/status", tags=[TAG_AUTH])
 def sentero_auth_status(request: Request):
-    return auth_service.status(request)
+    return get_services().auth.status(request)
 
 
 @router.post("/auth/setup", tags=[TAG_AUTH])
 def sentero_auth_setup(payload: SenteroSetupPayload, request: Request, response: Response):
-    return auth_service.setup(model_data(payload), response, request)
+    return get_services().auth.setup(model_data(payload), response, request)
 
 
 @router.post("/auth/login", tags=[TAG_AUTH])
 def sentero_auth_login(payload: SenteroLoginPayload, request: Request, response: Response):
-    return auth_service.login(model_data(payload), response, request)
+    return get_services().auth.login(model_data(payload), response, request)
 
 
 @router.post("/auth/logout", tags=[TAG_AUTH])
 def sentero_auth_logout(request: Request, response: Response):
-    return auth_service.logout(request, response)
+    return get_services().auth.logout(request, response)
 
 
 @router.get("/auth/me", tags=[TAG_AUTH])
 def sentero_auth_me(request: Request):
-    return auth_service.me(request)
+    return get_services().auth.me(request)
 
 
 @router.put("/auth/me", tags=[TAG_AUTH])
 def sentero_auth_update_me(payload: UpdateMePayload, request: Request):
-    return auth_service.update_me(model_data(payload), request)
+    return get_services().auth.update_me(model_data(payload), request)
 
 
 @router.post("/auth/change-password", tags=[TAG_AUTH])
 def sentero_auth_change_password(payload: ChangePasswordPayload, request: Request):
-    return auth_service.change_password(model_data(payload), request)
+    return get_services().auth.change_password(model_data(payload), request)
 
 
 @router.post("/auth/forgot-password", tags=[TAG_AUTH])
 def sentero_auth_forgot_password(payload: ForgotPasswordPayload, request: Request):
-    return auth_service.forgot_password(model_data(payload), request)
+    return get_services().auth.forgot_password(model_data(payload), request)
 
 
 @router.post("/auth/reset-password", tags=[TAG_AUTH])
 def sentero_auth_reset_password(payload: ResetPasswordPayload):
-    return auth_service.reset_password(model_data(payload))
+    return get_services().auth.reset_password(model_data(payload))
 
 
 @router.get("/system/update/status", tags=[TAG_SYSTEM])
 def sentero_update_status():
-    return update_service.status()
+    return get_services().update.status()
 
 
 @router.get("/system/update/check", tags=[TAG_SYSTEM])
 def sentero_update_check(channel: str | None = None):
-    return update_service.check_for_updates(channel=channel)
+    return get_services().update.check_for_updates(channel=channel)
 
 
 @router.post("/system/update/check", tags=[TAG_SYSTEM])
 def sentero_update_check_post(payload: UpdateCheckRequest):
-    return update_service.check_for_updates(channel=payload.channel)
+    return get_services().update.check_for_updates(channel=payload.channel)
 
 
 @router.post("/system/update/install", tags=[TAG_SYSTEM])
 def sentero_update_install(payload: UpdateInstallRequest, request: Request):
-    user = auth_service.user_from_request(request, required=True)
+    user = get_services().auth.user_from_request(request, required=True)
     if str(user.get("role") or "") not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="Nur Inhaber und Administratoren duerfen Updates installieren.")
-    return update_service.install_update(username=str(user.get("email") or "sentero"), layer=payload.layer or "auto")
+    return get_services().update.install_update(username=str(user.get("email") or "sentero"), layer=payload.layer or "auto")
 
 
 @router.get("/status", tags=[TAG_SENTERO])
 def sentero_status():
-    return sentero_service.status()
+    return get_services().sentero.status()
 
 
 @router.post("/run", tags=[TAG_SENTERO])
 def run_sentero_agent():
-    return sentero_service.run(dry_run=False)
+    return get_services().sentero.run(dry_run=False)
 
 
 @router.get("/behavior/latest", tags=[TAG_BEHAVIOR])
 def sentero_behavior_latest():
-    return {"assessment": sentero_service.latest_behavior(), "learning": sentero_service.behavior_learning_status()}
+    return {"assessment": get_services().sentero.latest_behavior(), "learning": get_services().sentero.behavior_learning_status()}
 
 
 @router.get("/behavior/history", tags=[TAG_BEHAVIOR])
 def sentero_behavior_history(limit: int = Query(20, ge=1, le=100)):
-    return {"assessments": sentero_service.behavior_history(limit=limit)}
+    return {"assessments": get_services().sentero.behavior_history(limit=limit)}
 
 
 @router.get("/behavior/timeline", tags=[TAG_BEHAVIOR])
 def sentero_behavior_timeline():
-    return sentero_service.behavior_timeline_today()
+    return get_services().sentero.behavior_timeline_today()
 
 
 @router.get("/setup/status", tags=[TAG_SETUP])
 def setup_status():
-    return setup_service.status()
+    return get_services().setup.status()
 
 
 @router.post("/setup/start", tags=[TAG_SETUP])
 def setup_start():
-    return setup_service.set_step("profile", "welcome", complete=False)
+    return get_services().setup.set_step("profile", "welcome", complete=False)
 
 
 @router.post("/setup/profile", tags=[TAG_SETUP])
 def setup_profile(payload: ProfilePayload):
-    return setup_service.profile(model_data(payload))
+    return get_services().setup.profile(model_data(payload))
 
 
 @router.get("/setup/rooms", tags=[TAG_SETUP])
@@ -283,13 +270,13 @@ def setup_rooms():
 
 @router.post("/setup/rooms", tags=[TAG_SETUP])
 def setup_rooms_save(payload: RoomsPayload):
-    return setup_service.rooms(payload.rooms)
+    return get_services().setup.rooms(payload.rooms)
 
 
 @router.post("/setup/discovery/start", tags=[TAG_SETUP])
 def discovery_start(payload: DiscoveryStartPayload):
     try:
-        return device_mapping_service.start_pairing(payload.role, payload.room, payload.pairing_code)
+        return get_services().mapping.start_pairing(payload.role, payload.room, payload.pairing_code)
     except Exception as exc:
         raise api_error(exc) from exc
 
@@ -297,7 +284,7 @@ def discovery_start(payload: DiscoveryStartPayload):
 @router.post("/setup/pairing/matter/start", tags=[TAG_MATTER])
 def matter_pairing_start(payload: DiscoveryStartPayload):
     try:
-        return device_mapping_service.start_pairing(payload.role, payload.room, payload.pairing_code)
+        return get_services().mapping.start_pairing(payload.role, payload.room, payload.pairing_code)
     except Exception as exc:
         raise api_error(exc) from exc
 
@@ -305,7 +292,7 @@ def matter_pairing_start(payload: DiscoveryStartPayload):
 @router.post("/setup/pairing/zigbee/start", tags=[TAG_SETUP])
 def zigbee_pairing_start(payload: ZigbeePairingStartPayload):
     try:
-        return device_mapping_service.start_zigbee_pairing(payload.role, payload.room, duration=payload.duration or 60)
+        return get_services().mapping.start_zigbee_pairing(payload.role, payload.room, duration=payload.duration or 60)
     except Exception as exc:
         raise api_error(exc) from exc
 
@@ -313,7 +300,7 @@ def zigbee_pairing_start(payload: ZigbeePairingStartPayload):
 @router.post("/matter/start", tags=[TAG_MATTER])
 def matter_start(payload: MatterStartPayload):
     try:
-        return commissioning_service.start(setup_code=payload.setup_code, qr_payload=payload.qr_payload)
+        return get_services().commissioning.start(setup_code=payload.setup_code, qr_payload=payload.qr_payload)
     except MatterCommissioningUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -323,7 +310,7 @@ def matter_start(payload: MatterStartPayload):
 @router.get("/matter/capabilities", tags=[TAG_MATTER])
 def matter_capabilities(dev: bool = Query(False)):
     try:
-        return commissioning_service.capabilities(dev=is_dev_mode(dev))
+        return get_services().commissioning.capabilities(dev=is_dev_mode(dev))
     except Exception as exc:
         raise api_error(exc) from exc
 
@@ -331,7 +318,7 @@ def matter_capabilities(dev: bool = Query(False)):
 @router.get("/matter/status/{commissioning_id}", tags=[TAG_MATTER])
 def matter_status(commissioning_id: str, dev: bool = Query(False)):
     try:
-        return commissioning_service.status(commissioning_id, dev=is_dev_mode(dev))
+        return get_services().commissioning.status(commissioning_id, dev=is_dev_mode(dev))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -341,7 +328,7 @@ def matter_status(commissioning_id: str, dev: bool = Query(False)):
 @router.get("/matter/device/{commissioning_id}", tags=[TAG_MATTER])
 def matter_device(commissioning_id: str, dev: bool = Query(False)):
     try:
-        return commissioning_service.device(commissioning_id, dev=is_dev_mode(dev))
+        return get_services().commissioning.device(commissioning_id, dev=is_dev_mode(dev))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -351,7 +338,7 @@ def matter_device(commissioning_id: str, dev: bool = Query(False)):
 @router.post("/matter/device/{commissioning_id}/assign", tags=[TAG_MATTER])
 def matter_assign(commissioning_id: str, payload: MatterAssignPayload):
     try:
-        return commissioning_service.assign(commissioning_id, room=payload.room, role=payload.role)
+        return get_services().commissioning.assign(commissioning_id, room=payload.room, role=payload.role)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -361,7 +348,7 @@ def matter_assign(commissioning_id: str, payload: MatterAssignPayload):
 @router.get("/setup/discovery/{session_id}/candidates", tags=[TAG_SETUP])
 def discovery_candidates(session_id: int, dev: bool = Query(False)):
     try:
-        return device_mapping_service.candidates(session_id, dev=dev)
+        return get_services().mapping.candidates(session_id, dev=dev)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -371,7 +358,7 @@ def discovery_candidates(session_id: int, dev: bool = Query(False)):
 @router.post("/setup/discovery/{session_id}/confirm", tags=[TAG_SETUP])
 def discovery_confirm(session_id: int, payload: ConfirmPayload, dev: bool = Query(False)):
     try:
-        return device_mapping_service.confirm(session_id, payload.entity_id, name=payload.name, room=payload.room, dev=dev)
+        return get_services().mapping.confirm(session_id, payload.entity_id, name=payload.name, room=payload.room, dev=dev)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -380,13 +367,13 @@ def discovery_confirm(session_id: int, payload: ConfirmPayload, dev: bool = Quer
 
 @router.post("/setup/sensors", tags=[TAG_SENSORS])
 def setup_sensors():
-    return setup_service.sensors()
+    return get_services().setup.sensors()
 
 
 @router.post("/setup/contact", tags=[TAG_SETUP])
 def setup_contact(payload: ContactPayload):
     try:
-        return setup_service.contact(model_data(payload))
+        return get_services().setup.contact(model_data(payload))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -394,83 +381,83 @@ def setup_contact(payload: ContactPayload):
 @router.put("/setup/contact/{contact_id}", tags=[TAG_SETUP])
 def setup_contact_update(contact_id: int, payload: ContactPayload):
     try:
-        return setup_service.update_contact(contact_id, model_data(payload))
+        return get_services().setup.update_contact(contact_id, model_data(payload))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/setup/contact/{contact_id}", tags=[TAG_SETUP])
 def setup_contact_delete(contact_id: int):
-    return setup_service.delete_contact(contact_id)
+    return get_services().setup.delete_contact(contact_id)
 
 
 @router.post("/setup/notifications", tags=[TAG_SETUP])
 def setup_notifications(payload: NotificationPayload):
-    return setup_service.notifications(model_data(payload))
+    return get_services().setup.notifications(model_data(payload))
 
 
 @router.get("/notifications/channels", tags=[TAG_NOTIFICATIONS])
 def notification_channels():
-    return notification_service.channels()
+    return get_services().notification.channels()
 
 
 @router.post("/notifications/channels/email", tags=[TAG_NOTIFICATIONS])
 def notification_channel_email(payload: ChannelSettingsPayload):
-    return notification_service.save_channel("email", True, payload.config)
+    return get_services().notification.save_channel("email", True, payload.config)
 
 
 @router.post("/notifications/channels/telegram", tags=[TAG_NOTIFICATIONS])
 def notification_channel_telegram(payload: ChannelSettingsPayload):
-    return notification_service.save_channel("telegram", payload.enabled, payload.config)
+    return get_services().notification.save_channel("telegram", payload.enabled, payload.config)
 
 
 @router.post("/notifications/channels/whatsapp", tags=[TAG_NOTIFICATIONS])
 def notification_channel_whatsapp(payload: ChannelSettingsPayload):
-    return notification_service.save_channel("whatsapp", payload.enabled, payload.config)
+    return get_services().notification.save_channel("whatsapp", payload.enabled, payload.config)
 
 
 @router.post("/notifications/test/email", tags=[TAG_NOTIFICATIONS])
 def notification_test_email(dev: bool = Query(False)):
-    return notification_service.test("email", dev=is_dev_mode(dev))
+    return get_services().notification.test("email", dev=is_dev_mode(dev))
 
 
 @router.post("/notifications/test/telegram", tags=[TAG_NOTIFICATIONS])
 def notification_test_telegram(dev: bool = Query(False)):
-    return notification_service.test("telegram", dev=is_dev_mode(dev))
+    return get_services().notification.test("telegram", dev=is_dev_mode(dev))
 
 
 @router.post("/notifications/test/whatsapp", tags=[TAG_NOTIFICATIONS])
 def notification_test_whatsapp(dev: bool = Query(False)):
-    return notification_service.test("whatsapp", dev=is_dev_mode(dev))
+    return get_services().notification.test("whatsapp", dev=is_dev_mode(dev))
 
 
 @router.get("/notifications/logs", tags=[TAG_NOTIFICATIONS])
 def notification_logs(limit: int = Query(100, ge=1, le=500)):
-    return notification_service.logs(limit=limit)
+    return get_services().notification.logs(limit=limit)
 
 
 @router.post("/notifications/system/check", tags=[TAG_NOTIFICATIONS])
 def notification_system_check():
-    return notification_service.notify_system_warnings()
+    return get_services().notification.notify_system_warnings()
 
 
 @router.post("/setup/complete", tags=[TAG_SETUP])
 def setup_complete():
     try:
-        return setup_service.complete()
+        return get_services().setup.complete()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/sensor-roles", tags=[TAG_SENSORS])
 def sensor_roles(dev: bool = Query(False), include_state: bool = Query(False)):
-    return {"sensor_roles": device_mapping_service.roles(dev=dev, include_state=include_state)}
+    return {"sensor_roles": get_services().mapping.roles(dev=dev, include_state=include_state)}
 
 
 @router.post("/sensor-roles", tags=[TAG_SENSORS])
 def sensor_role_save(payload: dict[str, Any]):
     try:
-        return device_mapping_service.upsert_role(payload)
+        return get_services().mapping.upsert_role(payload)
     except Exception as exc:
         raise api_error(exc) from exc
 
@@ -478,7 +465,7 @@ def sensor_role_save(payload: dict[str, Any]):
 @router.delete("/sensor-roles/{role}", tags=[TAG_SENSORS])
 def sensor_role_delete(role: str):
     try:
-        return device_mapping_service.delete_role(role)
+        return get_services().mapping.delete_role(role)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -488,7 +475,7 @@ def sensor_role_delete(role: str):
 @router.post("/sensor-roles/{role}/test", tags=[TAG_SENSORS])
 def sensor_role_test(role: str):
     try:
-        return device_mapping_service.test_role(role)
+        return get_services().mapping.test_role(role)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -498,7 +485,7 @@ def sensor_role_test(role: str):
 @router.put("/sensor-roles/{role}/name", tags=[TAG_SENSORS])
 def sensor_role_rename(role: str, payload: SensorRoleNamePayload):
     try:
-        return device_mapping_service.rename_role(role, payload.name)
+        return get_services().mapping.rename_role(role, payload.name)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

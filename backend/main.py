@@ -7,10 +7,9 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from backend.services.auth_service import SenteroAuthService
-from backend.services.device_mapping_service import DeviceMappingService
 from .paths import FRONTEND_DIST
 from backend.api.routes import OPENAPI_TAGS, router
+from backend.services.container import get_services
 
 
 class SPAStaticFiles(StaticFiles):
@@ -54,8 +53,6 @@ PUBLIC_PATHS = {
 }
 AUTH_SCHEME_NAME = "HTTPBearer"
 
-auth_service = SenteroAuthService(DeviceMappingService())
-
 
 @app.middleware("http")
 async def require_sentero_auth(request, call_next):
@@ -68,7 +65,7 @@ async def require_sentero_auth(request, call_next):
 
     if path.startswith("/api/") and path not in PUBLIC_PATHS:
         try:
-            auth_service.user_from_request(request, required=True)
+            get_services().auth.user_from_request(request, required=True)
         except Exception as exc:
             return JSONResponse(
                 {"detail": getattr(exc, "detail", "Nicht angemeldet.")},

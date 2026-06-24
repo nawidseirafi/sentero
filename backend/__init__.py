@@ -1,3 +1,3 @@
-from backend.services.service import SenteroService
+from __future__ import annotations
 
-__all__ = ["SenteroService"]
+__all__: list[str] = []
