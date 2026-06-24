@@ -190,6 +190,8 @@ Runtime data stays in `data/` and is not part of update ZIP payloads.
 def create_update_artifacts(version: str, base_url: str) -> None:
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
     zip_path = RELEASE_DIR / f"sentero-{version}.zip"
+    latest = latest_manifest(version=version, zip_path=zip_path, base_url=base_url)
+    (TARGET_DIR / "update-manifest.json").write_text(json.dumps(latest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if zip_path.exists():
         zip_path.unlink()
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -202,27 +204,36 @@ def create_update_artifacts(version: str, base_url: str) -> None:
             if path.is_file():
                 archive.write(path, Path(f"sentero-{version}") / rel)
 
-    latest = latest_manifest(version=version, zip_path=zip_path, base_url=base_url)
     (UPDATE_DIR / "latest.json").write_text(json.dumps(latest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     base_url = base_url.rstrip("/")
     (UPDATE_DIR / "deployment-manifest.json").write_text(
-        json.dumps(
-            {
-                "product": "sentero",
-                "version": version,
-                "created_at": utc_now(),
-                "artifact": str(zip_path.relative_to(BUILD_DIR)),
-                "artifact_url": f"{base_url}/stable/releases/{zip_path.name}",
-                "manifest": str((UPDATE_DIR / "latest.json").relative_to(BUILD_DIR)),
-                "manifest_url": f"{base_url}/stable/latest.json",
-                "target": str(TARGET_DIR.relative_to(BUILD_DIR)),
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
+        json.dumps(deployment_manifest(version=version, zip_path=zip_path, base_url=base_url), ensure_ascii=False, indent=2)
         + "\n",
         encoding="utf-8",
     )
+
+
+def deployment_manifest(version: str, zip_path: Path, base_url: str) -> dict[str, Any]:
+    base_url = base_url.rstrip("/")
+    if not base_url:
+        raise SystemExit(
+            "No public update base URL configured. Set UPDATE_BASE_URL in .env or pass --base-url."
+        )
+    try:
+        artifact = str(zip_path.relative_to(UPDATE_DIR))
+    except ValueError:
+        artifact = f"releases/{zip_path.name}"
+    return {
+        "product": "sentero",
+        "version": version,
+        "created_at": utc_now(),
+        "artifact": artifact,
+        "artifact_url": f"{base_url}/stable/releases/{zip_path.name}",
+        "manifest": "latest.json",
+        "manifest_url": f"{base_url}/stable/latest.json",
+        "target": str(TARGET_DIR.relative_to(BUILD_DIR)),
+        "base_url": base_url,
+    }
 
 
 def latest_manifest(version: str, zip_path: Path, base_url: str) -> dict[str, Any]:

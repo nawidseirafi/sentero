@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from backend.paths import DATA_DIR
+from backend.sensor_sources.base import create_sensor_source
 from backend.services.homeassistant_service import HomeAssistantService
+from backend.services.mqtt_service import MqttService
 
 DB_PATH = DATA_DIR / 'sentero.db'
 DB_TIMEOUT_SECONDS = 30
@@ -50,7 +52,10 @@ def configure_sqlite_connection(con: sqlite3.Connection) -> None:
 class DeviceMappingService:
     def __init__(self, database_path: Path | None = None, ha: HomeAssistantService | None = None) -> None:
         self.database_path = database_path or DB_PATH
+        self.source_mode = sensor_source_mode()
         self.ha = ha or HomeAssistantService()
+        self.sensor_source = create_sensor_source()
+        self.mqtt = MqttService()
         self.ensure_schema()
 
     def connect(self) -> sqlite3.Connection:
@@ -66,6 +71,14 @@ class DeviceMappingService:
             con.commit()
 
     def home_status(self) -> dict[str, bool]:
+        if self.uses_mqtt_source():
+            if not self.sensor_source.configured():
+                return {'connected': False, 'sensor_ready': False, 'system_ready': False}
+            try:
+                states = self.snapshot()
+            except Exception:
+                return {'connected': False, 'sensor_ready': False, 'system_ready': False}
+            return {'connected': True, 'sensor_ready': isinstance(states, list), 'system_ready': True}
         if not self.ha.configured():
             return {'connected': False, 'sensor_ready': False, 'system_ready': False}
         try:
@@ -399,7 +412,7 @@ class DeviceMappingService:
         entity_id = str(mapped.get('entity_id') or '').strip()
         device_id = str(mapped.get('device_id') or '').strip()
         states = self.snapshot()
-        identify = find_identify_entity(states, device_id, entity_id)
+        identify = find_identify_entity(states, device_id, entity_id) if not self.uses_mqtt_source() else None
         if identify:
             try:
                 response = self.ha.call_service('button', 'press', {'entity_id': identify['entity_id']})
@@ -475,9 +488,9 @@ class DeviceMappingService:
         if not device_entities:
             return {
                 'ok': True,
-                'provider': 'home_assistant',
+                'provider': 'zigbee2mqtt' if self.uses_mqtt_source() else 'home_assistant',
                 'reason': 'already_missing',
-                'message': 'Geraet war in Home Assistant bereits nicht mehr vorhanden.',
+                'message': 'Geraet war bereits nicht mehr vorhanden.',
                 'entity_id': entity_id,
                 'device_id': device_id or None,
             }
@@ -488,6 +501,8 @@ class DeviceMappingService:
         mqtt_ids = zigbee2mqtt_identifiers(identifiers, device_entities)
         attempts: list[dict[str, Any]] = []
         for provider in zigbee_provider_order():
+            if self.uses_mqtt_source() and provider == 'zha':
+                continue
             if provider == 'zha':
                 if not ieee:
                     continue
@@ -501,13 +516,9 @@ class DeviceMappingService:
             if provider == 'zigbee2mqtt':
                 for mqtt_id in mqtt_ids:
                     try:
-                        response = self.ha.call_service(
-                            'mqtt',
-                            'publish',
-                            {
-                                'topic': 'zigbee2mqtt/bridge/request/device/remove',
-                                'payload': json.dumps({'id': mqtt_id, 'force': True}),
-                            },
+                        response = self._mqtt_publish(
+                            'zigbee2mqtt/bridge/request/device/remove',
+                            {'id': mqtt_id, 'force': True},
                         )
                         return {'ok': True, 'provider': 'zigbee2mqtt', 'id': mqtt_id, 'response': response, 'attempts': attempts}
                     except Exception as exc:
@@ -569,6 +580,8 @@ class DeviceMappingService:
         return result
 
     def snapshot(self) -> list[dict[str, Any]]:
+        if self.uses_mqtt_source():
+            return [normalize_snapshot_item(item) for item in self.sensor_source.snapshot()]
         states = self.ha.get_states()
         entity_registry = self._entity_registry_by_entity_id()
         device_registry = self._device_registry_by_id()
@@ -600,6 +613,12 @@ class DeviceMappingService:
                 'last_updated': item.get('last_updated'),
             })
         return result
+
+    def uses_mqtt_source(self) -> bool:
+        return self.source_mode in {'mqtt', 'zigbee2mqtt', 'z2m'}
+
+    def _mqtt_publish(self, topic: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.mqtt.publish(topic, payload)
 
     def _entity_registry_by_entity_id(self) -> dict[str, dict[str, Any]]:
         try:
@@ -650,6 +669,17 @@ class DeviceMappingService:
     def _apply_home_assistant_metadata(self, entity: dict[str, Any], name: str, room: str | None) -> dict[str, Any]:
         entity_id = str(entity.get('entity_id') or '').strip()
         device_id = str(entity.get('device_id') or '').strip()
+        if self.uses_mqtt_source():
+            rename = self._rename_zigbee2mqtt_device(entity, name)
+            return {
+                'entity_id': entity_id,
+                'device_id': device_id or None,
+                'name': name,
+                'room': room,
+                'updated': ['zigbee2mqtt'] if rename.get('ok') else [],
+                'ok': bool(rename.get('ok')),
+                'zigbee2mqtt': rename,
+            }
         area_id = self._ensure_home_assistant_area(room)
         detail: dict[str, Any] = {'entity_id': entity_id, 'device_id': device_id or None, 'name': name, 'room': room, 'area_id': area_id, 'updated': []}
         if not entity_id:
@@ -697,13 +727,9 @@ class DeviceMappingService:
         if not source_id:
             return {'ok': False, 'reason': 'no_zigbee2mqtt_id', 'candidates': candidates}
         try:
-            response = self.ha.call_service(
-                'mqtt',
-                'publish',
-                {
-                    'topic': 'zigbee2mqtt/bridge/request/device/rename',
-                    'payload': json.dumps({'from': source_id, 'to': clean_name, 'homeassistant_rename': True}),
-                },
+            response = self._mqtt_publish(
+                'zigbee2mqtt/bridge/request/device/rename',
+                {'from': source_id, 'to': clean_name, 'homeassistant_rename': not self.uses_mqtt_source()},
             )
             logger.info("Sentero Zigbee2MQTT rename sent from=%s to=%s entity=%s", source_id, clean_name, entity.get('entity_id'))
             return {'ok': True, 'provider': 'zigbee2mqtt', 'from': source_id, 'to': clean_name, 'response': response}
@@ -724,6 +750,8 @@ class DeviceMappingService:
     def _open_zigbee_permit_join(self, duration: int) -> dict[str, Any]:
         attempts: list[dict[str, Any]] = []
         for provider in zigbee_provider_order():
+            if self.uses_mqtt_source() and provider == 'zha':
+                continue
             if provider == 'zha':
                 try:
                     response = self.ha.call_service('zha', 'permit', {'duration': duration})
@@ -735,13 +763,9 @@ class DeviceMappingService:
                 continue
             if provider == 'zigbee2mqtt':
                 try:
-                    response = self.ha.call_service(
-                        'mqtt',
-                        'publish',
-                        {
-                            'topic': 'zigbee2mqtt/bridge/request/permit_join',
-                            'payload': json.dumps({'value': True, 'time': duration}),
-                        },
+                    response = self._mqtt_publish(
+                        'zigbee2mqtt/bridge/request/permit_join',
+                        {'value': True, 'time': duration},
                     )
                     logger.info("Sentero Zigbee permit_join sent provider=zigbee2mqtt duration=%s", duration)
                     return {'ok': True, 'provider': 'zigbee2mqtt', 'duration': duration, 'response': response, 'attempts': attempts}
@@ -749,6 +773,29 @@ class DeviceMappingService:
                     attempts.append({'provider': 'zigbee2mqtt', 'error': str(exc)})
                     logger.info("Sentero Zigbee permit_join failed provider=zigbee2mqtt error=%s", exc)
         return {'ok': False, 'reason': 'zigbee_pairing_unavailable', 'message': 'Zigbee-Anlernen nicht verfuegbar', 'attempts': attempts}
+
+
+def sensor_source_mode() -> str:
+    return os.getenv('SENTERO_SENSOR_SOURCE', 'mqtt').strip().lower()
+
+
+def normalize_snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
+    entity_id = str(item.get('entity_id') or '')
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    return {
+        **item,
+        'entity_id': entity_id,
+        'domain': str(item.get('domain') or entity_id.split('.')[0] if '.' in entity_id else ''),
+        'state': item.get('state'),
+        'friendly_name': item.get('friendly_name') or attrs.get('friendly_name') or entity_id,
+        'device_class': item.get('device_class') or attrs.get('device_class'),
+        'unit': item.get('unit') or item.get('unit_of_measurement') or attrs.get('unit_of_measurement'),
+        'unit_of_measurement': item.get('unit_of_measurement') or item.get('unit') or attrs.get('unit_of_measurement'),
+        'device_id': item.get('device_id') or attrs.get('device_id'),
+        'identifiers': item.get('identifiers') or attrs.get('identifiers'),
+        'last_changed': item.get('last_changed') or item.get('changed_at'),
+        'last_updated': item.get('last_updated') or item.get('changed_at'),
+    }
 
 
 def ensure_schema(con: sqlite3.Connection) -> None:

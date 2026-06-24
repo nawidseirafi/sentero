@@ -45,22 +45,30 @@ Open `http://localhost:5173`.
 
 ## Docker
 
-Build the frontend first, then start the stack:
+Production Docker uses Mosquitto/Zigbee2MQTT/MQTT by default and does not require Home Assistant. Build the frontend first, then start the stack:
 
 ```bash
 cd frontend
 npm install
 npm run build
 cd ..
-docker compose up --build
+docker compose up --build -d
 ```
+
+For a production Zigbee2MQTT container as part of the stack:
+
+```bash
+docker compose --profile production up --build -d
+```
+
+Docker forces `SENTERO_SENSOR_SOURCE=mqtt` unless `SENTERO_DOCKER_SENSOR_SOURCE` is set explicitly. This keeps local Home Assistant development settings from leaking into the production container.
 
 ## Deployment Build
 
 Create an installable directory and update ZIP artifacts:
 
 ```bash
-python3 deployment_build.py --version 0.1.1
+UPDATE_BASE_URL=https://seirafi.de/robotersteve/sentero python3 deployment_build.py --version 0.1.1
 ```
 
 Outputs:

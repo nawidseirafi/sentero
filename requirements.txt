@@ -6,3 +6,4 @@ httpx
 requests
 websockets
 
+paho-mqtt

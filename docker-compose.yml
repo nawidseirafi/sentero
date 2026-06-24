@@ -6,9 +6,12 @@ services:
     env_file:
       - .env
     environment:
-      SENTERO_SENSOR_SOURCE: ${SENTERO_SENSOR_SOURCE:-mqtt}
+      SENTERO_SENSOR_SOURCE: ${SENTERO_DOCKER_SENSOR_SOURCE:-mqtt}
       MQTT_HOST: mosquitto
       MQTT_PORT: 1883
+      ZIGBEE2MQTT_TOPIC_PREFIX: ${ZIGBEE2MQTT_TOPIC_PREFIX:-zigbee2mqtt}
+      SENTERO_UPDATE_MODE: ${SENTERO_UPDATE_MODE:-zip}
+      UPDATE_BASE_URL: ${UPDATE_BASE_URL:-https://seirafi.de/robotersteve/sentero}
     ports:
       - "8080:8080"
     volumes:
