@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -190,8 +191,6 @@ Runtime data stays in `data/` and is not part of update ZIP payloads.
 def create_update_artifacts(version: str, base_url: str) -> None:
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
     zip_path = RELEASE_DIR / f"sentero-{version}.zip"
-    latest = latest_manifest(version=version, zip_path=zip_path, base_url=base_url)
-    (TARGET_DIR / "update-manifest.json").write_text(json.dumps(latest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if zip_path.exists():
         zip_path.unlink()
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -204,6 +203,8 @@ def create_update_artifacts(version: str, base_url: str) -> None:
             if path.is_file():
                 archive.write(path, Path(f"sentero-{version}") / rel)
 
+    latest = latest_manifest(version=version, zip_path=zip_path, base_url=base_url)
+    (TARGET_DIR / "update-manifest.json").write_text(json.dumps(latest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (UPDATE_DIR / "latest.json").write_text(json.dumps(latest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     base_url = base_url.rstrip("/")
     (UPDATE_DIR / "deployment-manifest.json").write_text(
@@ -229,6 +230,8 @@ def deployment_manifest(version: str, zip_path: Path, base_url: str) -> dict[str
         "created_at": utc_now(),
         "artifact": artifact,
         "artifact_url": f"{base_url}/stable/releases/{zip_path.name}",
+        "sha256": file_sha256(zip_path),
+        "size_bytes": zip_path.stat().st_size,
         "manifest": "latest.json",
         "manifest_url": f"{base_url}/stable/latest.json",
         "target": str(TARGET_DIR.relative_to(BUILD_DIR)),
@@ -248,6 +251,8 @@ def latest_manifest(version: str, zip_path: Path, base_url: str) -> dict[str, An
             "stable": {
                 "latest_version": version,
                 "download_url": download_url,
+                "sha256": file_sha256(zip_path),
+                "size_bytes": zip_path.stat().st_size,
                 "mandatory": False,
                 "release_notes": [f"Sentero {version} deployment build."],
                 "layers": ["application"],
@@ -312,6 +317,14 @@ def git_commit() -> str:
         return result.stdout.strip() or "unknown"
     except (OSError, subprocess.CalledProcessError):
         return "unknown"
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def utc_now() -> str:

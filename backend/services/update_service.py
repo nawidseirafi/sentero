@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -38,6 +39,18 @@ COPY_NAMES = {
     "update-manifest.json",
 }
 NEVER_OVERWRITE = {".env", "data", "backups", ".venv", "venv", "node_modules", "__pycache__"}
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def is_valid_sha256(value: str) -> bool:
+    return len(value) == 64 and all(char in "0123456789abcdef" for char in value.lower())
 
 
 def utc_now() -> str:
@@ -267,6 +280,8 @@ class SenteroUpdateService:
         return {
             "latest_version": str(version),
             "download_url": str(latest.get("download_url") or ""),
+            "sha256": str(latest.get("sha256") or ""),
+            "size_bytes": int(latest.get("size_bytes") or 0),
             "mandatory": bool(latest.get("mandatory", False)),
             "release_notes": latest.get("release_notes") or [],
             "channel": channel,
@@ -280,6 +295,7 @@ class SenteroUpdateService:
         with tempfile.TemporaryDirectory(prefix="sentero-update-") as tmp:
             archive_path = Path(tmp) / "update.zip"
             self._download_update(url, archive_path)
+            self._verify_archive_integrity(archive_path, latest)
             extract_dir = Path(tmp) / "extract"
             with zipfile.ZipFile(archive_path) as archive:
                 self._extract_zip_safely(archive, extract_dir)
@@ -372,6 +388,19 @@ class SenteroUpdateService:
         if not source.exists() or not source.is_file():
             raise FileNotFoundError(f"Update archive not found: {source}")
         shutil.copy2(source, archive_path)
+
+    def _verify_archive_integrity(self, archive_path: Path, latest: dict[str, Any]) -> None:
+        expected_sha256 = str(latest.get("sha256") or "").strip().lower()
+        if not expected_sha256:
+            raise ValueError("Update manifest has no sha256 checksum")
+        if not is_valid_sha256(expected_sha256):
+            raise ValueError("Update manifest has invalid sha256 checksum")
+        actual_sha256 = file_sha256(archive_path)
+        if actual_sha256 != expected_sha256:
+            raise ValueError("Update archive checksum mismatch")
+        expected_size = int(latest.get("size_bytes") or 0)
+        if expected_size and archive_path.stat().st_size != expected_size:
+            raise ValueError("Update archive size mismatch")
 
     def _extract_zip_safely(self, archive: zipfile.ZipFile, extract_dir: Path) -> None:
         extract_root = extract_dir.resolve()

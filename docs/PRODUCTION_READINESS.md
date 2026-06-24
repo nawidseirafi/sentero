@@ -82,17 +82,26 @@ Abnahmekriterium:
 
 - Eine laufende Installation kann von Version A auf Version B aktualisieren, ohne `.env`, `data/` oder `backups/` zu verlieren.
 
-### 5. Signierte Updates
+### 5. Update-Integritaet: Hashpruefung und Signaturen
 
-Offen:
+Erledigt:
 
-- Manifeste und/oder ZIP-Artefakte signieren.
-- Signatur vor Installation pruefen.
-- Installation abbrechen, wenn Signatur fehlt oder ungueltig ist.
+- Der ZIP-Installer entpackt Archive sicher gegen Pfadmanipulationen.
+- Der Deployment-Build erzeugt fuer jedes Release-ZIP `sha256` und `size_bytes`.
+- `latest.json` und `deployment-manifest.json` enthalten die Checksumme.
+- Der Installer hasht das heruntergeladene ZIP vor dem Entpacken.
+- Die Installation bricht ab, wenn `sha256` fehlt, ungueltig ist oder nicht zum ZIP passt.
+- Die Installation bricht ab, wenn `size_bytes` gesetzt ist und nicht zur heruntergeladenen Datei passt.
+
+Noch optional fuer unbeaufsichtigte Updates:
+
+- Manifeste und/oder ZIP-Artefakte kryptografisch signieren.
+- Signatur vor Installation pruefen, sobald Updates ohne Nutzerfreigabe installiert werden sollen.
 
 Abnahmekriterium:
 
-- Sentero installiert kein Update, das nicht vom erwarteten Schluessel signiert wurde.
+- Sentero installiert kein Update, dessen SHA-256 nicht zum Manifest passt.
+- Fuer unbeaufsichtigte Produktion wird zusaetzlich eine Signaturpruefung eingefuehrt.
 
 ### 6. Auth und Session-Haertung
 
