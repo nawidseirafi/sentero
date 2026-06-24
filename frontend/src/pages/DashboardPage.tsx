@@ -58,23 +58,14 @@ export function DashboardPage() {
         </p>
       </header>
 
-      <BehaviorAnalysisCard behavior={behavior} learning={learning} hasSensors={hasSensors} />
-
-      <article className="sc-simple-day-card" aria-label="Tagesverlauf">
-        <div className="sc-simple-day-head">
-          <strong>Tagesverlauf</strong>
-          <span>{error ? 'Prüfen' : 'Ruhig'}</span>
-        </div>
-        <div className={`sc-simple-dayline ${hasActivity ? 'has-activity' : ''}`}>
-          <div className="sc-simple-dots" aria-hidden="true">
-            {activitySlots.map((slot) => <i key={slot.label} className={slot.active ? 'active' : ''} />)}
-          </div>
-          <div className="sc-simple-times" aria-hidden="true">
-            {activitySlots.map((slot) => <span key={slot.label}>{slot.label}</span>)}
-          </div>
-          {!hasActivity && <p>Noch keine Aktivität erkannt</p>}
-        </div>
-      </article>
+      <BehaviorOverviewCard
+        behavior={behavior}
+        learning={learning}
+        hasSensors={hasSensors}
+        activitySlots={activitySlots}
+        hasActivity={hasActivity}
+        quiet={!error}
+      />
 
       <h3 className="sc-simple-section-title">Heute</h3>
       <section className="sc-simple-facts" aria-label="Wichtige Tagespunkte">
@@ -86,35 +77,65 @@ export function DashboardPage() {
   );
 }
 
-function BehaviorAnalysisCard({ behavior, learning, hasSensors }: { behavior: SenteroBehaviorAssessment | null; learning: SenteroBehaviorLearning | null; hasSensors: boolean }) {
-  const status = behavior?.status || 'green';
-  const meta = behaviorMeta(status);
-  const learningText = !hasSensors
-    ? 'Noch keine Sensoren eingerichtet'
-    : learning?.completed
-      ? 'Verhaltensprofil vollständig gelernt'
-      : learning
-        ? `Sentero lernt aktuell den gewohnten Tagesablauf kennen. Tag ${learning.day} von ${learning.days}`
-        : 'Sentero lernt aktuell den gewohnten Tagesablauf kennen.';
-  const headline = !hasSensors ? 'Noch keine Bewertung möglich' : meta.label;
+function BehaviorOverviewCard({
+  behavior,
+  learning,
+  hasSensors,
+  activitySlots,
+  hasActivity,
+  quiet,
+}: {
+  behavior: SenteroBehaviorAssessment | null;
+  learning: SenteroBehaviorLearning | null;
+  hasSensors: boolean;
+  activitySlots: Array<{ hour: number; label: string; active: boolean }>;
+  hasActivity: boolean;
+  quiet: boolean;
+}) {
+  const meta = behaviorMeta(behavior?.status || 'green');
+  const headline = !hasSensors ? 'Noch offen' : meta.label;
   const summary = !hasSensors
-    ? 'Verbinden Sie zuerst Sensoren, damit Sentero persönliche Routinen erkennen kann.'
+    ? 'Verbinden Sie zuerst Sensoren, damit Sentero den Alltag kennenlernen kann.'
     : behavior?.summary || 'Sentero baut ein persönliches Normalverhalten auf.';
+  const learningProgress = learning ? `Tag ${learning.day} von ${learning.days}` : 'Lernphase';
+  const learningHint = learning?.completed
+    ? 'Sentero kennt den gewohnten Tagesablauf.'
+    : 'Sentero lernt aktuell den gewohnten Tagesablauf kennen.';
+
   return (
-    <article className={`sc-behavior-overview ${meta.tone}`} aria-label="Verhaltensanalyse">
-      <div>
-        <span aria-hidden="true">{meta.dot}</span>
-        <div>
-          <small>Verhaltensanalyse</small>
-          <strong>{headline}</strong>
+    <article className={`sc-behavior-overview-card ${meta.tone}`} aria-label="Verhaltensanalyse und Tagesverlauf">
+      <section className="sc-behavior-overview-main" aria-label="Verhaltensanalyse">
+        <div className="sc-behavior-overview-head">
+          <span className="sc-behavior-status-dot" aria-hidden="true" />
+          <div>
+            <small>Verhaltensanalyse</small>
+            <strong>{headline}</strong>
+          </div>
         </div>
-      </div>
-      <p>{summary}</p>
-      <footer>
-        <span>{learningText}</span>
-        {typeof behavior?.anomaly_score === 'number' && <em>Score {behavior.anomaly_score}/100</em>}
-      </footer>
+        <p>{summary}</p>
+        <TimelineStrip activitySlots={activitySlots} hasActivity={hasActivity} />
+      </section>
+
+      <aside className="sc-behavior-overview-side" aria-label="Aktueller Tagesverlauf">
+        <span className={`sc-quiet-badge ${quiet ? 'quiet' : 'check'}`}>{quiet ? 'Ruhig' : 'Prüfen'}</span>
+        <strong>{learningProgress}</strong>
+        <p>{learningHint}</p>
+      </aside>
     </article>
+  );
+}
+
+function TimelineStrip({ activitySlots, hasActivity }: { activitySlots: Array<{ hour: number; label: string; active: boolean }>; hasActivity: boolean }) {
+  return (
+    <div className={`sc-overview-dayline ${hasActivity ? 'has-activity' : ''}`} aria-label="Tagesverlauf">
+      <div className="sc-overview-dots" aria-hidden="true">
+        {activitySlots.map((slot) => <i key={slot.label} className={slot.active ? 'active' : ''} />)}
+      </div>
+      <div className="sc-overview-times" aria-hidden="true">
+        {activitySlots.map((slot) => <span key={slot.label}>{slot.label}</span>)}
+      </div>
+      {!hasActivity && <p>Noch keine Aktivität erkannt</p>}
+    </div>
   );
 }
 
@@ -203,7 +224,7 @@ function roomLocationLabel(room?: string | null) {
 }
 
 function activitySlotsFromRoles(roles: SenteroSensorRole[]) {
-  const slots = [6, 9, 12, 15, 18, 21].map((hour) => ({ hour, label: String(hour).padStart(2, '0'), active: false }));
+  const slots = [0, 6, 12, 18, 24].map((hour) => ({ hour, label: String(hour).padStart(2, '0'), active: false }));
   const today = new Date();
   for (const role of roles) {
     const value = timestamp(role.last_changed || role.last_updated || role.updated_at);
