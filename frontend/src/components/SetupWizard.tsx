@@ -267,7 +267,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
   async function applyCandidate(sensorId: string, sessionId: number, result: SenteroCandidates, sensorName: string, roomId: string) {
     const score = result.candidate ? (result.candidate.score ?? result.candidate.confidence) : 0;
     const found = Boolean(result.candidate && score >= 50);
-    const timedOut = result.status === 'no_signal_detected' || result.remaining_seconds === 0;
+    const timedOut = result.remaining_seconds === 0 || (result.status === 'no_signal_detected' && (result.remaining_seconds ?? 0) <= 0);
     setDiscovery((current) => ({ ...current, [sensorId]: { candidate: result.candidate, candidates: result.candidates, remainingSeconds: result.remaining_seconds } }));
     if (found && result.candidate) {
       const name = sensorName || result.candidate.label || 'Sensor';

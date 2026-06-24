@@ -536,7 +536,7 @@ class DeviceMappingService:
             entity_id = str(row.get('entity_id') or '')
             state = resolve_role_state(dict(row), states, by_entity)
             value = state.get('state') if state else None
-            reachable = bool(state and value not in {None, '', 'unknown', 'unavailable'})
+            reachable = sensor_reachable_status(state)
             battery_entity = find_battery_entity({**row, **(state or {})}, states)
             battery_level = parse_battery(battery_entity.get('state')) if battery_entity else None
             logger.info(
@@ -862,55 +862,64 @@ def score_candidates(baseline: list[dict[str, Any]], current: list[dict[str, Any
         entity_id = str(item.get('entity_id') or '')
         if not entity_id:
             continue
-        if str(item.get('state') or '').lower() in {'unknown', 'unavailable'}:
-            continue
+        device_id = str(item.get('device_id') or '')
         old = before.get(entity_id, {})
         is_new = entity_id not in before
-        if not is_new:
-            continue
-        device_id = str(item.get('device_id') or '')
-        is_new_device = bool(is_new and device_id and device_id not in baseline_device_ids)
-        if not role_candidate_matches(role, item, allow_device_class_mismatch=False):
-            continue
+        is_new_device = bool(device_id and device_id not in baseline_device_ids)
         state_changed = bool(old) and item.get('state') != old.get('state')
         last_changed_updated = is_after(item.get('last_changed'), started)
         last_updated_updated = is_after(item.get('last_updated'), started)
         changed = is_new or is_new_device or state_changed or last_changed_updated or last_updated_updated
         if not changed:
             continue
+
+        priority = candidate_entity_priority(role, item)
+        if priority <= -50:
+            continue
+        discovery_match = role_candidate_matches(role, item, allow_missing_device_class=True, allow_device_class_mismatch=is_new_device or is_new)
+        state_match = role_state_matches(role, item)
+        if not discovery_match and not state_match:
+            continue
+
         confidence = 0
         reasons = []
         if is_new_device:
-            confidence += 60
+            confidence += 65
             reasons.append('new_device')
         if is_new:
             confidence += 45
             reasons.append('new_entity')
         if state_changed:
-            confidence += 40
+            confidence += 35
             reasons.append('state_changed')
         if last_changed_updated or last_updated_updated:
-            confidence += 30
+            confidence += 25
             reasons.append('timestamp_updated')
         if class_matches(role, item.get('device_class')):
-            confidence += 25
+            confidence += 30
             reasons.append('device_class_match')
-        elif role_keyword_matches(role, item, include_model=is_new or is_new_device):
-            confidence += 25
+        elif role_keyword_matches(role, item, include_model=True):
+            confidence += 20
             reasons.append('role_keyword_match')
+        if state_match:
+            confidence += 20
+            reasons.append('state_entity_match')
         if room_matches(room, entity_id, item.get('friendly_name')):
             confidence += 20
             reasons.append('room_match')
         if domain_matches(role, item.get('domain')):
             confidence += 10
             reasons.append('domain_match')
-        priority = candidate_entity_priority(role, item)
         confidence += priority
         if priority:
             reasons.append(f'entity_priority_{priority}')
-        if confidence:
+        state_value = str(item.get('state') or '').lower()
+        if state_value in {'unknown', 'unavailable'}:
+            confidence -= 10
+            reasons.append(f'state_{state_value}')
+        if confidence >= 40:
             scored.append({**item, 'confidence': confidence, 'reasons': reasons, 'is_new': is_new, 'is_new_device': is_new_device, 'entity_priority': priority})
-    return sorted(scored, key=lambda x: (bool(x.get('is_new_device')), bool(x.get('is_new')), x['confidence'], x.get('entity_priority') or 0, parse_time(x.get('last_updated')).timestamp()), reverse=True)
+    return sorted(scored, key=lambda x: (bool(x.get('is_new_device')), role_state_priority(role, x), bool(x.get('is_new')), x['confidence'], parse_time(x.get('last_updated')).timestamp()), reverse=True)
 
 
 def count_changed_entities(baseline: list[dict[str, Any]], current: list[dict[str, Any]], started_at: str | datetime) -> int:
@@ -1118,6 +1127,17 @@ def testable_state_entity(item: dict[str, Any]) -> bool:
     if any(term in haystack for term in ['identifizieren', 'identify', 'firmware']):
         return False
     return domain in {'binary_sensor', 'sensor', 'lock', 'switch'}
+
+
+def sensor_reachable_status(state: dict[str, Any] | None) -> bool | None:
+    if not state:
+        return False
+    value = str(state.get('state') or '').strip().lower()
+    if value == 'unavailable':
+        return False
+    if value in {'', 'unknown', 'none'}:
+        return None
+    return True
 
 
 def state_is_reachable(value: Any) -> bool:

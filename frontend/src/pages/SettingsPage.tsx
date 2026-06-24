@@ -473,9 +473,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                           </div>
                           <div className="sc-sensor-health">
                             {isDoorContactSensor(sensor) && <DoorContactStatus sensor={sensor} />}
-                            <span className={sensor.reachable === false ? 'offline' : 'online'}>
+                            <span className={sensor.reachable === false ? 'offline' : sensor.reachable == null ? 'unknown' : 'online'}>
                               {sensor.reachable === false ? <WifiOff size={17} /> : <CheckCircle2 size={17} />}
-                              {sensor.reachable === false ? 'Nicht erreichbar' : 'Erreichbar'}
+                              {sensor.reachable === false ? 'Nicht erreichbar' : sensor.reachable == null ? 'In HA vorhanden' : 'Erreichbar'}
                             </span>
                             <span className={batteryClass(sensor.battery_level)}>
                               <Battery size={17} />

@@ -2027,6 +2027,12 @@ button:disabled {
   color: var(--sc-red);
 }
 
+.sc-sensor-health .unknown {
+  background: #f7f7f2;
+  border-color: #dadfd6;
+  color: #596a61;
+}
+
 .sc-sensor-health .battery {
   background: #f4faf7;
   border-color: #d5e9df;
