@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from dotenv import load_dotenv
 
@@ -73,6 +74,83 @@ class MqttService:
             try:
                 client.disconnect()
                 logger.info("MQTT broker disconnected", extra={"component": "mqtt", "host": self.host, "port": self.port})
+            except Exception:
+                logger.debug("MQTT disconnect failed", exc_info=True, extra={"component": "mqtt"})
+
+    def request_response(
+        self,
+        request_topic: str,
+        response_topic: str,
+        payload: dict[str, Any] | str | int | float | bool,
+        timeout: float = 8.0,
+        response_filter: Callable[[Any], bool] | None = None,
+    ) -> MqttMessage:
+        clean_request_topic = str(request_topic or "").strip()
+        clean_response_topic = str(response_topic or "").strip()
+        if not clean_request_topic or not clean_response_topic:
+            raise RuntimeError("MQTT request and response topics are required.")
+        client = self._client()
+        body = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+        response_event = threading.Event()
+        connected_event = threading.Event()
+        response: dict[str, MqttMessage] = {}
+        started = time.perf_counter()
+        logger.debug(
+            "MQTT request-response start",
+            extra={"component": "mqtt", "request_topic": clean_request_topic, "response_topic": clean_response_topic, "timeout": timeout},
+        )
+
+        def on_connect(client, userdata, flags, reason_code, properties=None):  # type: ignore[no-untyped-def]
+            client.subscribe(clean_response_topic)
+            connected_event.set()
+            logger.debug("MQTT response subscribed", extra={"component": "mqtt", "topic": clean_response_topic, "reason_code": str(reason_code)})
+
+        def on_message(client, userdata, message):  # type: ignore[no-untyped-def]
+            raw = message.payload.decode("utf-8", errors="replace")
+            try:
+                parsed: Any = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = raw
+            if response_filter and not response_filter(parsed):
+                logger.debug("MQTT response ignored", extra={"component": "mqtt", "topic": message.topic})
+                return
+            response["message"] = MqttMessage(topic=message.topic, payload=parsed, raw_payload=raw)
+            if is_debug_logging():
+                logger.debug("MQTT response received", extra={"component": "mqtt", "topic": message.topic, "payload": parsed})
+            response_event.set()
+
+        client.on_connect = on_connect
+        client.on_message = on_message
+        try:
+            client.connect(self.host, self.port, keepalive=20)
+            client.loop_start()
+            if not connected_event.wait(timeout=min(timeout, 3.0)):
+                raise TimeoutError(f"MQTT response subscription timed out for {clean_response_topic}")
+            if is_debug_logging():
+                logger.debug("MQTT request payload", extra={"component": "mqtt", "topic": clean_request_topic, "payload": payload})
+            result = client.publish(clean_request_topic, body, retain=False)
+            result.wait_for_publish(timeout=min(timeout, 5.0))
+            if result.rc != 0:
+                raise RuntimeError(f"MQTT publish failed with rc={result.rc}")
+            if not response_event.wait(timeout=timeout):
+                raise TimeoutError(f"MQTT response timed out for {clean_response_topic}")
+            logger.debug(
+                "MQTT request-response completed",
+                extra={
+                    "component": "mqtt",
+                    "request_topic": clean_request_topic,
+                    "response_topic": clean_response_topic,
+                    "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+                },
+            )
+            return response["message"]
+        except Exception:
+            logger.exception("MQTT request-response failed", extra={"component": "mqtt", "request_topic": clean_request_topic, "response_topic": clean_response_topic})
+            raise
+        finally:
+            try:
+                client.loop_stop()
+                client.disconnect()
             except Exception:
                 logger.debug("MQTT disconnect failed", exc_info=True, extra={"component": "mqtt"})
 

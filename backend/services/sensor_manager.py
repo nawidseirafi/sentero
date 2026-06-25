@@ -176,6 +176,26 @@ class SensorManager:
                 "network": network,
             }
 
+    def provisioning_status(self) -> dict[str, Any]:
+        network = self.network_settings(public=True)
+        return {
+            "implemented": False,
+            "status": "prepared",
+            "message": "WLAN-Sensor-Provisioning ist vorbereitet, aber noch nicht vollständig implementiert.",
+            "network_configured": bool(network.get("configured")),
+            "available_steps": [
+                "Netzwerkdaten speichern",
+                "MQTT-Konfiguration aus Sentero-Konfiguration lesen",
+            ],
+            "missing_steps": [
+                "Direkte Verbindung zum Sensor im Einrichtungsmodus",
+                "POST /api/provision an den Sensor",
+                "Warten auf MQTT-Verfügbarkeit",
+                "Automatische Registrierung als Sentero-Sensor",
+                "Produktorientierter Wizard-Schritt für WLAN-Sensoren",
+            ],
+        }
+
     def mapping_update_room(self, sensor_id: str, room_id: str) -> dict[str, Any]:
         # Persistent device-model assignment is prepared in SenteroSensorService.
         return {"status": "prepared", "sensor_id": sensor_id, "room_id": room_id}

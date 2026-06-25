@@ -163,6 +163,15 @@ export type SenteroSensorNetworkSettings = {
   configured: boolean;
 };
 
+export type SenteroSensorProvisioningStatus = {
+  implemented: boolean;
+  status: string;
+  message: string;
+  network_configured: boolean;
+  available_steps: string[];
+  missing_steps: string[];
+};
+
 export type SenteroCandidates = {
   session_id: number;
   status: 'signal_detected' | 'no_signal_detected' | 'waiting_for_signal' | string;
@@ -375,6 +384,7 @@ export const api = {
   saveSenteroSensorNetwork: (payload: { wifi_ssid?: string; wifi_password?: string }) =>
     request<{ status: string; network: SenteroSensorNetworkSettings }>('/api/sentero/sensors/network', { method: 'POST', body: JSON.stringify(payload) }),
   testSenteroSensorNetwork: () => request<{ ok: boolean; message: string }>('/api/sentero/sensors/network/test', { method: 'POST' }),
+  senteroSensorProvisioningStatus: () => request<SenteroSensorProvisioningStatus>('/api/sentero/sensors/provisioning/status'),
   senteroDiscoveryCandidates: (sessionId: number, dev = false) =>
     request<SenteroCandidates>(`/api/sentero/setup/discovery/${sessionId}/candidates${dev ? '?dev=true' : ''}`),
   confirmSenteroDiscovery: (sessionId: number, entityId: string, payload?: { name?: string; room?: string }) =>

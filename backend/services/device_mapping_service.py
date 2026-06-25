@@ -354,13 +354,10 @@ class DeviceMappingService:
         desired_name = str(name or '').strip() or attrs.get('friendly_name') or entity.get('friendly_name') or 'Sensor'
         source = str(entity.get('source') or entity.get('platform') or '').strip()
         mqtt_candidate = source in {'zigbee2mqtt', 'mqtt'} or bool(entity.get('source_ref') or entity.get('topic'))
-        metadata_detail = self._apply_home_assistant_metadata(entity, desired_name, target_room) if not mqtt_candidate else {
-            'ok': True,
-            'provider': source or 'zigbee2mqtt',
-            'source_ref': entity.get('source_ref') or entity.get('topic') or entity.get('entity_id'),
-            'updated': [],
-        }
-        source_ref = str(entity.get('source_ref') or entity.get('topic') or entity.get('entity_id') or entity_id).strip()
+        metadata_detail = self._apply_home_assistant_metadata(entity, desired_name, target_room)
+        if mqtt_candidate and not metadata_detail.get('ok'):
+            raise RuntimeError(str(metadata_detail.get('message') or metadata_detail.get('reason') or 'Sensor konnte nicht umbenannt werden.'))
+        source_ref = str(metadata_detail.get('source_ref') or entity.get('source_ref') or entity.get('topic') or entity.get('entity_id') or entity_id).strip()
         payload = {
             'role': session['target_role'],
             'room': target_room,
@@ -424,6 +421,23 @@ class DeviceMappingService:
         mapped = self.get_role(role, dev=True)
         if not mapped:
             raise ValueError('sensor role not found')
+        source = str(mapped.get('source') or '').strip()
+        external_sensor = source in {'zigbee2mqtt', 'mqtt'} or str(mapped.get('entity_id') or '').startswith('zigbee2mqtt/')
+        removal = self._remove_zigbee_device(mapped) if external_sensor else {
+            'ok': True,
+            'provider': source or 'sentero',
+            'reason': 'local_mapping_removed',
+            'message': 'Sensor wurde aus Sentero entfernt.',
+            'external_remove': 'not_applicable',
+            'entity_id': mapped.get('entity_id'),
+            'device_id': mapped.get('device_id'),
+        }
+        if not removal.get('ok'):
+            logger.warning(
+                "Sentero sensor delete blocked because external removal failed",
+                extra={"component": "device_mapping", "role": role, "provider": removal.get('provider'), "reason": removal.get('reason')},
+            )
+            raise RuntimeError(str(removal.get('message') or 'Sensor konnte nicht aus dem Sensornetzwerk entfernt werden.'))
         with self.connect() as con:
             timestamp = now()
             device_id = str(mapped.get('device_id') or '').strip()
@@ -432,16 +446,12 @@ class DeviceMappingService:
             else:
                 con.execute('update sensor_roles set active = 0, updated_at = ? where role = ?', (timestamp, role))
             con.commit()
-        removal = {
-            'ok': True,
-            'provider': str(mapped.get('source') or 'sentero'),
-            'reason': 'local_mapping_removed',
-            'message': 'Sensor wurde aus Sentero entfernt.',
-            'external_remove': 'skipped',
-            'entity_id': mapped.get('entity_id'),
-            'device_id': mapped.get('device_id'),
-        }
-        logger.info("Sentero sensor mapping deleted role=%s entity=%s device=%s", role, mapped.get('entity_id'), mapped.get('device_id'))
+        logger.info(
+            "Sentero sensor mapping deleted role=%s entity=%s device=%s",
+            role,
+            mapped.get('entity_id'),
+            mapped.get('device_id'),
+        )
         return {'deleted': True, 'role': role, 'removal': removal}
 
     def rename_role(self, role: str, name: str) -> dict[str, Any]:
@@ -557,24 +567,20 @@ class DeviceMappingService:
     def _remove_zigbee_device(self, mapped: dict[str, Any]) -> dict[str, Any]:
         entity_id = str(mapped.get('entity_id') or '').strip()
         device_id = str(mapped.get('device_id') or '').strip()
-        states = self.snapshot()
+        try:
+            states = self.snapshot()
+        except Exception:
+            logger.exception("Zigbee2MQTT remove snapshot failed", extra={"component": "device_mapping", "source_ref": entity_id, "device_id": device_id})
+            states = []
         device_entities = [item for item in states if device_id and str(item.get('device_id') or '') == device_id]
         if not device_entities:
-            device_entities = [item for item in states if str(item.get('entity_id') or '') == entity_id]
-        if not device_entities:
-            return {
-                'ok': True,
-                'provider': 'zigbee2mqtt' if self.uses_mqtt_source() else 'home_assistant',
-                'reason': 'already_missing',
-                'message': 'Geraet war bereits nicht mehr vorhanden.',
-                'entity_id': entity_id,
-                'device_id': device_id or None,
-            }
+            mapped_identities = mqtt_identity_values(mapped)
+            device_entities = [item for item in states if mapped_identities.intersection(mqtt_identity_values(item))]
         identifiers = []
         for item in device_entities:
             identifiers.extend(parse_identifiers(item.get('identifiers')))
         ieee = first_identifier_value(identifiers, {'zha'})
-        mqtt_ids = zigbee2mqtt_identifiers(identifiers, device_entities)
+        mqtt_ids = zigbee2mqtt_identifiers(identifiers, [mapped, *device_entities])
         attempts: list[dict[str, Any]] = []
         for provider in zigbee_provider_order():
             if self.uses_mqtt_source() and provider == 'zha':
@@ -592,10 +598,12 @@ class DeviceMappingService:
             if provider == 'zigbee2mqtt':
                 for mqtt_id in mqtt_ids:
                     try:
-                        response = self._mqtt_publish(
-                            self._zigbee2mqtt_topic('bridge/request/device/remove'),
-                            {'id': mqtt_id, 'force': True},
+                        response = self._zigbee2mqtt_request(
+                            'device/remove',
+                            {'id': mqtt_id},
+                            lambda payload, wanted=mqtt_id: z2m_response_matches_id(payload, wanted),
                         )
+                        logger.info("Sensor removed from Zigbee2MQTT", extra={"component": "device_mapping", "device_id": mqtt_id, "source_ref": entity_id})
                         return {'ok': True, 'provider': 'zigbee2mqtt', 'id': mqtt_id, 'response': response, 'attempts': attempts}
                     except Exception as exc:
                         attempts.append({'provider': 'zigbee2mqtt', 'id': mqtt_id, 'error': str(exc)})
@@ -829,6 +837,7 @@ class DeviceMappingService:
                 'room': room,
                 'updated': ['zigbee2mqtt'] if rename.get('ok') else [],
                 'ok': bool(rename.get('ok')),
+                'source_ref': rename.get('source_ref') or entity.get('source_ref') or entity.get('topic') or entity_id,
                 'zigbee2mqtt': rename,
             }
         area_id = self._ensure_home_assistant_area(room)
@@ -875,18 +884,37 @@ class DeviceMappingService:
         identifiers = parse_identifiers(entity.get('identifiers'))
         candidates = zigbee2mqtt_identifiers(identifiers, [entity])
         source_id = next((value for value in candidates if re.fullmatch(r'0x[0-9a-fA-F]{12,16}', value)), None)
+        source_id = source_id or (candidates[0] if candidates else None)
         if not source_id:
             return {'ok': False, 'reason': 'no_zigbee2mqtt_id', 'candidates': candidates}
         try:
-            response = self._mqtt_publish(
-                self._zigbee2mqtt_topic('bridge/request/device/rename'),
+            response = self._zigbee2mqtt_request(
+                'device/rename',
                 {'from': source_id, 'to': clean_name, 'homeassistant_rename': not self.uses_mqtt_source()},
+                lambda payload: z2m_rename_response_matches(payload, source_id, clean_name),
             )
-            logger.info("Zigbee2MQTT rename sent", extra={"component": "device_mapping", "device_id": source_id, "source_ref": entity.get('entity_id')})
-            return {'ok': True, 'provider': 'zigbee2mqtt', 'from': source_id, 'to': clean_name, 'response': response}
+            source_ref = self._zigbee2mqtt_topic(clean_name)
+            logger.info("Sensor renamed in Zigbee2MQTT", extra={"component": "device_mapping", "device_id": source_id, "source_ref": source_ref})
+            return {'ok': True, 'provider': 'zigbee2mqtt', 'from': source_id, 'to': clean_name, 'source_ref': source_ref, 'response': response}
         except Exception as exc:
             logger.warning("Zigbee2MQTT rename failed", extra={"component": "device_mapping", "device_id": source_id, "source_ref": entity.get('entity_id')})
-            return {'ok': False, 'reason': 'rename_failed', 'from': source_id, 'to': clean_name, 'error': str(exc)}
+            return {'ok': False, 'reason': 'rename_failed', 'message': 'Sensor konnte im Sensornetzwerk nicht umbenannt werden.', 'from': source_id, 'to': clean_name, 'error': str(exc)}
+
+    def _zigbee2mqtt_request(self, action: str, payload: dict[str, Any], response_filter) -> dict[str, Any]:
+        request_topic = self._zigbee2mqtt_topic(f'bridge/request/{action}')
+        response_topic = self._zigbee2mqtt_topic(f'bridge/response/{action}')
+        logger.debug(
+            "Zigbee2MQTT request",
+            extra={"component": "device_mapping", "topic": request_topic, "action": action, "payload": payload},
+        )
+        response = self.mqtt.request_response(request_topic, response_topic, payload, timeout=8.0, response_filter=response_filter)
+        response_payload = response.payload if isinstance(response.payload, dict) else {}
+        if response_payload.get('status') != 'ok':
+            message = str(response_payload.get('error') or response_payload or 'Zigbee2MQTT request failed')
+            logger.warning("Zigbee2MQTT request not confirmed", extra={"component": "device_mapping", "action": action, "response": response_payload})
+            raise RuntimeError(message)
+        logger.debug("Zigbee2MQTT response", extra={"component": "device_mapping", "topic": response_topic, "action": action, "response": response_payload})
+        return response_payload
 
     def _open_zigbee_permit_join(self, duration: int) -> dict[str, Any]:
         attempts: list[dict[str, Any]] = []
@@ -1580,7 +1608,7 @@ def zigbee2mqtt_identifiers(identifiers: list[tuple[str, str]], entities: list[d
             continue
         values.extend(expand_zigbee2mqtt_id(value))
     for item in entities:
-        for field in ('unique_id', 'entity_id', 'device_name', 'friendly_name'):
+        for field in ('unique_id', 'entity_id', 'device_id', 'device_name', 'friendly_name', 'source_ref', 'topic'):
             values.extend(expand_zigbee2mqtt_id(item.get(field)))
     return dedupe([value for value in values if value])
 
@@ -1600,7 +1628,34 @@ def expand_zigbee2mqtt_id(value: Any) -> list[str]:
     result = [text]
     if '.' in text:
         result.append(text.rsplit('.', 1)[-1])
+    if '/' in text:
+        result.append(text.rsplit('/', 1)[-1])
     return result
+
+
+def z2m_response_matches_id(payload: Any, wanted: str) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get('status') == 'error':
+        return True
+    wanted_values = {value.lower() for value in expand_zigbee2mqtt_id(wanted)}
+    data = payload.get('data') if isinstance(payload.get('data'), dict) else {}
+    response_id = str(data.get('id') or '').strip()
+    if not response_id:
+        return bool(payload.get('status'))
+    return bool(wanted_values.intersection({value.lower() for value in expand_zigbee2mqtt_id(response_id)}))
+
+
+def z2m_rename_response_matches(payload: Any, source_id: str, clean_name: str) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get('status') == 'error':
+        return True
+    data = payload.get('data') if isinstance(payload.get('data'), dict) else {}
+    response_to = str(data.get('to') or '').strip()
+    if response_to:
+        return response_to == clean_name
+    return bool(payload.get('status'))
 
 
 def dedupe(values: list[str]) -> list[str]:

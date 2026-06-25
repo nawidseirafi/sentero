@@ -355,6 +355,11 @@ def sentero_sensor_manager_test_network():
     return get_services().sensor_manager.test_network_settings()
 
 
+@router.get("/sensors/provisioning/status", tags=[TAG_SENSORS])
+def sentero_sensor_manager_provisioning_status():
+    return get_services().sensor_manager.provisioning_status()
+
+
 @router.post("/devices/{device_id}/assign-room", tags=[TAG_DEVICES])
 def sentero_device_assign_room(device_id: str, payload: DeviceAssignRoomPayload):
     return get_services().sensors.assign_room(device_id, payload.room_id)

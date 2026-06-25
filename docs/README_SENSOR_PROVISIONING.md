@@ -1,5 +1,32 @@
 # Provisioning-Protokoll für Sentero WLAN-Sensoren
 
+## Implementierungsstatus in Sentero
+
+Stand aktuell: **vorbereitet, aber noch nicht vollständig produktiv
+implementiert**.
+
+Bereits vorhanden:
+
+- Netzwerkeinstellungen in Sentero speichern:
+  - WLAN-SSID
+  - WLAN-Passwort
+- MQTT-Zugangsdaten werden aus `.env`/`config/sentero.yaml` gelesen.
+- Status-Endpunkt:
+  - `GET /api/sentero/sensors/provisioning/status`
+- Produktlogik und Dokumentation für das gewünschte Provisioning-Protokoll.
+
+Noch offen:
+
+- Direkte Verbindung vom Sentero Backend zum Sensor im Provisioning-Modus.
+- Senden von `POST /api/provision` an den temporären Sensor-Endpunkt.
+- Übergabe von WLAN-, MQTT-, Topic- und Zeitzonen-Konfiguration an den Sensor.
+- Warten auf MQTT-Availability und ersten State nach Sensor-Neustart.
+- Automatische Registrierung als Sentero Device.
+- Wizard-Schritt für WLAN-Sensoren mit produktnahen Texten.
+
+Bis diese Punkte umgesetzt sind, ist WLAN/ESP32-Provisioning **nicht als
+fertig zu betrachten**.
+
 
 
 ## Ziel
