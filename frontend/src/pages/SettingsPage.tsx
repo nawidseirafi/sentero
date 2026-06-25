@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Battery, CheckCircle2, DoorClosed, DoorOpen, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plus, Save, Send, ShieldAlert, Trash2, UserRound, Wifi, WifiOff, X } from 'lucide-react';
+import type React from 'react';
+import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, DoorClosed, DoorOpen, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plus, Save, Send, ShieldAlert, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
 import { api, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus } from '@shared/api/client';
 import { UpdatePanel } from '../components/UpdatePanel';
 import { useSenteroAuth } from '../auth/SenteroAuthContext';
@@ -15,14 +16,14 @@ const roomLabels: Record<string, string> = {
   entrance: 'Eingang',
 };
 
-const settingsTabs: Array<{ tab: SenteroSettingsTab; label: string; shortLabel: string }> = [
-  { tab: 'profile', label: 'Profil', shortLabel: 'Profil' },
-  { tab: 'sensors', label: 'Räume & Sensoren', shortLabel: 'Räume' },
-  { tab: 'network', label: 'Netzwerk', shortLabel: 'Netz' },
-  { tab: 'contacts', label: 'Vertraute Personen', shortLabel: 'Personen' },
-  { tab: 'notifications', label: 'Benachrichtigungen', shortLabel: 'Benachr.' },
-  { tab: 'account', label: 'Konto & Zugriff', shortLabel: 'Konto' },
-  { tab: 'system', label: 'System', shortLabel: 'System' },
+const settingsTabs: Array<{ tab: SenteroSettingsTab; label: string; shortLabel: string; icon: React.ElementType }> = [
+  { tab: 'profile', label: 'Profil', shortLabel: 'Profil', icon: UserRound },
+  { tab: 'sensors', label: 'Räume & Sensoren', shortLabel: 'Räume', icon: Home },
+  { tab: 'network', label: 'Netzwerk', shortLabel: 'Netz', icon: Wifi },
+  { tab: 'contacts', label: 'Vertraute Personen', shortLabel: 'Personen', icon: Users },
+  { tab: 'notifications', label: 'Benachrichtigungen', shortLabel: 'Benachr.', icon: Bell },
+  { tab: 'account', label: 'Konto & Zugriff', shortLabel: 'Konto', icon: KeyRound },
+  { tab: 'system', label: 'System', shortLabel: 'System', icon: HardDrive },
 ];
 
 export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
@@ -32,6 +33,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [saved, setSaved] = useState('');
   const [error, setError] = useState('');
   const [resetText, setResetText] = useState('');
+  const [mobileShowList, setMobileShowList] = useState(true);
   const [profile, setProfile] = useState({ name: '', birthYear: '', notes: '' });
   const [contactForm, setContactForm] = useState(emptyContactForm());
   const [contactFormOpen, setContactFormOpen] = useState(false);
@@ -442,24 +444,56 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     }
   }
 
+  const activeTabMeta = settingsTabs.find((item) => item.tab === activeTab);
+
+  function mobileNavigateTab(tab: SenteroSettingsTab) {
+    setMobileShowList(false);
+    navigateTab(tab);
+  }
+
   return (
     <section className="sc-page sc-settings">
       {saved && <div className="sc-toast" role="status">{saved}</div>}
       {error && <div className="sc-form-errors" role="alert"><p>{error}</p></div>}
-      <nav className="sc-settings-tabs" aria-label="Einstellungsbereiche">
-        {settingsTabs.map((item) => (
+
+      {/* Mobile: Übersichtsliste */}
+      {mobileShowList && (
+        <div className="sc-settings-mobile-list sc-mobile-only">
+          <h1>Einstellungen</h1>
+          <nav aria-label="Einstellungsbereiche">
+            {settingsTabs.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button key={item.tab} type="button" onClick={() => mobileNavigateTab(item.tab)}>
+                  <Icon size={22} aria-hidden="true" />
+                  <span>{item.label}</span>
+                  <ChevronRight size={18} aria-hidden="true" />
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+      )}
+
+      {/* Mobile: Zurück-Button und Seitentitel wenn Tab aktiv */}
+      {!mobileShowList && activeTabMeta && (
+        <div className="sc-settings-mobile-header sc-mobile-only">
           <button
-            key={item.tab}
-            className={activeTab === item.tab ? 'active' : ''}
+            className="sc-settings-back"
             type="button"
-            onClick={() => navigateTab(item.tab)}
-            aria-current={activeTab === item.tab ? 'page' : undefined}
+            onClick={() => setMobileShowList(true)}
+            aria-label="Zurück zu Einstellungen"
           >
-            <span className="full">{item.label}</span>
-            <span className="short">{item.shortLabel}</span>
+            <ChevronLeft size={20} aria-hidden="true" />
+            <span>Einstellungen</span>
           </button>
-        ))}
-      </nav>
+          <h1>{activeTabMeta.label}</h1>
+        </div>
+      )}
+
+      {/* Tab-Inhalte – auf Mobile ausgeblendet wenn Liste sichtbar */}
+      <div className={mobileShowList ? 'sc-settings-content sc-mobile-hidden' : 'sc-settings-content'}>
+
 
       {activeTab === 'profile' && (
         <section className="sc-panel sc-settings-panel">
@@ -777,6 +811,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
           </div>
         </section>
       )}
+      </div>
     </section>
   );
 }

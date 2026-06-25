@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Bell, Home, KeyRound, LogOut, Settings, ShieldCheck, Sparkles, UserRound, Users, Wifi } from 'lucide-react';
+import { Bell, Home, KeyRound, LogOut, Settings, ShieldCheck, Sparkles, UserRound, Users, Wifi, HardDrive} from 'lucide-react';
 import type { SenteroRoute, SenteroRouteName, SenteroSettingsTab } from '../routes/routes';
 import { senteroNavigation } from '../navigation/navigation';
 
@@ -20,11 +20,11 @@ const navIcons = {
 const settingsItems: Array<{ tab: SenteroSettingsTab; label: string; icon: typeof UserRound }> = [
   { tab: 'profile', label: 'Profil', icon: UserRound },
   { tab: 'sensors', label: 'Räume & Sensoren', icon: Home },
-  { tab: 'network', label: 'Netzwerk', icon: Wifi },
   { tab: 'contacts', label: 'Vertraute Personen', icon: Users },
   { tab: 'notifications', label: 'Benachrichtigungen', icon: Bell },
+  { tab: 'network', label: 'Netzwerk', icon: Wifi },
   { tab: 'account', label: 'Konto & Zugriff', icon: KeyRound },
-  { tab: 'system', label: 'System', icon: Wifi },
+  { tab: 'system', label: 'System', icon: HardDrive },
 ];
 
 export function SenteroShell({ route, onNavigate, onLogout, children }: Props) {
