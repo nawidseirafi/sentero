@@ -3437,7 +3437,7 @@ button:disabled {
 
 /* Calmer family dashboard */
 .sc-app-shell {
-  grid-template-columns: 236px minmax(0, 1fr);
+
 }
 
 .sc-sidebar {
