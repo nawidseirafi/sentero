@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import requests
+from backend.config import config_str
 from typing import Any
 
 from backend.logging_config import get_logger
@@ -149,10 +151,30 @@ class SensorManager:
 
     def test_network_settings(self) -> dict[str, Any]:
         network = self.network_settings(public=True)
-        return {
-            "ok": bool(network.get("configured")),
-            "message": "WLAN-Daten sind vorhanden." if network.get("configured") else "Bitte WLAN-Daten speichern.",
-        }
+        if not network.get("configured"):
+            return {
+                "ok": False,
+                "message": "Bitte zuerst die Netzwerkeinstellungen konfigurieren.",
+            }
+        try:
+            update_url = config_str("updates.base_url").strip().rstrip("/")
+            response = requests.get(update_url, timeout=5)
+            response.raise_for_status()
+            return {
+                "ok": True,
+                "message": "Netzwerkkonfiguration gültig. Update-Server erreichbar.",
+                "network": network,
+            }
+        except Exception:
+            logger.exception(
+                "Update server test failed",
+                extra={"component": "sensor_manager"},
+            )
+            return {
+                "ok": False,
+                "message": "Netzwerkkonfiguration vorhanden, Update-Server jedoch nicht erreichbar.",
+                "network": network,
+            }
 
     def mapping_update_room(self, sensor_id: str, room_id: str) -> dict[str, Any]:
         # Persistent device-model assignment is prepared in SenteroSensorService.
