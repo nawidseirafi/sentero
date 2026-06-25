@@ -15,6 +15,7 @@ load_dotenv(ENV_PATH)
 SUPPORTED_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 STANDARD_RECORD_KEYS = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
 SENSITIVE_KEYS = {"password", "token", "access_token", "api_key", "authorization"}
+THIRD_PARTY_LOGGERS = ("httpx", "httpcore", "websockets", "urllib3", "paho", "paho.mqtt")
 
 
 class SenteroFormatter(logging.Formatter):
@@ -44,6 +45,9 @@ def configure_logging() -> None:
     for handler in root.handlers:
         handler.setFormatter(SenteroFormatter())
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING if level_name != "DEBUG" else logging.INFO)
+    third_party_level = logging.DEBUG if level_name == "DEBUG" else logging.WARNING
+    for logger_name in THIRD_PARTY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(third_party_level)
     get_logger(__name__).info("Logging configured", extra={"component": "logging", "log_level": level_name})
 
 
