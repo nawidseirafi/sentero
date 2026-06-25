@@ -76,6 +76,11 @@ class SensorNetworkPayload(BaseModel):
     wifi_password: str | None = None
 
 
+class Esp32ProvisioningStartPayload(BaseModel):
+    room_id: str
+    display_name: str
+
+
 class ConfirmPayload(BaseModel):
     entity_id: str
     name: str | None = None
@@ -358,6 +363,16 @@ def sentero_sensor_manager_test_network():
 @router.get("/sensors/provisioning/status", tags=[TAG_SENSORS])
 def sentero_sensor_manager_provisioning_status():
     return get_services().sensor_manager.provisioning_status()
+
+
+@router.post("/sensors/provisioning/esp32/start", tags=[TAG_SENSORS])
+def sentero_sensor_manager_start_esp32_provisioning(payload: Esp32ProvisioningStartPayload):
+    try:
+        return get_services().sensor_manager.start_esp32_provisioning(payload.room_id, payload.display_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
 
 
 @router.post("/devices/{device_id}/assign-room", tags=[TAG_DEVICES])

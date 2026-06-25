@@ -109,6 +109,26 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertEqual(contact["topic"], "zigbee2mqtt/Haustuer")
         self.assertEqual(contact["payload_key"], "contact")
 
+    def test_sentero_c1001_snapshot_normalizes_presence_capabilities(self) -> None:
+        mqtt = SnapshotMqtt([
+            FakeMessage(
+                "sentero/c1001-living-01/state",
+                {"presence": True, "fall_detected": False, "breathing_detected": True, "respiration_rate": 14, "battery": 98, "signal_quality": 82},
+            )
+        ])
+        with patch.dict(os.environ, {"SENTERO_MQTT_BOOTSTRAP_EVENTS": ""}, clear=False):
+            source = Zigbee2MqttSensorSource(mqtt=mqtt)
+            rows = source.snapshot()
+
+        by_key = {row["payload_key"]: row for row in rows}
+        self.assertEqual(by_key["presence"]["source"], "mqtt")
+        self.assertEqual(by_key["presence"]["source_ref"], "sentero/c1001-living-01/state")
+        self.assertEqual(by_key["fall_detected"]["device_class"], "fall_detected")
+        self.assertEqual(by_key["breathing_detected"]["device_class"], "breathing_detected")
+        self.assertEqual(by_key["respiration_rate"]["state"], "14")
+        self.assertEqual(by_key["battery"]["state"], "98")
+        self.assertEqual(by_key["signal_quality"]["state"], "82")
+
     def test_device_mapping_uses_direct_mqtt_for_zigbee_permit_join(self) -> None:
         fake = FakeMqtt()
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"SENTERO_SENSOR_SOURCE": "mqtt"}, clear=False):

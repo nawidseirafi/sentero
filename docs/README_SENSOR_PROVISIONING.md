@@ -2,8 +2,7 @@
 
 ## Implementierungsstatus in Sentero
 
-Stand aktuell: **vorbereitet, aber noch nicht vollständig produktiv
-implementiert**.
+Stand aktuell: **Sentero-seitig produktiv testbar implementiert**.
 
 Bereits vorhanden:
 
@@ -13,19 +12,25 @@ Bereits vorhanden:
 - MQTT-Zugangsdaten werden aus `.env`/`config/sentero.yaml` gelesen.
 - Status-Endpunkt:
   - `GET /api/sentero/sensors/provisioning/status`
-- Produktlogik und Dokumentation für das gewünschte Provisioning-Protokoll.
+- Start-Endpunkt:
+  - `POST /api/sentero/sensors/provisioning/esp32/start`
+- Direkte HTTP-Übergabe an den Sensor:
+  - `POST /api/provision`
+- Warten auf MQTT-Availability und ersten MQTT-State:
+  - `sentero/<device_id>/availability`
+  - `sentero/<device_id>/state`
+  - alternativ `c1001/<device_id>/state`
+- Automatische Registrierung als Sentero-Präsenzsensor.
+- Produktorientierter Wizard-Flow für Präsenzsensoren.
 
 Noch offen:
 
-- Direkte Verbindung vom Sentero Backend zum Sensor im Provisioning-Modus.
-- Senden von `POST /api/provision` an den temporären Sensor-Endpunkt.
-- Übergabe von WLAN-, MQTT-, Topic- und Zeitzonen-Konfiguration an den Sensor.
-- Warten auf MQTT-Availability und ersten State nach Sensor-Neustart.
-- Automatische Registrierung als Sentero Device.
-- Wizard-Schritt für WLAN-Sensoren mit produktnahen Texten.
-
-Bis diese Punkte umgesetzt sind, ist WLAN/ESP32-Provisioning **nicht als
-fertig zu betrachten**.
+- Hardwareseitiger Sensor muss das unten beschriebene HTTP-Protokoll
+  implementieren.
+- Der Sensor muss nach erfolgreicher Provisionierung Availability und State
+  per MQTT veröffentlichen.
+- Optionaler sicherer Geräte-Token-Austausch ist vorbereitet, aber noch kein
+  verpflichtender Produktionsstandard.
 
 
 
@@ -128,6 +133,65 @@ Beispiel:
 }
 ```
 
+## Sentero API
+
+### Status
+
+    GET /api/sentero/sensors/provisioning/status
+
+### Präsenzsensor einrichten
+
+    POST /api/sentero/sensors/provisioning/esp32/start
+
+Request:
+
+``` json
+{
+  "room_id": "living_room",
+  "display_name": "Wohnzimmer Präsenzsensor"
+}
+```
+
+Erfolgreiche Response:
+
+``` json
+{
+  "ok": true,
+  "device": {
+    "id": "c1001-wohnzimmer-01",
+    "name": "Wohnzimmer Präsenzsensor",
+    "type": "presence_radar",
+    "room_id": "living_room",
+    "source": "mqtt"
+  },
+  "message": "Präsenzsensor erfolgreich eingerichtet."
+}
+```
+
+## Sentero Konfiguration
+
+Nicht-sensitive Werte stehen in `config/sentero.yaml`:
+
+``` yaml
+esp32:
+  topic_prefix: sentero
+  provisioning_url: http://192.168.4.1/api/provision
+  provisioning_timeout: 10
+  mqtt_wait_timeout: 30
+```
+
+Umgebungsvariablen können diese Werte überschreiben:
+
+``` dotenv
+SENTERO_ESP32_PROVISIONING_URL=http://192.168.4.1/api/provision
+SENTERO_ESP32_PROVISIONING_TIMEOUT=10
+SENTERO_ESP32_MQTT_WAIT_TIMEOUT=30
+SENTERO_ESP32_TOPIC_PREFIX=sentero
+SENTERO_ESP32_DEVICE_TOKEN=
+```
+
+Passwörter und Tokens werden nicht geloggt.
+
 ------------------------------------------------------------------------
 
 # Fehlercodes
@@ -151,6 +215,32 @@ Der Sensor muss:
 5.  Verbindung mit MQTT herstellen
 6.  Availability veröffentlichen
 7.  Vollständigen State veröffentlichen
+
+Akzeptierte State-Topics:
+
+``` text
+sentero/<device_id>/state
+c1001/<device_id>/state
+```
+
+Akzeptiertes Availability-Topic:
+
+``` text
+sentero/<device_id>/availability
+```
+
+Beispiel-State:
+
+``` json
+{
+  "presence": true,
+  "fall_detected": false,
+  "breathing_detected": true,
+  "respiration_rate": 14,
+  "battery": 98,
+  "signal_quality": 82
+}
+```
 
 ------------------------------------------------------------------------
 

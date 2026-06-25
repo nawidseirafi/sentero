@@ -14,7 +14,22 @@ logger = get_logger(__name__)
 
 IGNORED_TOPIC_PARTS = {"bridge", "availability"}
 BINARY_DEVICE_CLASSES = {"contact", "occupancy", "motion", "presence", "opening"}
-STATE_KEYS = ("contact", "occupancy", "motion", "presence", "open", "action", "state")
+STATE_KEYS = (
+    "contact",
+    "occupancy",
+    "motion",
+    "presence",
+    "open",
+    "action",
+    "fall_detected",
+    "fall_detection",
+    "breathing_detected",
+    "breathing_detection",
+    "respiration_rate",
+    "sleep_status",
+    "bed_presence",
+    "state",
+)
 
 
 class Zigbee2MqttSensorSource:
@@ -25,10 +40,11 @@ class Zigbee2MqttSensorSource:
         self.host = self.mqtt.host
         self.port = self.mqtt.port
         self.topic_prefix = os.getenv("SENTERO_ZIGBEE2MQTT_TOPIC_PREFIX") or os.getenv("ZIGBEE2MQTT_TOPIC_PREFIX") or config_str("mqtt.topic_prefix", "") or config_str("mqtt.zigbee2mqtt_topic_prefix", "zigbee2mqtt") or "zigbee2mqtt"
+        self.topic_prefixes = self._topic_prefixes()
         self.snapshot_timeout = float(os.getenv("SENTERO_MQTT_SNAPSHOT_TIMEOUT") or config_float("mqtt.snapshot_timeout", 2.5))
         logger.debug(
             "Zigbee2MQTT source configured",
-            extra={"component": "sensor_source", "sensor_source": self.name, "host": self.host, "port": self.port, "topic_prefix": self.topic_prefix},
+            extra={"component": "sensor_source", "sensor_source": self.name, "host": self.host, "port": self.port, "topic_prefix": self.topic_prefix, "topic_prefixes": self.topic_prefixes},
         )
 
     def configured(self) -> bool:
@@ -40,7 +56,9 @@ class Zigbee2MqttSensorSource:
             logger.debug("Zigbee2MQTT snapshot uses bootstrap seed", extra={"component": "sensor_source", "sensor_source": self.name})
             return self._snapshot_from_seed(seed)
         try:
-            messages = self.mqtt.retained_messages(f"{self.topic_prefix}/#", timeout=self.snapshot_timeout)
+            messages = []
+            for prefix in self.topic_prefixes:
+                messages.extend(self.mqtt.retained_messages(f"{prefix}/#", timeout=self.snapshot_timeout))
         except Exception:
             logger.exception(
                 "Zigbee2MQTT snapshot failed",
@@ -92,12 +110,15 @@ class Zigbee2MqttSensorSource:
                 "Zigbee2MQTT payload received",
                 extra={"component": "sensor_source", "sensor_source": self.name, "topic": topic, "device_id": device, "payload": payload},
             )
-        enriched_payload = {**payload, "topic": topic, "source_ref": topic}
+        enriched_payload = {**payload, "topic": topic, "source_ref": topic, "source": self._source_from_topic(topic)}
         rows: list[dict[str, Any]] = []
-        state_key = next((key for key in STATE_KEYS if key in payload), None)
-        if state_key:
-            rows.append(self._entity(device, state_key, payload.get(state_key), enriched_payload, timestamp))
-        for key in ("battery", "battery_low", "linkquality"):
+        state_keys = [key for key in STATE_KEYS if key in payload and key != "state"]
+        if not state_keys and "state" in payload:
+            state_keys = ["state"]
+        if state_keys:
+            for state_key in state_keys:
+                rows.append(self._entity(device, state_key, payload.get(state_key), enriched_payload, timestamp))
+        for key in ("battery", "battery_low", "linkquality", "signal_quality", "temperature", "humidity", "illuminance", "illuminance_lux"):
             if key in payload:
                 rows.append(self._entity(device, key, payload.get(key), enriched_payload, timestamp))
         logger.debug(
@@ -107,10 +128,10 @@ class Zigbee2MqttSensorSource:
         return rows
 
     def _device_from_topic(self, topic: str) -> str:
-        prefix = f"{self.topic_prefix}/"
-        if not topic.startswith(prefix):
+        prefix = next((value for value in self.topic_prefixes if topic.startswith(f"{value}/")), "")
+        if not prefix:
             return ""
-        suffix = topic[len(prefix):].strip("/")
+        suffix = topic[len(prefix) + 1:].strip("/")
         if not suffix:
             return ""
         device = suffix.split("/", 1)[0]
@@ -145,20 +166,41 @@ class Zigbee2MqttSensorSource:
             "identifiers": [["zigbee2mqtt", device]],
             "last_changed": timestamp,
             "last_updated": timestamp,
-            "source": self.name,
+            "source": payload.get("source") or self.name,
             "attributes": {key: value, **{k: v for k, v in payload.items() if k not in {key}}},
         }
 
     def _device_class(self, key: str, is_binary: bool) -> str | None:
         if key == "battery":
             return "battery"
+        if key in {"linkquality", "signal_quality"}:
+            return "signal_quality"
         if key in {"contact", "open"}:
             return "opening"
-        if key in {"occupancy", "motion", "presence"}:
+        if key in {"occupancy", "motion", "presence", "bed_presence"}:
             return "motion" if key == "motion" else key
+        if key in {"fall_detected", "fall_detection", "breathing_detected", "breathing_detection"}:
+            return key
         if key == "action":
             return "button"
         return None if is_binary else key
+
+    def _topic_prefixes(self) -> list[str]:
+        prefixes = [
+            self.topic_prefix,
+            os.getenv("SENTERO_ESP32_TOPIC_PREFIX") or config_str("esp32.topic_prefix", ""),
+            config_str("mqtt.esp32_topic_prefix", ""),
+            "c1001",
+        ]
+        result: list[str] = []
+        for value in prefixes:
+            clean = str(value or "").strip().strip("/")
+            if clean and clean not in result:
+                result.append(clean)
+        return result or ["zigbee2mqtt"]
+
+    def _source_from_topic(self, topic: str) -> str:
+        return self.name if topic.startswith(f"{self.topic_prefix}/") else "mqtt"
 
 
 def normalize_state(value: Any) -> str:

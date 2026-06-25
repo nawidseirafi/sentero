@@ -168,8 +168,22 @@ export type SenteroSensorProvisioningStatus = {
   status: string;
   message: string;
   network_configured: boolean;
+  mqtt_configured?: boolean;
   available_steps: string[];
   missing_steps: string[];
+};
+
+export type SenteroEsp32ProvisioningResult = {
+  ok: boolean;
+  device: {
+    id: string;
+    name: string;
+    type: string;
+    room_id: string;
+    source: string;
+    capabilities?: string[];
+  };
+  message: string;
 };
 
 export type SenteroCandidates = {
@@ -385,6 +399,8 @@ export const api = {
     request<{ status: string; network: SenteroSensorNetworkSettings }>('/api/sentero/sensors/network', { method: 'POST', body: JSON.stringify(payload) }),
   testSenteroSensorNetwork: () => request<{ ok: boolean; message: string }>('/api/sentero/sensors/network/test', { method: 'POST' }),
   senteroSensorProvisioningStatus: () => request<SenteroSensorProvisioningStatus>('/api/sentero/sensors/provisioning/status'),
+  startSenteroPresenceProvisioning: (payload: { room_id: string; display_name: string }) =>
+    request<SenteroEsp32ProvisioningResult>('/api/sentero/sensors/provisioning/esp32/start', { method: 'POST', body: JSON.stringify(payload) }),
   senteroDiscoveryCandidates: (sessionId: number, dev = false) =>
     request<SenteroCandidates>(`/api/sentero/setup/discovery/${sessionId}/candidates${dev ? '?dev=true' : ''}`),
   confirmSenteroDiscovery: (sessionId: number, entityId: string, payload?: { name?: string; room?: string }) =>

@@ -42,7 +42,7 @@ export function SensorWizard({ sensors, discovery, devMode, connected, total, ro
         <span><Radio size={24} /></span>
         <div>
           <h3>Sensor verbinden</h3>
-          <p>Klicken Sie auf ‚Sensor suchen‘. Versetzen Sie anschließend den Sensor in den Kopplungsmodus, z. B. indem Sie die Pairing-Taste 3–5 Sekunden gedrückt halten.</p>
+          <p>Klicken Sie auf „Sensor suchen“. Schalten Sie Präsenzsensoren ein. Bei Türsensoren drücken Sie anschließend die Pairing-Taste.</p>
         </div>
         <strong>{connected}/{total} Sensor verbunden</strong>
       </div>
@@ -75,7 +75,7 @@ function SensorRow({ sensor, state, devMode, onChange, onSearch }: {
 }) {
   const label = sensor.type === 'motion' ? 'Präsenzsensor' : 'Türsensor';
   const help = sensor.type === 'motion'
-    ? 'Erkennt Bewegungen oder Anwesenheit im Raum.'
+    ? 'Präsenzsensor einschalten. Sentero verbindet ihn automatisch.'
     : 'Erkennt, ob eine Tür oder ein Fenster geöffnet wurde.';
 
   return (
@@ -107,9 +107,9 @@ function SensorRow({ sensor, state, devMode, onChange, onSearch }: {
 }
 
 function SensorStatus({ status, remainingSeconds }: { status: SensorBinding['status']; remainingSeconds?: number }) {
-  if (status === 'searching') return <span className="sc-sensor-state searching"><Loader2 size={18} /> Suche läuft... Warte auf Sensor{typeof remainingSeconds === 'number' ? ` · ${Math.ceil(remainingSeconds)}s` : ''}</span>;
-  if (status === 'connected') return <span className="sc-sensor-state connected"><Check size={18} /> Sensor gefunden und verbunden</span>;
-  if (status === 'missing') return <span className="sc-sensor-state missing">Kein Sensor gefunden. Prüfen Sie, ob der Sensor im Kopplungsmodus ist.</span>;
+  if (status === 'searching') return <span className="sc-sensor-state searching"><Loader2 size={18} /> Sensor wird verbunden{typeof remainingSeconds === 'number' ? ` · ${Math.ceil(remainingSeconds)}s` : ''}</span>;
+  if (status === 'connected') return <span className="sc-sensor-state connected"><Check size={18} /> Sensor gefunden</span>;
+  if (status === 'missing') return <span className="sc-sensor-state missing">Sensor konnte nicht verbunden werden. Bitte einschalten und erneut versuchen.</span>;
   if (status === 'skipped') return <span className="sc-sensor-state skipped">Übersprungen</span>;
   return <span className="sc-sensor-state idle">Bereit</span>;
 }

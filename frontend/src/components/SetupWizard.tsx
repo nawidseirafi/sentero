@@ -234,6 +234,18 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
   async function searchSensor(sensor: SensorBinding) {
     updateSensor(sensor.id, { status: 'searching' });
     setDiscovery((current) => ({ ...current, [sensor.id]: { remainingSeconds: ZIGBEE_DISCOVERY_SECONDS } }));
+    if (sensor.type === 'motion') {
+      try {
+        const name = sensor.name || `${roomLabel(sensor.roomId)} Präsenzsensor`;
+        const result = await api.startSenteroPresenceProvisioning({ room_id: sensor.roomId, display_name: name });
+        updateSensor(sensor.id, { status: 'connected', score: 100, sensorManagerId: result.device.id, name: result.device.name });
+        setDiscovery((current) => ({ ...current, [sensor.id]: { sensor: { id: result.device.id, name: result.device.name, type: result.device.type, confidence: 100 }, remainingSeconds: 0 } }));
+      } catch (err) {
+        updateSensor(sensor.id, { status: 'missing' });
+        setDiscovery((current) => ({ ...current, [sensor.id]: { error: err instanceof Error ? err.message : 'Präsenzsensor konnte nicht verbunden werden.' } }));
+      }
+      return;
+    }
     try {
       const result = await api.startSenteroSensorDiscovery({
         sensor_type: sensor.type === 'door' ? 'door_contact' : 'presence_sensor',

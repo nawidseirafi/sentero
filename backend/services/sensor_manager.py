@@ -8,6 +8,7 @@ from typing import Any
 
 from backend.logging_config import get_logger
 from backend.services.device_mapping_service import DeviceMappingService, sensor_source_mode
+from backend.services.esp32_provisioning_service import Esp32ProvisioningService
 
 logger = get_logger(__name__)
 
@@ -21,6 +22,7 @@ class SensorManager:
 
     def __init__(self, mapping: DeviceMappingService) -> None:
         self.mapping = mapping
+        self.esp32_provisioning = Esp32ProvisioningService(mapping)
         self.ensure_schema()
 
     def ensure_schema(self) -> None:
@@ -177,24 +179,10 @@ class SensorManager:
             }
 
     def provisioning_status(self) -> dict[str, Any]:
-        network = self.network_settings(public=True)
-        return {
-            "implemented": False,
-            "status": "prepared",
-            "message": "WLAN-Sensor-Provisioning ist vorbereitet, aber noch nicht vollständig implementiert.",
-            "network_configured": bool(network.get("configured")),
-            "available_steps": [
-                "Netzwerkdaten speichern",
-                "MQTT-Konfiguration aus Sentero-Konfiguration lesen",
-            ],
-            "missing_steps": [
-                "Direkte Verbindung zum Sensor im Einrichtungsmodus",
-                "POST /api/provision an den Sensor",
-                "Warten auf MQTT-Verfügbarkeit",
-                "Automatische Registrierung als Sentero-Sensor",
-                "Produktorientierter Wizard-Schritt für WLAN-Sensoren",
-            ],
-        }
+        return self.esp32_provisioning.status()
+
+    def start_esp32_provisioning(self, room_id: str, display_name: str) -> dict[str, Any]:
+        return self.esp32_provisioning.provision(room_id=room_id, display_name=display_name)
 
     def mapping_update_room(self, sensor_id: str, room_id: str) -> dict[str, Any]:
         # Persistent device-model assignment is prepared in SenteroSensorService.
