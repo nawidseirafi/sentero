@@ -61,6 +61,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
   const [sensorBindings, setSensorBindings] = useState<SensorBinding[]>([]);
   const [discovery, setDiscovery] = useState<Record<string, SensorDiscoveryState>>({});
   const timers = useRef<Record<string, number>>({});
+  const activeDiscoverySessions = useRef<Set<number>>(new Set());
   const devMode = new URLSearchParams(window.location.search).get('dev') === '1';
 
   useEffect(() => {
@@ -103,7 +104,13 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
         })));
       }
     }).catch(() => undefined);
-    return () => Object.values(timers.current).forEach((timer) => window.clearTimeout(timer));
+    return () => {
+      Object.values(timers.current).forEach((timer) => window.clearTimeout(timer));
+      activeDiscoverySessions.current.forEach((sessionId) => {
+        void api.cancelSenteroSensorDiscovery(sessionId).catch(() => undefined);
+      });
+      activeDiscoverySessions.current.clear();
+    };
   }, []);
 
   const calculatedAge = useMemo(() => {
@@ -256,6 +263,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
       if (result.status === 'manual_action') {
         throw new Error(result.message || 'Die Sensor-Einrichtung ist noch nicht bereit.');
       }
+      activeDiscoverySessions.current.add(result.discovery_id);
       updateSensor(sensor.id, { sessionId: result.discovery_id });
       setDiscovery((current) => ({ ...current, [sensor.id]: { ...(current[sensor.id] || {}), remainingSeconds: ZIGBEE_DISCOVERY_SECONDS } }));
       pollSensor(sensor.id, result.discovery_id, Date.now(), sensor.name, sensor.roomId);
@@ -275,6 +283,8 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
           pollSensor(sensorId, sessionId, startedAt, sensorName, roomId);
         }
       } catch (err) {
+        activeDiscoverySessions.current.delete(sessionId);
+        void api.cancelSenteroSensorDiscovery(sessionId).catch(() => undefined);
         updateSensor(sensorId, { status: 'missing' });
         setDiscovery((current) => ({ ...current, [sensorId]: { error: err instanceof Error ? err.message : 'Sensor nicht gefunden.' } }));
       }
@@ -290,18 +300,32 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
       const name = sensorName || result.sensor.name || 'Sensor';
       try {
         await api.registerSenteroSensor(result.sensor.id, { discovery_id: sessionId, name, room_id: roomId }, devMode);
+        activeDiscoverySessions.current.delete(sessionId);
         updateSensor(sensorId, { status: 'connected', sessionId, score, sensorManagerId: result.sensor.id, name });
       } catch (err) {
+        activeDiscoverySessions.current.delete(sessionId);
+        void api.cancelSenteroSensorDiscovery(sessionId).catch(() => undefined);
         updateSensor(sensorId, { status: 'missing' });
         setDiscovery((current) => ({ ...current, [sensorId]: { ...(current[sensorId] || {}), error: err instanceof Error ? err.message : 'Sensor konnte nicht gespeichert werden.' } }));
       }
       return true;
     }
     if (timedOut) {
+      activeDiscoverySessions.current.delete(sessionId);
+      void api.cancelSenteroSensorDiscovery(sessionId).catch(() => undefined);
       updateSensor(sensorId, { status: 'missing' });
       return true;
     }
     return false;
+  }
+
+  function skipSensor(sensor: SensorBinding) {
+    if (sensor.sessionId) {
+      activeDiscoverySessions.current.delete(sensor.sessionId);
+      window.clearTimeout(timers.current[sensor.id]);
+      void api.cancelSenteroSensorDiscovery(sensor.sessionId).catch(() => undefined);
+    }
+    updateSensor(sensor.id, { status: 'skipped' });
   }
 
   function addContact() {
@@ -333,7 +357,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
         {step === 0 && <WelcomeStep />}
         {step === 1 && <ProfileStep profile={profile} calculatedAge={calculatedAge} onChange={setProfile} />}
         {step === 2 && <RoomsStep selected={selectedRooms} customRooms={customRooms} sensorPlan={sensorPlan} lockedSensorPlan={lockedSensorPlan} customRoom={customRoom} onToggle={toggleRoom} onCustomChange={setCustomRoom} onCustomAdd={addCustomRoom} onToggleSensorType={toggleSensorType} />}
-        {step === 3 && <SensorWizard sensors={sensorBindings} discovery={discovery} roomLabel={roomLabel} devMode={devMode} connected={connectedSensors} total={sensorBindings.length} onChange={updateSensor} onSearch={searchSensor} />}
+        {step === 3 && <SensorWizard sensors={sensorBindings} discovery={discovery} roomLabel={roomLabel} devMode={devMode} connected={connectedSensors} total={sensorBindings.length} onChange={updateSensor} onSearch={searchSensor} onSkip={skipSensor} />}
         {step === 4 && <ContactsStep contacts={contacts} form={contactForm} formOpen={contactFormOpen} onOpen={() => setContactFormOpen(true)} onClose={() => setContactFormOpen(false)} onFormChange={setContactForm} onAdd={addContact} onDelete={(id) => setContacts((current) => {
           const nextContacts = current.filter((contact) => contact.id !== id);
           if (nextContacts.length && !nextContacts.some((contact) => contact.primary)) {

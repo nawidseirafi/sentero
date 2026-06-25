@@ -392,6 +392,8 @@ export const api = {
     request<SenteroSensorDiscoveryStart>('/api/sentero/sensors/start-discovery', { method: 'POST', body: JSON.stringify(payload) }),
   senteroDiscoveredSensors: (discoveryId: number, dev = false) =>
     request<SenteroSensorDiscoveryResult>(`/api/sentero/sensors/discovered?discovery_id=${discoveryId}${dev ? '&dev=true' : ''}`),
+  cancelSenteroSensorDiscovery: (discoveryId?: number | null) =>
+    request<{ ok: boolean; provider?: string; reason?: string }>('/api/sentero/sensors/discovery/cancel', { method: 'POST', body: JSON.stringify({ discovery_id: discoveryId ?? null }) }),
   registerSenteroSensor: (sensorId: string, payload: { discovery_id: number; name?: string | null; room_id?: string | null }, dev = false) =>
     request<{ status: string; sensor: { id: string; name: string; room_id?: string | null; type: string } }>(`/api/sentero/sensors/${encodeURIComponent(sensorId)}/register${dev ? '?dev=true' : ''}`, { method: 'POST', body: JSON.stringify(payload) }),
   senteroSensorNetwork: () => request<SenteroSensorNetworkSettings>('/api/sentero/sensors/network'),

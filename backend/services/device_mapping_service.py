@@ -262,14 +262,18 @@ class DeviceMappingService:
         detail = discovery_detail(row)
         mqtt_discovery = detail.get('mode') == 'mqtt_discovery'
         baseline = json.loads(row['baseline_snapshot_json'] or '[]')
-        current = self._mqtt_snapshot() if mqtt_discovery else self.snapshot()
+        cached_candidate_snapshot = json.loads(row['candidate_snapshot_json'] or '[]')
+        if row['status'] in {'found', 'signal_detected', 'completed', 'confirmed'} and cached_candidate_snapshot:
+            current = cached_candidate_snapshot
+        else:
+            current = self._mqtt_snapshot() if mqtt_discovery else self.snapshot()
         scored = score_candidates(baseline, current, row['target_role'], row['target_room'], row['started_at'], require_new=mqtt_discovery)
         raw_changed_count = count_changed_entities(baseline, current, row['started_at'])
         changed_count = len(scored)
         best_scored = scored[0] if scored else None
         best = best_scored if best_scored and best_scored['confidence'] >= DISCOVERY_CONFIDENCE_THRESHOLD else None
         timed_out = elapsed_seconds >= DISCOVERY_TIMEOUT_SECONDS
-        status = 'signal_detected' if best else 'no_signal_detected' if timed_out else 'waiting_for_signal'
+        status = 'found' if best else 'no_signal_detected' if timed_out else 'waiting_for_signal'
         message = (
             'Sensor-Signal erkannt.'
             if best
@@ -283,6 +287,9 @@ class DeviceMappingService:
                 (now() if best or timed_out else None, status, json.dumps(current, ensure_ascii=False), session_id),
             )
             con.commit()
+        stop_detail = None
+        if best or timed_out:
+            stop_detail = self.stop_zigbee_pairing(session_id=session_id, reason='found' if best else 'timeout')
         logger.info(
             "Sentero discovery poll session=%s ha_url=%s baseline_states=%s current_states=%s raw_changed=%s changed_entities=%s best=%s best_score=%s status=%s elapsed=%.1f",
             session_id,
@@ -327,6 +334,7 @@ class DeviceMappingService:
             'changed_count': changed_count if dev else None,
             'current_state_count': len(current) if dev else None,
             'baseline_state_count': len(baseline) if dev else None,
+            'pairing_stopped': stop_detail if dev else None,
         }
 
     def confirm(self, session_id: int, entity_id: str, name: str | None = None, room: str | None = None, dev: bool = False) -> dict[str, Any]:
@@ -334,6 +342,7 @@ class DeviceMappingService:
             session = con.execute('select * from sensor_discovery_sessions where id = ?', (session_id,)).fetchone()
         if not session:
             raise ValueError('session not found')
+        self.stop_zigbee_pairing(session_id=session_id, reason='register')
         baseline = json.loads(session['baseline_snapshot_json'] or '[]')
         detail = discovery_detail(session)
         mqtt_discovery = detail.get('mode') == 'mqtt_discovery'
@@ -387,6 +396,9 @@ class DeviceMappingService:
         if dev:
             response['metadata'] = metadata_detail
         return response
+
+    def cancel_discovery(self, session_id: int | None = None) -> dict[str, Any]:
+        return self.stop_zigbee_pairing(session_id=session_id, reason='cancel')
 
     def upsert_role(self, data: dict[str, Any]) -> dict[str, Any]:
         role = str(data.get('role') or '').strip()
@@ -596,18 +608,33 @@ class DeviceMappingService:
                     logger.warning("Device remove attempt failed", extra={"component": "device_mapping", "provider": "zha", "device_id": device_id, "source_ref": entity_id})
                 continue
             if provider == 'zigbee2mqtt':
+                try:
+                    permit_join = self._disable_zigbee2mqtt_permit_join_confirmed(reason='remove', device_id=device_id or None)
+                    self._close_discovery_sessions_for_mapping(mapped)
+                except Exception as exc:
+                    attempts.append({'provider': 'zigbee2mqtt', 'step': 'permit_join_disable', 'error': str(exc)})
+                    return {
+                        'ok': False,
+                        'reason': 'permit_join_stop_failed',
+                        'message': 'Permit Join konnte nicht deaktiviert werden.',
+                        'entity_id': entity_id,
+                        'device_id': device_id or None,
+                        'identifiers': identifiers,
+                        'mqtt_ids': mqtt_ids,
+                        'attempts': attempts,
+                    }
                 for mqtt_id in mqtt_ids:
                     try:
                         response = self._zigbee2mqtt_request(
                             'device/remove',
-                            {'id': mqtt_id},
+                            {'id': mqtt_id, 'force': 'true', 'block': 'false'},
                             lambda payload, wanted=mqtt_id: z2m_response_matches_id(payload, wanted),
                         )
-                        logger.info("Sensor removed from Zigbee2MQTT", extra={"component": "device_mapping", "device_id": mqtt_id, "source_ref": entity_id})
-                        return {'ok': True, 'provider': 'zigbee2mqtt', 'id': mqtt_id, 'response': response, 'attempts': attempts}
+                        logger.info("Device erfolgreich entfernt", extra={"component": "device_mapping", "device_id": mqtt_id, "source_ref": entity_id})
+                        return {'ok': True, 'provider': 'zigbee2mqtt', 'id': mqtt_id, 'permit_join': permit_join, 'response': response, 'attempts': attempts}
                     except Exception as exc:
                         attempts.append({'provider': 'zigbee2mqtt', 'id': mqtt_id, 'error': str(exc)})
-                        logger.warning("Device remove attempt failed", extra={"component": "device_mapping", "provider": "zigbee2mqtt", "device_id": device_id, "source_ref": entity_id})
+                        logger.exception("Remove fehlgeschlagen", extra={"component": "device_mapping", "provider": "zigbee2mqtt", "device_id": device_id, "source_ref": entity_id})
         return {
             'ok': False,
             'reason': 'zigbee_remove_unavailable',
@@ -749,7 +776,7 @@ class DeviceMappingService:
     def uses_mqtt_source(self) -> bool:
         return self.source_mode in {'mqtt', 'zigbee2mqtt', 'z2m', 'mixed'}
 
-    def _mqtt_publish(self, topic: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _mqtt_publish(self, topic: str, payload: Any) -> dict[str, Any]:
         try:
             return self.mqtt.publish(topic, payload)
         except Exception as direct_exc:
@@ -900,7 +927,7 @@ class DeviceMappingService:
             logger.warning("Zigbee2MQTT rename failed", extra={"component": "device_mapping", "device_id": source_id, "source_ref": entity.get('entity_id')})
             return {'ok': False, 'reason': 'rename_failed', 'message': 'Sensor konnte im Sensornetzwerk nicht umbenannt werden.', 'from': source_id, 'to': clean_name, 'error': str(exc)}
 
-    def _zigbee2mqtt_request(self, action: str, payload: dict[str, Any], response_filter) -> dict[str, Any]:
+    def _zigbee2mqtt_request(self, action: str, payload: Any, response_filter) -> dict[str, Any]:
         request_topic = self._zigbee2mqtt_topic(f'bridge/request/{action}')
         response_topic = self._zigbee2mqtt_topic(f'bridge/response/{action}')
         logger.debug(
@@ -916,6 +943,49 @@ class DeviceMappingService:
         logger.debug("Zigbee2MQTT response", extra={"component": "device_mapping", "topic": response_topic, "action": action, "response": response_payload})
         return response_payload
 
+    def _disable_zigbee2mqtt_permit_join_confirmed(self, reason: str = 'stop', device_id: str | None = None) -> dict[str, Any]:
+        errors: list[str] = []
+        for payload in zigbee2mqtt_permit_join_payloads(False):
+            try:
+                response = self._zigbee2mqtt_request(
+                    'permit_join',
+                    payload,
+                    lambda payload: z2m_permit_join_response_matches(payload, False),
+                )
+                logger.info(
+                    "Permit Join deaktiviert",
+                    extra={"component": "device_mapping", "provider": "zigbee2mqtt", "reason": reason, "device_id": device_id},
+                )
+                return response
+            except Exception as exc:
+                errors.append(str(exc))
+                logger.debug(
+                    "Zigbee2MQTT permit_join stop payload failed",
+                    extra={"component": "device_mapping", "provider": "zigbee2mqtt", "reason": reason, "device_id": device_id, "payload": payload},
+                    exc_info=True,
+                )
+        logger.warning(
+            "Permit Join konnte nicht deaktiviert werden",
+            extra={"component": "device_mapping", "provider": "zigbee2mqtt", "reason": reason, "device_id": device_id, "errors": errors},
+        )
+        raise RuntimeError("Permit Join konnte nicht deaktiviert werden.")
+
+    def _close_discovery_sessions_for_mapping(self, mapped: dict[str, Any]) -> None:
+        role = str(mapped.get('role') or '').strip()
+        device_id = str(mapped.get('device_id') or '').strip()
+        source_ref = str(mapped.get('entity_id') or '').strip()
+        with self.connect() as con:
+            con.execute(
+                """update sensor_discovery_sessions
+                   set status = case when status in ('waiting_for_signal', 'pairing_started', 'found', 'signal_detected') then 'completed' else status end,
+                       ended_at = coalesce(ended_at, ?)
+                   where (? != '' and target_role = ?)
+                      or (? != '' and selected_entity_id = ?)
+                      or (? != '' and selected_entity_id = ?)""",
+                (now(), role, role, device_id, device_id, source_ref, source_ref),
+            )
+            con.commit()
+
     def _open_zigbee_permit_join(self, duration: int) -> dict[str, Any]:
         attempts: list[dict[str, Any]] = []
         for provider in zigbee_provider_order():
@@ -924,7 +994,7 @@ class DeviceMappingService:
             if provider == 'zha':
                 try:
                     response = self.ha.call_service('zha', 'permit', {'duration': duration})
-                    logger.info("Zigbee permit_join sent", extra={"component": "wizard", "provider": "zha", "duration": duration})
+                    logger.info("Zigbee pairing started", extra={"component": "wizard", "provider": "zha", "duration": duration})
                     return {'ok': True, 'provider': 'zha', 'duration': duration, 'response': response, 'attempts': attempts}
                 except Exception as exc:
                     attempts.append({'provider': 'zha', 'error': str(exc)})
@@ -934,14 +1004,63 @@ class DeviceMappingService:
                 try:
                     response = self._mqtt_publish(
                         self._zigbee2mqtt_topic('bridge/request/permit_join'),
-                        {'value': True, 'time': duration},
+                        zigbee2mqtt_permit_join_payloads(True, duration)[0],
                     )
-                    logger.info("Zigbee permit_join sent", extra={"component": "wizard", "provider": "zigbee2mqtt", "duration": duration})
+                    logger.info("Zigbee pairing started", extra={"component": "wizard", "provider": "zigbee2mqtt", "duration": duration})
                     return {'ok': True, 'provider': 'zigbee2mqtt', 'duration': duration, 'response': response, 'attempts': attempts}
                 except Exception as exc:
                     attempts.append({'provider': 'zigbee2mqtt', 'error': str(exc)})
                     logger.warning("Zigbee permit_join failed", extra={"component": "wizard", "provider": "zigbee2mqtt", "duration": duration})
         return {'ok': False, 'reason': 'zigbee_pairing_unavailable', 'message': 'Zigbee-Anlernen nicht verfuegbar', 'attempts': attempts}
+
+    def stop_zigbee_pairing(self, session_id: int | None = None, reason: str = 'stop') -> dict[str, Any]:
+        attempts: list[dict[str, Any]] = []
+        detail: dict[str, Any] = {}
+        if session_id is not None:
+            with self.connect() as con:
+                row = con.execute('select * from sensor_discovery_sessions where id = ?', (session_id,)).fetchone()
+                if not row:
+                    raise ValueError('session not found')
+                detail = discovery_detail(row)
+        provider = str(detail.get('provider') or '').strip()
+        providers = [provider] if provider in {'zigbee2mqtt', 'zha', 'homeassistant'} else zigbee_provider_order()
+        for candidate_provider in providers:
+            if candidate_provider in {'zigbee2mqtt', 'homeassistant'}:
+                try:
+                    payload = zigbee2mqtt_permit_join_payloads(False)[0]
+                    logger.debug(
+                        "Zigbee2MQTT permit_join stop request",
+                        extra={"component": "wizard", "provider": "zigbee2mqtt", "payload": payload, "session_id": session_id, "reason": reason},
+                    )
+                    response = self._mqtt_publish(self._zigbee2mqtt_topic('bridge/request/permit_join'), payload)
+                    if session_id is not None:
+                        with self.connect() as con:
+                            con.execute(
+                                "update sensor_discovery_sessions set status = case when status in ('waiting_for_signal', 'pairing_started') then ? else status end, ended_at = coalesce(ended_at, ?) where id = ?",
+                                ('cancelled' if reason == 'cancel' else 'completed', now(), session_id),
+                            )
+                            con.commit()
+                    logger.info(
+                        "Zigbee pairing stopped",
+                        extra={"component": "wizard", "provider": "zigbee2mqtt", "session_id": session_id, "reason": reason},
+                    )
+                    return {'ok': True, 'provider': 'zigbee2mqtt', 'reason': reason, 'response': response, 'attempts': attempts}
+                except Exception as exc:
+                    attempts.append({'provider': 'zigbee2mqtt', 'error': str(exc)})
+                    logger.warning(
+                        "Permit Join konnte nicht deaktiviert werden",
+                        extra={"component": "wizard", "provider": "zigbee2mqtt", "session_id": session_id, "reason": reason},
+                    )
+                continue
+            if candidate_provider == 'zha':
+                try:
+                    response = self.ha.call_service('zha', 'permit', {'duration': 0})
+                    logger.info("Zigbee pairing stopped", extra={"component": "wizard", "provider": "zha", "session_id": session_id, "reason": reason})
+                    return {'ok': True, 'provider': 'zha', 'reason': reason, 'response': response, 'attempts': attempts}
+                except Exception as exc:
+                    attempts.append({'provider': 'zha', 'error': str(exc)})
+                    logger.warning("Permit Join konnte nicht deaktiviert werden", extra={"component": "wizard", "provider": "zha", "session_id": session_id, "reason": reason})
+        return {'ok': False, 'reason': 'permit_join_stop_failed', 'attempts': attempts}
 
 
 def sensor_source_mode() -> str:
@@ -1607,10 +1726,17 @@ def zigbee2mqtt_identifiers(identifiers: list[tuple[str, str]], entities: list[d
         if normalize(domain) not in {'mqtt', 'zigbee2mqtt'}:
             continue
         values.extend(expand_zigbee2mqtt_id(value))
-    for item in entities:
-        for field in ('unique_id', 'entity_id', 'device_id', 'device_name', 'friendly_name', 'source_ref', 'topic'):
-            values.extend(expand_zigbee2mqtt_id(item.get(field)))
-    return dedupe([value for value in values if value])
+    for index, item in enumerate(entities):
+        fields = ('device_id', 'source_ref', 'topic', 'original_name', 'device_name')
+        if index == 0:
+            fields = (*fields, 'entity_id', 'friendly_name')
+        for field in fields:
+            raw_value = item.get(field)
+            if index > 0 and field == 'device_id' and not is_ieee_address(raw_value):
+                continue
+            values.extend(expand_zigbee2mqtt_id(raw_value))
+    deduped = dedupe([value for value in values if value])
+    return sorted(deduped, key=lambda value: 0 if is_ieee_address(value) else 1)
 
 
 def expand_zigbee2mqtt_id(value: Any) -> list[str]:
@@ -1625,12 +1751,15 @@ def expand_zigbee2mqtt_id(value: Any) -> list[str]:
         if normalized.startswith(prefix):
             normalized = normalized[len(prefix):]
             return [normalized] if normalized else []
-    result = [text]
     if '.' in text:
-        result.append(text.rsplit('.', 1)[-1])
+        return [text.rsplit('.', 1)[-1]]
     if '/' in text:
-        result.append(text.rsplit('/', 1)[-1])
-    return result
+        return [text.rsplit('/', 1)[-1]]
+    return [text]
+
+
+def is_ieee_address(value: Any) -> bool:
+    return bool(re.fullmatch(r'0x[0-9a-fA-F]{12,16}', str(value or '').strip()))
 
 
 def z2m_response_matches_id(payload: Any, wanted: str) -> bool:
@@ -1656,6 +1785,50 @@ def z2m_rename_response_matches(payload: Any, source_id: str, clean_name: str) -
     if response_to:
         return response_to == clean_name
     return bool(payload.get('status'))
+
+
+def zigbee2mqtt_permit_join_payloads(enabled: bool, duration: int | None = None) -> list[Any]:
+    if enabled:
+        time_value = int(duration or 180)
+        return [
+            {'value': True, 'time': time_value},
+            {'value': True, 'time': time_value, 'device': None},
+            True,
+        ]
+    return [
+        {'value': False, 'time': 0},
+        {'value': False, 'time': 0, 'device': None},
+        {'value': False},
+        False,
+    ]
+
+
+def z2m_permit_join_response_matches(payload: Any, wanted: bool) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get('status') == 'error':
+        return True
+    data = payload.get('data') if isinstance(payload.get('data'), dict) else {}
+    value = data.get('value', payload.get('value'))
+    if value is None:
+        return bool(payload.get('status'))
+    parsed = parse_bool_value(value)
+    if parsed is None:
+        return bool(payload.get('status'))
+    return parsed is wanted
+
+
+def parse_bool_value(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {'true', '1', 'on', 'yes', 'enabled'}:
+        return True
+    if text in {'false', '0', 'off', 'no', 'disabled'}:
+        return False
+    return None
 
 
 def dedupe(values: list[str]) -> list[str]:

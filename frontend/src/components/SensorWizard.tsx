@@ -28,9 +28,10 @@ type Props = {
   roomLabel: (roomId: string) => string;
   onChange: (id: string, patch: Partial<SensorBinding>) => void;
   onSearch: (sensor: SensorBinding) => void;
+  onSkip: (sensor: SensorBinding) => void;
 };
 
-export function SensorWizard({ sensors, discovery, devMode, connected, total, roomLabel, onChange, onSearch }: Props) {
+export function SensorWizard({ sensors, discovery, devMode, connected, total, roomLabel, onChange, onSearch, onSkip }: Props) {
   const grouped = sensors.reduce<Record<string, SensorBinding[]>>((acc, sensor) => {
     acc[sensor.roomId] = [...(acc[sensor.roomId] || []), sensor];
     return acc;
@@ -58,6 +59,7 @@ export function SensorWizard({ sensors, discovery, devMode, connected, total, ro
               devMode={devMode}
               onChange={onChange}
               onSearch={onSearch}
+              onSkip={onSkip}
             />
           ))}
         </article>
@@ -66,12 +68,13 @@ export function SensorWizard({ sensors, discovery, devMode, connected, total, ro
   );
 }
 
-function SensorRow({ sensor, state, devMode, onChange, onSearch }: {
+function SensorRow({ sensor, state, devMode, onChange, onSearch, onSkip }: {
   sensor: SensorBinding;
   state?: SensorDiscoveryState;
   devMode: boolean;
   onChange: (id: string, patch: Partial<SensorBinding>) => void;
   onSearch: (sensor: SensorBinding) => void;
+  onSkip: (sensor: SensorBinding) => void;
 }) {
   const label = sensor.type === 'motion' ? 'Präsenzsensor' : 'Türsensor';
   const help = sensor.type === 'motion'
@@ -97,7 +100,7 @@ function SensorRow({ sensor, state, devMode, onChange, onSearch }: {
           <button className="primary" type="button" onClick={() => void onSearch(sensor)} disabled={sensor.status === 'searching' || sensor.status === 'connected'}>
             <Search size={19} /> {sensor.status === 'connected' ? 'Verbunden' : 'Sensor suchen'}
           </button>
-          <button className="secondary" type="button" onClick={() => onChange(sensor.id, { status: 'skipped' })} disabled={sensor.status === 'connected'}>Überspringen</button>
+          <button className="secondary" type="button" onClick={() => onSkip(sensor)} disabled={sensor.status === 'connected'}>Überspringen</button>
         </div>
       </div>
       {state?.error && <p className="sc-sensor-error">{state.error}</p>}

@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from backend.sensor_sources.zigbee2mqtt import Zigbee2MqttSensorSource
@@ -18,25 +19,30 @@ class FakeMqtt:
     port = 1883
 
     def __init__(self) -> None:
-        self.published: list[tuple[str, dict]] = []
-        self.requests: list[tuple[str, str, dict]] = []
+        self.published: list[tuple[str, object]] = []
+        self.requests: list[tuple[str, str, object]] = []
 
     def configured(self) -> bool:
         return True
 
-    def publish(self, topic: str, payload: dict, retain: bool = False) -> dict:
+    def publish(self, topic: str, payload: object, retain: bool = False) -> dict:
         self.published.append((topic, payload))
         return {"ok": True, "topic": topic, "payload": payload}
 
     def retained_messages(self, topic: str, timeout: float = 2.5) -> list:
         return []
 
-    def request_response(self, request_topic: str, response_topic: str, payload: dict, timeout: float = 8.0, response_filter=None) -> MqttMessage:
+    def request_response(self, request_topic: str, response_topic: str, payload: object, timeout: float = 8.0, response_filter=None) -> MqttMessage:
         self.requests.append((request_topic, response_topic, payload))
         if request_topic.endswith("/device/rename"):
-            response_payload = {"status": "ok", "data": {"from": payload.get("from"), "to": payload.get("to"), "homeassistant_rename": payload.get("homeassistant_rename", False)}}
+            payload_dict = payload if isinstance(payload, dict) else {}
+            response_payload = {"status": "ok", "data": {"from": payload_dict.get("from"), "to": payload_dict.get("to"), "homeassistant_rename": payload_dict.get("homeassistant_rename", False)}}
         elif request_topic.endswith("/device/remove"):
-            response_payload = {"status": "ok", "data": {"id": payload.get("id"), "block": False, "force": bool(payload.get("force", False))}}
+            payload_dict = payload if isinstance(payload, dict) else {}
+            response_payload = {"status": "ok", "data": {"id": payload_dict.get("id"), "block": False, "force": bool(payload_dict.get("force", False))}}
+        elif request_topic.endswith("/permit_join"):
+            value = payload.get("value") if isinstance(payload, dict) else payload
+            response_payload = {"status": "ok", "data": {"value": value}}
         else:
             response_payload = {"status": "ok", "data": {}}
         return MqttMessage(topic=response_topic, payload=response_payload, raw_payload="{}")
@@ -64,6 +70,65 @@ class FailingMqtt(FakeMqtt):
 
     def request_response(self, request_topic: str, response_topic: str, payload: dict, timeout: float = 8.0, response_filter=None) -> MqttMessage:
         raise RuntimeError("mqtt unavailable")
+
+
+class PermitJoinFailingMqtt(FakeMqtt):
+    def request_response(self, request_topic: str, response_topic: str, payload: object, timeout: float = 8.0, response_filter=None) -> MqttMessage:
+        self.requests.append((request_topic, response_topic, payload))
+        if request_topic.endswith("/permit_join"):
+            response_payload = {"status": "error", "error": "permit join stop failed"}
+            return MqttMessage(topic=response_topic, payload=response_payload, raw_payload="{}")
+        return super().request_response(request_topic, response_topic, payload, timeout=timeout, response_filter=response_filter)
+
+
+class StringPermitJoinMqtt(FakeMqtt):
+    def request_response(self, request_topic: str, response_topic: str, payload: object, timeout: float = 8.0, response_filter=None) -> MqttMessage:
+        self.requests.append((request_topic, response_topic, payload))
+        if request_topic.endswith("/permit_join"):
+            response_payload = {"status": "ok", "data": {"value": "false"}}
+        elif request_topic.endswith("/device/remove"):
+            payload_dict = payload if isinstance(payload, dict) else {}
+            response_payload = {"status": "ok", "data": {"id": payload_dict.get("id")}}
+        else:
+            response_payload = {"status": "ok", "data": {}}
+        if response_filter:
+            self.assert_filter_result = response_filter(response_payload)
+        return MqttMessage(topic=response_topic, payload=response_payload, raw_payload="{}")
+
+
+class FullPermitJoinInvalidMqtt(FakeMqtt):
+    def request_response(self, request_topic: str, response_topic: str, payload: object, timeout: float = 8.0, response_filter=None) -> MqttMessage:
+        self.requests.append((request_topic, response_topic, payload))
+        if request_topic.endswith("/permit_join") and payload == {"value": False, "time": 0}:
+            response_payload = {"status": "error", "error": "Invalid payload", "data": {}}
+            if response_filter:
+                response_filter(response_payload)
+            return MqttMessage(topic=response_topic, payload=response_payload, raw_payload="{}")
+        if request_topic.endswith("/permit_join"):
+            value = payload.get("value") if isinstance(payload, dict) else payload
+            response_payload = {"status": "ok", "data": {"value": value}}
+            return MqttMessage(topic=response_topic, payload=response_payload, raw_payload="{}")
+        if request_topic.endswith("/device/remove"):
+            payload_dict = payload if isinstance(payload, dict) else {}
+            response_payload = {"status": "ok", "data": {"id": payload_dict.get("id")}}
+            return MqttMessage(topic=response_topic, payload=response_payload, raw_payload="{}")
+        return super().request_response(request_topic, response_topic, payload, timeout=timeout, response_filter=response_filter)
+
+
+class RemoveFailingSnapshotMqtt(SnapshotMqtt):
+    def request_response(self, request_topic: str, response_topic: str, payload: object, timeout: float = 8.0, response_filter=None) -> MqttMessage:
+        self.requests.append((request_topic, response_topic, payload))
+        if request_topic.endswith("/permit_join"):
+            value = payload.get("value") if isinstance(payload, dict) else payload
+            return MqttMessage(topic=response_topic, payload={"status": "ok", "data": {"value": value}}, raw_payload="{}")
+        if request_topic.endswith("/device/remove"):
+            payload_dict = payload if isinstance(payload, dict) else {}
+            return MqttMessage(
+                topic=response_topic,
+                payload={"status": "error", "error": f"Device '{payload_dict.get('id')}' does not exist", "data": {}},
+                raw_payload="{}",
+            )
+        return super().request_response(request_topic, response_topic, payload, timeout=timeout, response_filter=response_filter)
 
 
 class FakeHomeAssistant:
@@ -165,6 +230,63 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertEqual(role["source"], "zigbee2mqtt")
         self.assertEqual(role["entity_id"], "zigbee2mqtt/Haustuer")
         self.assertEqual(mqtt.requests[0][0], "zigbee2mqtt/bridge/request/device/rename")
+        self.assertIn(("zigbee2mqtt/bridge/request/permit_join", {"value": False, "time": 0}), mqtt.published)
+
+    def test_mqtt_discovery_stops_permit_join_when_candidate_is_found(self) -> None:
+        mqtt = SnapshotMqtt([])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"SENTERO_SENSOR_SOURCE": "mqtt", "SENTERO_MQTT_BOOTSTRAP_EVENTS": ""},
+            clear=False,
+        ):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            manager = SensorManager(mapping)
+            started = manager.start_discovery("door_contact", room_id="entrance", duration=60)
+            mqtt.messages = [FakeMessage("zigbee2mqtt/Haustuer", {"contact": False})]
+            found = manager.discovered(started["discovery_id"])
+
+        self.assertEqual(found["status"], "found")
+        self.assertEqual(mqtt.published[-1], ("zigbee2mqtt/bridge/request/permit_join", {"value": False, "time": 0}))
+
+    def test_mqtt_discovery_stops_permit_join_on_timeout(self) -> None:
+        mqtt = SnapshotMqtt([])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"SENTERO_SENSOR_SOURCE": "mqtt", "SENTERO_MQTT_BOOTSTRAP_EVENTS": ""},
+            clear=False,
+        ):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            manager = SensorManager(mapping)
+            started = manager.start_discovery("door_contact", room_id="entrance", duration=60)
+            old = (datetime.now(timezone.utc) - timedelta(seconds=240)).isoformat(timespec="seconds")
+            with mapping.connect() as con:
+                con.execute("update sensor_discovery_sessions set started_at = ? where id = ?", (old, started["discovery_id"]))
+                con.commit()
+            result = manager.discovered(started["discovery_id"])
+
+        self.assertEqual(result["status"], "not_found")
+        self.assertEqual(mqtt.published[-1], ("zigbee2mqtt/bridge/request/permit_join", {"value": False, "time": 0}))
+
+    def test_cancel_discovery_stops_permit_join(self) -> None:
+        mqtt = SnapshotMqtt([])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"SENTERO_SENSOR_SOURCE": "mqtt", "SENTERO_MQTT_BOOTSTRAP_EVENTS": ""},
+            clear=False,
+        ):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            manager = SensorManager(mapping)
+            started = manager.start_discovery("door_contact", room_id="entrance", duration=60)
+            result = manager.cancel_discovery(started["discovery_id"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(mqtt.published[-1], ("zigbee2mqtt/bridge/request/permit_join", {"value": False, "time": 0}))
 
     def test_sensor_register_renames_zigbee2mqtt_device_before_saving(self) -> None:
         mqtt = SnapshotMqtt([])
@@ -218,6 +340,11 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertTrue(result["deleted"])
         self.assertEqual(result["removal"]["provider"], "zigbee2mqtt")
         self.assertEqual(mqtt.requests[0], (
+            "zigbee2mqtt/bridge/request/permit_join",
+            "zigbee2mqtt/bridge/response/permit_join",
+            {"value": False, "time": 0},
+        ))
+        self.assertEqual(mqtt.requests[1], (
             "zigbee2mqtt/bridge/request/device/remove",
             "zigbee2mqtt/bridge/response/device/remove",
             {"id": "0xa4c13811eb64ffff"},
@@ -245,6 +372,187 @@ class MqttSensorSourceTests(unittest.TestCase):
             role = mapping.get_role("Keller_door", dev=True)
 
         self.assertIsNotNone(role)
+
+    def test_delete_zigbee2mqtt_sensor_does_not_remove_when_permit_join_stop_fails(self) -> None:
+        mqtt = PermitJoinFailingMqtt()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"SENTERO_SENSOR_SOURCE": "mqtt"}, clear=False):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            mapping.upsert_role({
+                "role": "Keller_door",
+                "room": "Keller",
+                "entity_id": "zigbee2mqtt/0xa4c13811eb64ffff",
+                "device_id": "0xa4c13811eb64ffff",
+                "friendly_name": "Keller Hobby Rechts",
+                "device_class": "opening",
+                "domain": "binary_sensor",
+                "source": "zigbee2mqtt",
+                "confidence": 100,
+            })
+            with self.assertRaises(RuntimeError):
+                mapping.delete_role("Keller_door")
+            role = mapping.get_role("Keller_door", dev=True)
+
+        self.assertIsNotNone(role)
+        self.assertEqual(mqtt.requests, [
+            (
+                "zigbee2mqtt/bridge/request/permit_join",
+                "zigbee2mqtt/bridge/response/permit_join",
+                {"value": False, "time": 0},
+            ),
+            (
+                "zigbee2mqtt/bridge/request/permit_join",
+                "zigbee2mqtt/bridge/response/permit_join",
+                {"value": False, "time": 0, "device": None},
+            ),
+            (
+                "zigbee2mqtt/bridge/request/permit_join",
+                "zigbee2mqtt/bridge/response/permit_join",
+                {"value": False},
+            ),
+            (
+                "zigbee2mqtt/bridge/request/permit_join",
+                "zigbee2mqtt/bridge/response/permit_join",
+                False,
+            ),
+        ])
+
+    def test_delete_zigbee2mqtt_sensor_accepts_string_false_permit_join_response(self) -> None:
+        mqtt = StringPermitJoinMqtt()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"SENTERO_SENSOR_SOURCE": "mqtt"}, clear=False):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            mapping.upsert_role({
+                "role": "Keller_door",
+                "room": "Keller",
+                "entity_id": "zigbee2mqtt/0xa4c13811eb64ffff",
+                "device_id": "0xa4c13811eb64ffff",
+                "friendly_name": "Keller Hobby Rechts",
+                "device_class": "opening",
+                "domain": "binary_sensor",
+                "source": "zigbee2mqtt",
+                "confidence": 100,
+            })
+            result = mapping.delete_role("Keller_door")
+
+        self.assertTrue(result["deleted"])
+        self.assertTrue(mqtt.assert_filter_result)
+        self.assertEqual(mqtt.requests[0][0], "zigbee2mqtt/bridge/request/permit_join")
+        self.assertEqual(mqtt.requests[1][0], "zigbee2mqtt/bridge/request/device/remove")
+
+    def test_delete_zigbee2mqtt_sensor_retries_permit_join_stop_after_invalid_payload(self) -> None:
+        mqtt = FullPermitJoinInvalidMqtt()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"SENTERO_SENSOR_SOURCE": "mqtt"}, clear=False):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            mapping.upsert_role({
+                "role": "Keller_door",
+                "room": "Keller",
+                "entity_id": "zigbee2mqtt/0xa4c1381219fcffff",
+                "device_id": "0xa4c1381219fcffff",
+                "friendly_name": "Keller Hobby Rechts",
+                "device_class": "opening",
+                "domain": "binary_sensor",
+                "source": "zigbee2mqtt",
+                "confidence": 100,
+            })
+            result = mapping.delete_role("Keller_door")
+
+        self.assertTrue(result["deleted"])
+        self.assertEqual(mqtt.requests[0], (
+            "zigbee2mqtt/bridge/request/permit_join",
+            "zigbee2mqtt/bridge/response/permit_join",
+            {"value": False, "time": 0},
+        ))
+        self.assertEqual(mqtt.requests[1], (
+            "zigbee2mqtt/bridge/request/permit_join",
+            "zigbee2mqtt/bridge/response/permit_join",
+            {"value": False, "time": 0, "device": None},
+        ))
+        self.assertEqual(mqtt.requests[2][0], "zigbee2mqtt/bridge/request/device/remove")
+
+    def test_delete_zigbee2mqtt_sensor_prefers_ieee_over_stale_friendly_name(self) -> None:
+        mqtt = SnapshotMqtt([])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"SENTERO_SENSOR_SOURCE": "mqtt", "SENTERO_MQTT_BOOTSTRAP_EVENTS": ""},
+            clear=False,
+        ):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            mapping.upsert_role({
+                "role": "Keller_door",
+                "room": "Keller",
+                "entity_id": "zigbee2mqtt/Keller Türkontakt",
+                "device_id": "0xa4c1381219fcffff",
+                "friendly_name": "Keller Türkontakt2",
+                "device_class": "opening",
+                "domain": "binary_sensor",
+                "source": "zigbee2mqtt",
+                "confidence": 100,
+            })
+            result = mapping.delete_role("Keller_door")
+
+        self.assertTrue(result["deleted"])
+        self.assertEqual(mqtt.requests[1], (
+            "zigbee2mqtt/bridge/request/device/remove",
+            "zigbee2mqtt/bridge/response/device/remove",
+            {"id": "0xa4c1381219fcffff"},
+        ))
+
+    def test_delete_zigbee2mqtt_sensor_does_not_try_child_entity_names(self) -> None:
+        mqtt = RemoveFailingSnapshotMqtt([
+            FakeMessage(
+                "zigbee2mqtt/Keller Türkontakt2",
+                {
+                    "contact": False,
+                    "battery": 100,
+                    "voltage": 3000,
+                    "tamper": False,
+                    "linkquality": 80,
+                },
+            )
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"SENTERO_SENSOR_SOURCE": "mqtt", "SENTERO_MQTT_BOOTSTRAP_EVENTS": ""},
+            clear=False,
+        ):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            mapping.upsert_role({
+                "role": "Keller_door",
+                "room": "Keller",
+                "entity_id": "zigbee2mqtt/Keller Türkontakt",
+                "device_id": "0xa4c1381219fcffff",
+                "friendly_name": "Keller Türkontakt2",
+                "device_class": "opening",
+                "domain": "binary_sensor",
+                "source": "zigbee2mqtt",
+                "confidence": 100,
+            })
+            with self.assertRaises(RuntimeError):
+                mapping.delete_role("Keller_door")
+
+        remove_ids = [
+            payload.get("id")
+            for request_topic, _, payload in mqtt.requests
+            if request_topic.endswith("/device/remove") and isinstance(payload, dict)
+        ]
+        self.assertIn("0xa4c1381219fcffff", remove_ids)
+        self.assertIn("Keller Türkontakt", remove_ids)
+        self.assertIn("Keller Türkontakt2", remove_ids)
+        self.assertNotIn("zigbee2mqtt/Keller Türkontakt", remove_ids)
+        self.assertNotIn("zigbee2mqtt/Keller Türkontakt2", remove_ids)
+        self.assertNotIn("keller_t_rkontakt2", remove_ids)
+        self.assertNotIn("Keller Türkontakt2 Batterie", remove_ids)
+        self.assertNotIn("Keller Türkontakt2 Spannung", remove_ids)
+        self.assertNotIn("Keller Türkontakt2 Manipulation", remove_ids)
 
     def test_registered_mqtt_sensor_uses_discovery_cache_when_no_retained_state_exists(self) -> None:
         mqtt = SnapshotMqtt([])

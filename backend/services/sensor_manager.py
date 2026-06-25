@@ -106,6 +106,9 @@ class SensorManager:
             },
         }
 
+    def cancel_discovery(self, discovery_id: int | None = None) -> dict[str, Any]:
+        return self.mapping.cancel_discovery(discovery_id)
+
     def assign_room(self, sensor_id: str, room_id: str) -> dict[str, Any]:
         return self.mapping_update_room(sensor_id, room_id)
 

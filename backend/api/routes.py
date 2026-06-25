@@ -71,6 +71,10 @@ class SensorRegisterPayload(BaseModel):
     room_id: str | None = None
 
 
+class SensorDiscoveryCancelPayload(BaseModel):
+    discovery_id: int | None = None
+
+
 class SensorNetworkPayload(BaseModel):
     wifi_ssid: str | None = None
     wifi_password: str | None = None
@@ -318,6 +322,16 @@ def sentero_sensor_manager_start_discovery(payload: SensorDiscoveryPayload):
 def sentero_sensor_manager_discovered(discovery_id: int = Query(...), dev: bool = Query(False)):
     try:
         return get_services().sensor_manager.discovered(discovery_id, dev=is_dev_mode(dev))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.post("/sensors/discovery/cancel", tags=[TAG_SENSORS])
+def sentero_sensor_manager_cancel_discovery(payload: SensorDiscoveryCancelPayload):
+    try:
+        return get_services().sensor_manager.cancel_discovery(payload.discovery_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
