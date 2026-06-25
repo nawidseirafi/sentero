@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import logging
 import re
 import socket
 from typing import Any
 
+from backend.logging_config import get_logger
 from backend.services.homeassistant_service import HomeAssistantService
 
 
@@ -12,7 +12,7 @@ class MatterCommissioningUnavailable(RuntimeError):
     pass
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class MatterService:

@@ -2,14 +2,14 @@
   "product": "Sentero",
   "current_version": "0.1.1",
   "latest_version": "0.1.1",
-  "status": "idle",
-  "state": "idle",
-  "last_checked": "2026-06-24T22:09:45+00:00",
+  "status": "check_failed",
+  "state": "check_failed",
+  "last_checked": "2026-06-25T08:41:52+00:00",
   "release_notes": [
     "Sentero 0.1.1 deployment build."
   ],
   "steps": [],
-  "message": "Ihre Installation ist auf dem neuesten Stand.",
+  "message": "Update-Pruefung fehlgeschlagen.",
   "version": {
     "edition": "sentero",
     "app_version": "0.1.1",
@@ -20,7 +20,7 @@
     "updated_at": "2026-06-25T00:00:00+00:00"
   },
   "channel": "stable",
-  "execution_mode": "dry_run",
+  "execution_mode": "zip",
   "update_server_url": "https://seirafi.de/robotersteve/sentero/stable/latest.json",
   "latest": {
     "latest_version": "0.1.1",
@@ -43,6 +43,6 @@
     "status": "idle",
     "available": false
   },
-  "last_error": null,
-  "dev_mode": true
+  "last_error": "Expecting value: line 1 column 1 (char 0)",
+  "dev_mode": false
 }

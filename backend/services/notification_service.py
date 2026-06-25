@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import smtplib
 import socket
 from abc import ABC, abstractmethod
@@ -10,11 +9,12 @@ from typing import Any
 
 import requests
 
+from backend.logging_config import get_logger
 from backend.services.messaging import MessagingService
 
 from backend.services.device_mapping_service import DeviceMappingService, now
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 CHANNELS = ("email", "telegram", "whatsapp")
 SEVERITIES = ("green", "yellow", "orange", "red")
@@ -144,7 +144,7 @@ class NotificationService:
             self._log(contact.get("id"), channel, "yellow", "sent", title, None)
             return {"ok": True, "message": "Testnachricht gesendet."}
         except Exception as exc:
-            logger.info("Sentero notification test failed channel=%s error=%s", channel, self._safe_error(exc))
+            logger.exception("Notification test failed", extra={"component": "notification", "channel": channel})
             self._mark_channel_enabled(channel, False)
             self._log(contact.get("id"), channel, "yellow", "failed", title, self._safe_error(exc))
             return self._test_error(dev, self._safe_error(exc))
@@ -176,6 +176,10 @@ class NotificationService:
 
         sensor_rows = sensors if sensors is not None else self.mapping.roles(dev=True, include_state=True)
         active_warnings = self._system_warnings(sensor_rows, battery_threshold=battery_threshold)
+        logger.debug(
+            "System warnings evaluated",
+            extra={"component": "notification", "sensor_count": len(sensor_rows), "warning_count": len(active_warnings)},
+        )
         active_keys = {warning["key"] for warning in active_warnings}
         self._resolve_inactive_system_warnings(active_keys)
 
@@ -273,7 +277,10 @@ class NotificationService:
             self._log(contact.get("id"), channel, severity, "sent", title, None)
         except Exception as exc:
             safe_error = self._safe_error(exc)
-            logger.info("Sentero notification failed channel=%s contact_id=%s error=%s", channel, contact.get("id"), safe_error)
+            logger.exception(
+                "Notification delivery failed",
+                extra={"component": "notification", "channel": channel, "contact_id": contact.get("id"), "severity": severity},
+            )
             self._log(contact.get("id"), channel, severity, "failed", title, safe_error)
             if channel != "email" and fallback:
                 try:
@@ -281,7 +288,10 @@ class NotificationService:
                     self.providers["email"].send(contact, title, email_text_for_fallback(text), email_setting.get("config") or {})
                     self._log(contact.get("id"), "email", severity, "fallback_sent", title, None)
                 except Exception as fallback_exc:
-                    logger.info("Sentero fallback email failed contact_id=%s error=%s", contact.get("id"), self._safe_error(fallback_exc))
+                    logger.exception(
+                        "Notification fallback email failed",
+                        extra={"component": "notification", "contact_id": contact.get("id"), "severity": severity},
+                    )
                     self._log(contact.get("id"), "email", severity, "failed", title, self._safe_error(fallback_exc))
 
     def _setting(self, channel: str) -> dict[str, Any]:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import sqlite3
 import threading
 import time
@@ -12,9 +11,10 @@ from typing import Any
 
 from .device_discovery_service import DeviceDiscoveryService
 from .device_mapping_service import DB_PATH, DB_TIMEOUT_SECONDS, DeviceMappingService, configure_sqlite_connection, now
+from backend.logging_config import get_logger
 from backend.services.matter_service import MatterCommissioningUnavailable, MatterService
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class CommissioningService:
@@ -40,19 +40,21 @@ class CommissioningService:
     def start(self, setup_code: str | None = None, qr_payload: str | None = None) -> dict[str, Any]:
         payload = self.matter.validate_setup_payload(setup_code=setup_code, qr_payload=qr_payload)
         capabilities = self.matter.capabilities()
-        logger.info("HA erreichbar=%s", "yes" if capabilities.get("home_assistant") else "no")
+        logger.debug("Commissioning capabilities checked", extra={"component": "wizard", "homeassistant_available": bool(capabilities.get("home_assistant"))})
         if not capabilities.get("commissioning_available"):
             if not capabilities.get("matter_integration"):
-                logger.info("Matter Integration fehlt")
+                logger.warning("Matter integration missing", extra={"component": "wizard"})
             elif not capabilities.get("matter_server"):
-                logger.info("Matter Server fehlt")
+                logger.warning("Matter server missing", extra={"component": "wizard"})
             else:
-                logger.info("Commissioning Endpoint fehlt")
-            logger.info("Pairing fehlgeschlagen reason=unavailable message=%s", capabilities.get("message"))
-            logger.info(
-                "Pairing fehlgeschlagen id=none reason=unavailable message=%s capabilities=%s",
-                capabilities.get("message"),
-                {key: capabilities.get(key) for key in ("home_assistant", "matter_integration", "matter_server", "commissioning_available", "ipv6_available", "thread_available")},
+                logger.warning("Commissioning endpoint missing", extra={"component": "wizard"})
+            logger.warning(
+                "Pairing unavailable",
+                extra={
+                    "component": "wizard",
+                    "reason": "unavailable",
+                    "capabilities": {key: capabilities.get(key) for key in ("home_assistant", "matter_integration", "matter_server", "commissioning_available", "ipv6_available", "thread_available")},
+                },
             )
             raise MatterCommissioningUnavailable(str(capabilities.get("message") or "Matter Commissioning nicht verfügbar"))
         ready = self.matter.check_ready()
@@ -67,8 +69,7 @@ class CommissioningService:
                 (commissioning_id, "waiting", payload, json.dumps(baseline, ensure_ascii=False), json.dumps(ready, ensure_ascii=False), timestamp, timestamp),
             )
             con.commit()
-        logger.info("Pairing gestartet id=%s", commissioning_id)
-        logger.info("Sentero sensor pairing start id=%s ha_url=%s baseline_states=%s", commissioning_id, ready.get("ha_url"), len(baseline))
+        logger.info("Sensor pairing started", extra={"component": "wizard", "commissioning_id": commissioning_id, "baseline_states": len(baseline)})
         thread = threading.Thread(target=self._run_commissioning, args=(commissioning_id,), daemon=True)
         thread.start()
         return {"commissioning_id": commissioning_id}
@@ -154,15 +155,15 @@ class CommissioningService:
         try:
             self._update(commissioning_id, status="commissioning", logs=append_log(logs, "connecting"))
             row = self._session(commissioning_id)
-            logger.info("Matter commissioning request sent id=%s", commissioning_id)
-            logger.info("Matter commissioning status running id=%s", commissioning_id)
+            logger.info("Matter commissioning request sent", extra={"component": "wizard", "commissioning_id": commissioning_id})
+            logger.debug("Matter commissioning status running", extra={"component": "wizard", "commissioning_id": commissioning_id})
             logs = append_log(append_log(logs, "matter_commissioning_request_sent"), "matter_commissioning_status", {"status": "running"})
             self._update(commissioning_id, status="commissioning", logs=logs)
             response = self.matter.commission(row["setup_payload"])
-            logger.info("Matter commission raw response id=%s response=%s", commissioning_id, response)  # ← hier
+            logger.debug("Matter commission response received", extra={"component": "wizard", "commissioning_id": commissioning_id, "response": response})
             self._update(commissioning_id, ha_response=response, logs=append_log(logs, "pairing_response", response))
             if not response.get("ok"):
-                logger.info("Matter commissioning status failed id=%s reason=pairing_failed", commissioning_id)
+                logger.warning("Matter commissioning failed", extra={"component": "wizard", "commissioning_id": commissioning_id, "reason": "pairing_failed"})
                 self._update(commissioning_id, status="failed", error="pairing_failed", logs=append_log(logs, "matter_commissioning_status", {"status": "failed"}))
                 return
             baseline = json.loads(row["baseline_snapshot_json"] or "[]")
@@ -185,14 +186,14 @@ class CommissioningService:
                         detected["suggestions"],
                         logs=append_log(logs, "device_detected", {"entity_count": len(entity_ids), "device_ids": device_ids}),
                     )
-                    logger.info("Matter commissioning status completed id=%s device_id=%s entities=%s", commissioning_id, device_ids[0] if device_ids else None, len(entity_ids))
+                    logger.info("Matter commissioning completed", extra={"component": "wizard", "commissioning_id": commissioning_id, "device_id": device_ids[0] if device_ids else None, "entity_count": len(entity_ids)})
                     return
                 self._update(commissioning_id, status="commissioning", logs=append_log(logs, "waiting_for_sensor"))
                 time.sleep(2)
-            logger.info("Matter commissioning status failed id=%s reason=device_not_detected", commissioning_id)
+            logger.warning("Matter commissioning timed out", extra={"component": "wizard", "commissioning_id": commissioning_id, "reason": "device_not_detected"})
             self._update(commissioning_id, status="failed", error="device_not_detected", logs=append_log(logs, "timeout"))
         except MatterCommissioningUnavailable as exc:
-            logger.info("Matter commissioning status failed id=%s reason=unavailable message=%s", commissioning_id, exc)
+            logger.warning("Matter commissioning unavailable", extra={"component": "wizard", "commissioning_id": commissioning_id, "reason": "unavailable"})
             self._update(
                 commissioning_id,
                 status="failed",
@@ -200,8 +201,7 @@ class CommissioningService:
                 logs=append_log(logs, "matter_commissioning_status", {"status": "failed", "reason": "unavailable"}),
             )
         except Exception as exc:
-            logger.exception("Sentero sensor pairing failed id=%s", commissioning_id)
-            logger.info("Matter commissioning status failed id=%s reason=exception", commissioning_id)
+            logger.exception("Sentero sensor pairing failed", extra={"component": "wizard", "commissioning_id": commissioning_id})
             self._update(commissioning_id, status="failed", error=str(exc), logs=append_log(logs, "exception", {"error": str(exc)}))
 
     def _save_completed(self, commissioning_id: str, device_id: str | None, friendly_name: str, manufacturer: str | None, model: str | None, entity_ids: list[str], suggestions: list[dict[str, Any]], logs: list[dict[str, Any]]) -> None:

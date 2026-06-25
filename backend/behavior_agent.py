@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta, timezone
@@ -12,9 +11,10 @@ from .services.llm.factory import create_llm_client
 from .services.messaging import MessagingService
 
 from backend.services.device_mapping_service import DeviceMappingService, now
+from backend.logging_config import get_logger
 from backend.services.notification_service import NotificationService
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 VALID_STATUSES = {"green", "yellow", "orange", "red"}
 SYSTEM_PROMPT = """Du bist Sentero.
@@ -128,9 +128,11 @@ class SenteroBehaviorAgent:
             con.execute(f"alter table {table} add column {column} {definition}")
 
     def run(self, dry_run: bool = False) -> dict[str, Any]:
+        logger.debug("Behavior analysis start", extra={"component": "behavior", "dry_run": dry_run})
         self.ensure_schema()
         configured_roles = self.mapping.roles(dev=True, include_state=False)
         if not configured_roles:
+            logger.info("Behavior analysis skipped because no sensors are configured", extra={"component": "behavior"})
             return {
                 "status": "not_configured",
                 "assessment": None,
@@ -144,7 +146,7 @@ class SenteroBehaviorAgent:
         try:
             ha_snapshot = self.mapping.snapshot()
         except Exception as exc:
-            logger.info("Sentero behavior HA snapshot unavailable for presence analysis: %s", exc)
+            logger.exception("Behavior HA snapshot unavailable", extra={"component": "behavior"})
             ha_snapshot = []
         if not dry_run:
             self._record_snapshot(sensor_snapshot, ha_snapshot)
@@ -163,6 +165,16 @@ class SenteroBehaviorAgent:
         stored = assessment if dry_run else self._store_assessment(assessment)
         if not dry_run:
             self._notify_if_needed(stored, contacts)
+        logger.debug(
+            "Behavior analysis completed",
+            extra={
+                "component": "behavior",
+                "status": stored["status"],
+                "sensor_count": len(sensor_snapshot),
+                "history_count": len(history),
+                "dry_run": dry_run,
+            },
+        )
         return {
             "status": stored["status"],
             "assessment": stored,
@@ -189,6 +201,7 @@ class SenteroBehaviorAgent:
     def timeline_today(self) -> dict[str, Any]:
         start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         events = [event for event in self._history(days=1) if self._parse_time(event.get("event_time")) >= start]
+        logger.debug("Behavior timeline built", extra={"component": "behavior", "event_count": len(events)})
         return {
             "events": events,
             "assessment": self.latest(),
@@ -210,6 +223,7 @@ class SenteroBehaviorAgent:
     def _record_snapshot(self, roles: list[dict[str, Any]], ha_snapshot: list[dict[str, Any]] | None = None) -> None:
         timestamp = now()
         extra_events = self._fp300_snapshot_events(roles, ha_snapshot or [], timestamp)
+        written = 0
         with self.mapping.connect() as con:
             for role in [*roles, *extra_events]:
                 state = role.get("state")
@@ -247,7 +261,12 @@ class SenteroBehaviorAgent:
                         }, ensure_ascii=False),
                     ),
                 )
+                written += 1
             con.commit()
+        logger.debug(
+            "Behavior snapshot recorded",
+            extra={"component": "behavior", "role_count": len(roles), "extra_event_count": len(extra_events), "written_events": written},
+        )
 
     def _history(self, days: int) -> list[dict[str, Any]]:
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
@@ -319,6 +338,7 @@ class SenteroBehaviorAgent:
     def _assess(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
             client = create_llm_client()
+            logger.debug("Behavior LLM assessment start", extra={"component": "behavior", "provider": getattr(client, "provider", "unknown")})
             response = client.generate(
                 prompt=(
                     "Du bist behavior_analysis_agent. Bewerte ausschließlich die folgenden strukturierten Kennzahlen. "
@@ -331,9 +351,11 @@ class SenteroBehaviorAgent:
                 system=SYSTEM_PROMPT,
             )
             raw = self._extract_json(response.text)
-            return self._validate_assessment(raw, response.text)
+            assessment = self._validate_assessment(raw, response.text)
+            logger.debug("Behavior LLM assessment completed", extra={"component": "behavior", "status": assessment.get("status")})
+            return assessment
         except Exception as exc:
-            logger.info("Sentero behavior LLM unavailable, using heuristic fallback: %s", exc)
+            logger.exception("Behavior LLM assessment failed, using heuristic fallback", extra={"component": "behavior"})
             fallback = self._heuristic_assessment(payload)
             fallback["llm_response"] = json.dumps({"fallback_reason": str(exc)}, ensure_ascii=False)
             return fallback
@@ -418,6 +440,7 @@ class SenteroBehaviorAgent:
         stored = self._row_to_assessment(row)
         stored["email_subject"] = assessment.get("email_subject") or ""
         stored["email_body"] = assessment.get("email_body") or ""
+        logger.debug("Behavior assessment stored", extra={"component": "behavior", "assessment_id": stored.get("id"), "status": stored.get("status")})
         return stored
 
     def _notify_system_warnings(self, sensor_snapshot: list[dict[str, Any]]) -> None:
@@ -425,12 +448,11 @@ class SenteroBehaviorAgent:
             result = self.notifications.notify_system_warnings(sensor_snapshot)
             if result.get("warnings"):
                 logger.info(
-                    "Sentero system warnings checked warnings=%s sent=%s",
-                    len(result.get("warnings") or []),
-                    result.get("sent"),
+                    "System warnings generated",
+                    extra={"component": "behavior", "warning_count": len(result.get("warnings") or []), "sent": result.get("sent")},
                 )
         except Exception as exc:
-            logger.info("Sentero system warning check failed: %s", exc)
+            logger.exception("System warning check failed", extra={"component": "behavior"})
 
     def _notify_if_needed(self, assessment: dict[str, Any], contacts: list[dict[str, Any]]) -> None:
         if not self.mapping.roles(dev=True, include_state=False):

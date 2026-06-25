@@ -227,7 +227,7 @@ function activitySlotsFromRoles(roles: SenteroSensorRole[]) {
   const slots = [0, 6, 12, 18, 24].map((hour) => ({ hour, label: String(hour).padStart(2, '0'), active: false }));
   const today = new Date();
   for (const role of roles) {
-    const value = timestamp(role.last_changed || role.last_updated || role.updated_at);
+    const value = timestamp(role.last_changed || role.last_updated);
     if (!value) continue;
     const date = new Date(value);
     if (date.toDateString() !== today.toDateString()) continue;

@@ -17,14 +17,34 @@ home_assistant:
   token: HA_TOKEN
 
 mqtt:
-  host: MQTT_HOST
-  port: MQTT_PORT
-  username: MQTT_USERNAME
-  password: MQTT_PASSWORD
-  zigbee2mqtt_topic_prefix: ZIGBEE2MQTT_TOPIC_PREFIX
+  host: SENTERO_MQTT_HOST
+  port: SENTERO_MQTT_PORT
+  username: SENTERO_MQTT_USERNAME
+  password: SENTERO_MQTT_PASSWORD
+  topic_prefix: SENTERO_MQTT_TOPIC_PREFIX
+  zigbee2mqtt_topic_prefix: SENTERO_ZIGBEE2MQTT_TOPIC_PREFIX
 
 updates:
   channel: stable
   mode: dry_run
   manifest_path: update-manifest.json
   manifest_url: ""
+
+llm:
+  # rule_based keeps Sentero fully local and is the safe default.
+  # Set provider to openai, gemini, claude or llama/ollama when wanted.
+  # rule_based/openai/emini/claude/llama:
+  provider: gemini
+  timeout_seconds: 30
+  openai:
+    api_key: OPENAI_API_KEY
+    model: gpt-4.1-mini
+  gemini:
+    api_key: GEMINI_API_KEY
+    model: gemini-2.5-flash
+  claude:
+    api_key: CLAUDE_API_KEY
+    model: claude-3-5-sonnet-latest
+  llama:
+    base_url: http://localhost:11434
+    model: qwen2.5:3b

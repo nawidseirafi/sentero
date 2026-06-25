@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 
+from backend.sensors.service import SenteroSensorService
 from backend.services.auth_service import SenteroAuthService
 from backend.services.commissioning_service import CommissioningService
 from backend.services.device_mapping_service import DeviceMappingService
@@ -21,6 +22,7 @@ class SenteroServices:
     notification: NotificationService
     auth: SenteroAuthService
     update: SenteroUpdateService
+    sensors: SenteroSensorService
 
 
 @lru_cache(maxsize=1)
@@ -34,6 +36,7 @@ def get_services() -> SenteroServices:
         notification=NotificationService(mapping),
         auth=SenteroAuthService(mapping),
         update=SenteroUpdateService(),
+        sensors=SenteroSensorService(mapping),
     )
 
 

@@ -3,15 +3,18 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from typing import Any
+from backend.logging_config import get_logger
 from .device_mapping_service import DeviceMappingService, now
 
 ROOMS = ['living_room', 'kitchen', 'bathroom', 'bedroom', 'hallway', 'entrance']
+logger = get_logger(__name__)
 
 class SenteroSetupService:
     def __init__(self, mapping: DeviceMappingService) -> None:
         self.mapping = mapping
 
     def status(self) -> dict[str, Any]:
+        logger.debug("Wizard status requested", extra={"component": "wizard"})
         with self.mapping.connect() as con:
             row = con.execute('select * from setup_state where id = 1').fetchone()
             profile = con.execute('select * from sentero_profile where id = 1').fetchone()
@@ -20,7 +23,7 @@ class SenteroSetupService:
         profile_data = dict(profile) if profile else None
         contact_data = [dict(contact) for contact in contacts]
         notification_data = dict(notifications) if notifications else None
-        return {
+        status = {
             'current_step': row['current_step'],
             'completed_steps': json.loads(row['completed_steps'] or '[]'),
             'selected_rooms': json.loads(row['selected_rooms_json'] or '[]'),
@@ -34,8 +37,23 @@ class SenteroSetupService:
             'sensor_roles': self.mapping.roles(include_state=True),
             'updated_at': row['updated_at'],
         }
+        logger.debug(
+            "Wizard status built",
+            extra={
+                "component": "wizard",
+                "current_step": status["current_step"],
+                "is_complete": status["is_complete"],
+                "trusted_contacts_count": status["trusted_contacts_count"],
+                "sensor_roles_count": len(status["sensor_roles"]),
+            },
+        )
+        return status
 
     def set_step(self, current_step: str, completed_step: str | None = None, complete: bool | None = None) -> dict[str, Any]:
+        logger.debug(
+            "Wizard step update start",
+            extra={"component": "wizard", "current_step": current_step, "completed_step": completed_step, "complete": complete},
+        )
         with self.mapping.connect() as con:
             row = con.execute('select completed_steps from setup_state where id = 1').fetchone()
             completed = set(json.loads(row['completed_steps'] or '[]')) if row else set()
@@ -43,9 +61,14 @@ class SenteroSetupService:
                 completed.add(completed_step)
             con.execute('update setup_state set current_step = ?, completed_steps = ?, is_complete = coalesce(?, is_complete), updated_at = ? where id = 1', (current_step, json.dumps(sorted(completed)), None if complete is None else int(complete), now()))
             con.commit()
+        if complete:
+            logger.info("Wizard completed", extra={"component": "wizard"})
+        else:
+            logger.debug("Wizard step updated", extra={"component": "wizard", "current_step": current_step, "completed_steps": sorted(completed)})
         return self.status()
 
     def profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        logger.debug("Wizard profile save start", extra={"component": "wizard", "fields": sorted(payload.keys())})
         timestamp = now()
         notes_provided = payload.get('notes') is not None
         birth_year = normalize_birth_year(payload.get('birth_year'))
@@ -55,9 +78,11 @@ class SenteroSetupService:
             notes = payload.get('notes') if notes_provided else (existing['notes'] if existing else None)
             con.execute('''insert into sentero_profile (id, name, birth_year, age, notes, created_at, updated_at) values (1, ?, ?, ?, ?, ?, ?) on conflict(id) do update set name = excluded.name, birth_year = excluded.birth_year, age = excluded.age, notes = excluded.notes, updated_at = excluded.updated_at''', (payload.get('name'), birth_year, calculated_age, notes, timestamp, timestamp))
             con.commit()
+        logger.debug("Wizard profile saved", extra={"component": "wizard", "birth_year_present": bool(birth_year)})
         return self.set_step('prepare_home', 'profile')
 
     def rooms(self, rooms: list[str]) -> dict[str, Any]:
+        logger.debug("Wizard rooms save start", extra={"component": "wizard", "room_count": len(rooms)})
         clean_rooms = []
         for room in rooms:
             value = str(room or '').strip()
@@ -66,12 +91,15 @@ class SenteroSetupService:
         with self.mapping.connect() as con:
             con.execute('update setup_state set selected_rooms_json = ?, updated_at = ? where id = 1', (json.dumps(clean_rooms), now()))
             con.commit()
+        logger.debug("Wizard rooms saved", extra={"component": "wizard", "rooms": clean_rooms})
         return self.set_step('sensors', 'rooms')
 
     def sensors(self) -> dict[str, Any]:
+        logger.info("Wizard sensors step completed", extra={"component": "wizard"})
         return self.set_step('contacts', 'sensors')
 
     def contact(self, payload: dict[str, Any]) -> dict[str, Any]:
+        logger.debug("Wizard contact save start", extra={"component": "wizard", "fields": sorted(payload.keys())})
         timestamp = now()
         name = str(payload.get('name') or '').strip()
         email = normalize_email(payload.get('email'))
@@ -108,9 +136,11 @@ class SenteroSetupService:
                     (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, timestamp, timestamp),
                 )
             con.commit()
+        logger.info("Trusted contact saved", extra={"component": "wizard", "channels": channels, "primary_contact": bool(primary_contact)})
         return self.set_step('notifications', 'contacts')
 
     def update_contact(self, contact_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        logger.debug("Wizard contact update start", extra={"component": "wizard", "contact_id": contact_id, "fields": sorted(payload.keys())})
         name = str(payload.get('name') or '').strip()
         email = normalize_email(payload.get('email'))
         channels = normalize_channels(payload.get('preferred_channels'), email=email)
@@ -141,21 +171,27 @@ class SenteroSetupService:
                 (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, now(), contact_id),
             )
             con.commit()
+        logger.info("Trusted contact updated", extra={"component": "wizard", "contact_id": contact_id})
         return self.status()
 
     def delete_contact(self, contact_id: int) -> dict[str, Any]:
+        logger.debug("Wizard contact delete start", extra={"component": "wizard", "contact_id": contact_id})
         with self.mapping.connect() as con:
             con.execute('update trusted_contacts set active = 0, updated_at = ? where id = ?', (now(), contact_id))
             con.commit()
+        logger.info("Trusted contact deleted", extra={"component": "wizard", "contact_id": contact_id})
         return self.status()
 
     def notifications(self, payload: dict[str, Any]) -> dict[str, Any]:
+        logger.debug("Wizard notifications save start", extra={"component": "wizard", "fields": sorted(payload.keys())})
         with self.mapping.connect() as con:
             con.execute('''insert into notification_preferences (id, anomalies, critical, daily_summary, updated_at) values (1, ?, ?, ?, ?) on conflict(id) do update set anomalies = excluded.anomalies, critical = excluded.critical, daily_summary = excluded.daily_summary, updated_at = excluded.updated_at''', (int(bool(payload.get('anomalies', True))), int(bool(payload.get('critical', True))), int(bool(payload.get('daily_summary', False))), now()))
             con.commit()
+        logger.debug("Wizard notifications saved", extra={"component": "wizard"})
         return self.set_step('complete', 'notifications')
 
     def complete(self) -> dict[str, Any]:
+        logger.debug("Wizard completion validation start", extra={"component": "wizard"})
         with self.mapping.connect() as con:
             contact = con.execute("select id from trusted_contacts where active = 1 and email is not null and trim(email) != '' limit 1").fetchone()
             email_channel = con.execute("select * from notification_channel_settings where channel = 'email'").fetchone()
@@ -166,6 +202,7 @@ class SenteroSetupService:
         config = json.loads(email_channel['config_json'] or '{}')
         if not bool(email_channel['enabled']) or not config.get('smtp_host'):
             raise ValueError('email channel required')
+        logger.info("Wizard completion validated", extra={"component": "wizard"})
         return self.set_step('complete', 'complete', complete=True)
 
 

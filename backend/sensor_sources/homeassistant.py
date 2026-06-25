@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from backend.logging_config import get_logger
+
 from .base import SensorEvent
 from ..services.homeassistant_service import HomeAssistantService
+
+logger = get_logger(__name__)
 
 
 class HomeAssistantSensorSource:
@@ -15,9 +19,21 @@ class HomeAssistantSensorSource:
 
     def snapshot(self) -> list[SensorEvent]:
         events: list[SensorEvent] = []
-        for item in self.service.get_states():
+        states = self.service.get_states()
+        logger.debug("Home Assistant sensor snapshot start", extra={"component": "sensor_source", "sensor_source": self.name, "state_count": len(states)})
+        for item in states:
             entity_id = str(item.get("entity_id") or "")
             attrs = item.get("attributes") or {}
+            logger.debug(
+                "Home Assistant entity mapped",
+                extra={
+                    "component": "sensor_source",
+                    "sensor_source": self.name,
+                    "source_ref": entity_id,
+                    "device_class": attrs.get("device_class"),
+                    "room_id": attrs.get("area_id"),
+                },
+            )
             events.append(
                 SensorEvent(
                     source=self.name,
@@ -29,5 +45,5 @@ class HomeAssistantSensorSource:
                     metadata={"device_class": attrs.get("device_class"), "friendly_name": attrs.get("friendly_name")},
                 )
             )
+        logger.debug("Home Assistant sensor snapshot completed", extra={"component": "sensor_source", "sensor_source": self.name, "event_count": len(events)})
         return events
-

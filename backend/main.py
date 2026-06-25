@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import time
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -9,7 +12,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .paths import FRONTEND_DIST
 from backend.api.routes import OPENAPI_TAGS, router
+from backend.logging_config import configure_logging, get_logger
 from backend.services.container import get_services
+
+configure_logging()
+logger = get_logger(__name__)
 
 
 class SPAStaticFiles(StaticFiles):
@@ -29,7 +36,16 @@ class SPAStaticFiles(StaticFiles):
         return response
 
 
-app = FastAPI(title="Sentero API", version="0.1.0", openapi_tags=OPENAPI_TAGS)
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
+    logger.info("Application started", extra={"component": "app"})
+    try:
+        yield
+    finally:
+        logger.info("Application stopped", extra={"component": "app"})
+
+
+app = FastAPI(title="Sentero API", version="0.1.0", openapi_tags=OPENAPI_TAGS, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,7 +72,12 @@ AUTH_SCHEME_NAME = "HTTPBearer"
 
 @app.middleware("http")
 async def require_sentero_auth(request, call_next):
+    started = time.perf_counter()
     path = request.url.path.rstrip("/") or "/"
+    logger.debug(
+        "Request received",
+        extra={"component": "api", "method": request.method, "path": path, "request_id": request.headers.get("x-request-id", "")},
+    )
 
     # Let CORS preflight requests pass so browsers can reach protected endpoints
     # with authenticated requests afterwards.
@@ -67,11 +88,28 @@ async def require_sentero_auth(request, call_next):
         try:
             get_services().auth.user_from_request(request, required=True)
         except Exception as exc:
+            logger.warning(
+                "Authentication rejected",
+                extra={"component": "auth", "path": path, "request_id": request.headers.get("x-request-id", "")},
+            )
             return JSONResponse(
                 {"detail": getattr(exc, "detail", "Nicht angemeldet.")},
                 status_code=getattr(exc, "status_code", 401),
             )
-    return await call_next(request)
+    response = await call_next(request)
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+    logger.debug(
+        "Request completed",
+        extra={
+            "component": "api",
+            "method": request.method,
+            "path": path,
+            "status_code": response.status_code,
+            "elapsed_ms": elapsed_ms,
+            "request_id": request.headers.get("x-request-id", ""),
+        },
+    )
+    return response
 
 
 app.include_router(router)
@@ -118,4 +156,3 @@ def health() -> dict[str, str]:
 
 if FRONTEND_DIST.exists():
     app.mount("/", SPAStaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
-

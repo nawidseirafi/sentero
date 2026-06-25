@@ -7,9 +7,9 @@ services:
       - .env
     environment:
       SENTERO_SENSOR_SOURCE: ${SENTERO_DOCKER_SENSOR_SOURCE:-mqtt}
-      MQTT_HOST: mosquitto
-      MQTT_PORT: 1883
-      ZIGBEE2MQTT_TOPIC_PREFIX: ${ZIGBEE2MQTT_TOPIC_PREFIX:-zigbee2mqtt}
+      SENTERO_MQTT_HOST: mosquitto
+      SENTERO_MQTT_PORT: 1883
+      SENTERO_ZIGBEE2MQTT_TOPIC_PREFIX: ${SENTERO_ZIGBEE2MQTT_TOPIC_PREFIX:-zigbee2mqtt}
       SENTERO_UPDATE_MODE: ${SENTERO_UPDATE_MODE:-zip}
       UPDATE_BASE_URL: ${UPDATE_BASE_URL:-https://seirafi.de/robotersteve/sentero}
     ports:
@@ -26,8 +26,8 @@ services:
       - "1883:1883"
     volumes:
       - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - mosquitto-data:/mosquitto/data
-      - mosquitto-log:/mosquitto/log
+      - ./data/mosquitto:/mosquitto/data
+      - ./data/mosquitto-log:/mosquitto/log
 
   zigbee2mqtt:
     image: koenkk/zigbee2mqtt:latest
@@ -41,6 +41,3 @@ services:
       - production
 
 volumes:
-  mosquitto-data:
-  mosquitto-log:
-

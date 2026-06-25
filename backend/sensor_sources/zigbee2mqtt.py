@@ -6,8 +6,10 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from backend.logging_config import get_logger, is_debug_logging
 from backend.services.mqtt_service import MqttService
 
+logger = get_logger(__name__)
 
 IGNORED_TOPIC_PARTS = {"bridge", "availability"}
 BINARY_DEVICE_CLASSES = {"contact", "occupancy", "motion", "presence", "opening"}
@@ -21,8 +23,12 @@ class Zigbee2MqttSensorSource:
         self.mqtt = mqtt or MqttService()
         self.host = self.mqtt.host
         self.port = self.mqtt.port
-        self.topic_prefix = os.getenv("ZIGBEE2MQTT_TOPIC_PREFIX", "zigbee2mqtt").strip() or "zigbee2mqtt"
+        self.topic_prefix = os.getenv("SENTERO_ZIGBEE2MQTT_TOPIC_PREFIX") or os.getenv("ZIGBEE2MQTT_TOPIC_PREFIX", "zigbee2mqtt").strip() or "zigbee2mqtt"
         self.snapshot_timeout = float(os.getenv("SENTERO_MQTT_SNAPSHOT_TIMEOUT", "2.5") or "2.5")
+        logger.debug(
+            "Zigbee2MQTT source configured",
+            extra={"component": "sensor_source", "sensor_source": self.name, "host": self.host, "port": self.port, "topic_prefix": self.topic_prefix},
+        )
 
     def configured(self) -> bool:
         return self.mqtt.configured()
@@ -30,19 +36,35 @@ class Zigbee2MqttSensorSource:
     def snapshot(self) -> list[dict[str, Any]]:
         seed = os.getenv("SENTERO_MQTT_BOOTSTRAP_EVENTS", "").strip()
         if seed:
+            logger.debug("Zigbee2MQTT snapshot uses bootstrap seed", extra={"component": "sensor_source", "sensor_source": self.name})
             return self._snapshot_from_seed(seed)
-        messages = self.mqtt.retained_messages(f"{self.topic_prefix}/#", timeout=self.snapshot_timeout)
+        try:
+            messages = self.mqtt.retained_messages(f"{self.topic_prefix}/#", timeout=self.snapshot_timeout)
+        except Exception:
+            logger.exception(
+                "Zigbee2MQTT snapshot failed",
+                extra={"component": "sensor_source", "sensor_source": self.name, "topic_prefix": self.topic_prefix},
+            )
+            return []
         rows: list[dict[str, Any]] = []
         now = utc_now()
         for message in messages:
             rows.extend(self._entities_from_message(message.topic, message.payload, now))
+        logger.debug(
+            "Zigbee2MQTT snapshot completed",
+            extra={"component": "sensor_source", "sensor_source": self.name, "message_count": len(messages), "row_count": len(rows)},
+        )
         return rows
 
     def publish(self, topic: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.mqtt.publish(topic, payload)
 
     def _snapshot_from_seed(self, seed: str) -> list[dict[str, Any]]:
-        payload = json.loads(seed)
+        try:
+            payload = json.loads(seed)
+        except json.JSONDecodeError:
+            logger.exception("Invalid MQTT bootstrap seed", extra={"component": "sensor_source", "sensor_source": self.name})
+            return []
         rows = payload if isinstance(payload, list) else [payload]
         result: list[dict[str, Any]] = []
         now = utc_now()
@@ -59,7 +81,16 @@ class Zigbee2MqttSensorSource:
     def _entities_from_message(self, topic: str, payload: Any, timestamp: str) -> list[dict[str, Any]]:
         device = self._device_from_topic(topic)
         if not device or not isinstance(payload, dict):
+            logger.debug(
+                "Zigbee2MQTT message skipped",
+                extra={"component": "sensor_source", "sensor_source": self.name, "topic": topic, "has_device": bool(device)},
+            )
             return []
+        if is_debug_logging():
+            logger.debug(
+                "Zigbee2MQTT payload received",
+                extra={"component": "sensor_source", "sensor_source": self.name, "topic": topic, "device_id": device, "payload": payload},
+            )
         rows: list[dict[str, Any]] = []
         state_key = next((key for key in STATE_KEYS if key in payload), None)
         if state_key:
@@ -67,6 +98,10 @@ class Zigbee2MqttSensorSource:
         for key in ("battery", "battery_low", "linkquality"):
             if key in payload:
                 rows.append(self._entity(device, key, payload.get(key), payload, timestamp))
+        logger.debug(
+            "Zigbee2MQTT payload normalized",
+            extra={"component": "sensor_source", "sensor_source": self.name, "topic": topic, "device_id": device, "row_count": len(rows)},
+        )
         return rows
 
     def _device_from_topic(self, topic: str) -> str:

@@ -27,7 +27,7 @@ class SensorSource(Protocol):
 
 
 def create_sensor_source() -> SensorSource:
-    mode = os.getenv("SENTERO_SENSOR_SOURCE", "mqtt").strip().lower()
+    mode = os.getenv("SENTERO_SENSOR_SOURCE", "homeassistant").strip().lower()
     if mode in {"mqtt", "zigbee2mqtt", "z2m"}:
         from .zigbee2mqtt import Zigbee2MqttSensorSource
 

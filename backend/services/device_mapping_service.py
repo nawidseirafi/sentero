@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import sqlite3
@@ -10,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.paths import DATA_DIR
+from backend.logging_config import get_logger
 from backend.sensor_sources.base import create_sensor_source
 from backend.services.homeassistant_service import HomeAssistantService
 from backend.services.mqtt_service import MqttService
@@ -20,7 +20,7 @@ DISCOVERY_TIMEOUT_SECONDS = 180
 DISCOVERY_CONFIDENCE_THRESHOLD = 50
 PRESENCE_CLASSES = {'occupancy', 'motion', 'presence'}
 CONTACT_CLASSES = {'door', 'window', 'opening', 'contact'}
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 ROOM_TERMS = {
     'living_room': ['wohnzimmer', 'living', 'living_room'],
     'kitchen': ['kueche', 'küche', 'kitchen'],
@@ -57,9 +57,14 @@ class DeviceMappingService:
         self.sensor_source = create_sensor_source()
         self.mqtt = MqttService()
         self.ensure_schema()
+        logger.debug(
+            "Device mapping service initialized",
+            extra={"component": "device_mapping", "sensor_source": self.source_mode, "database_path": str(self.database_path)},
+        )
 
     def connect(self) -> sqlite3.Connection:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.debug("Database connection opening", extra={"component": "database", "database_path": str(self.database_path)})
         con = sqlite3.connect(self.database_path, timeout=DB_TIMEOUT_SECONDS)
         con.row_factory = sqlite3.Row
         configure_sqlite_connection(con)
@@ -72,7 +77,7 @@ class DeviceMappingService:
 
     def home_status(self) -> dict[str, bool]:
         if self.uses_mqtt_source():
-            if not self.sensor_source.configured():
+            if not self.sensor_source.configured() or not self.mqtt.client_available():
                 return {'connected': False, 'sensor_ready': False, 'system_ready': False}
             try:
                 states = self.snapshot()
@@ -155,12 +160,22 @@ class DeviceMappingService:
             logger.exception("Sentero pairing baseline failed. ha_url=%s reachable=no", ha_url)
             raise
         detail = self._open_zigbee_permit_join(duration)
-        status = 'pairing_started' if detail.get('ok') else 'pairing_needs_manual_action'
+        homeassistant_fallback = self.source_mode == 'homeassistant' and not detail.get('ok')
+        status = 'pairing_started' if detail.get('ok') else 'waiting_for_signal' if homeassistant_fallback else 'pairing_needs_manual_action'
         message = (
             'Sensor-Suche gestartet. Bitte aktivieren Sie den Sensor jetzt.'
             if detail.get('ok')
+            else 'Bitte lernen Sie den Sensor in Home Assistant an und aktivieren Sie ihn danach einmal.'
+            if homeassistant_fallback
             else 'Die Sensor-Einrichtung ist noch nicht bereit.'
         )
+        if homeassistant_fallback:
+            detail = {
+                **detail,
+                'provider': 'homeassistant',
+                'mode': 'discovery',
+                'permit_join_available': False,
+            }
         with self.connect() as con:
             cur = con.execute(
                 '''insert into sensor_discovery_sessions
@@ -181,8 +196,13 @@ class DeviceMappingService:
             status,
             detail.get('provider'),
         )
-        if not detail.get('ok'):
+        if not detail.get('ok') and not homeassistant_fallback:
             logger.warning("Sentero pairing unavailable session=%s detail=%s", session_id, detail)
+        elif homeassistant_fallback:
+            logger.info(
+                "Zigbee permit_join unavailable, using Home Assistant discovery",
+                extra={"component": "wizard", "session_id": session_id, "sensor_source": self.source_mode},
+            )
         return {'session_id': session_id, 'status': status, 'message': message, 'detail': detail}
 
     def candidates(self, session_id: int, dev: bool = False) -> dict[str, Any]:
@@ -511,19 +531,19 @@ class DeviceMappingService:
                     return {'ok': True, 'provider': 'zha', 'ieee': ieee, 'response': response, 'attempts': attempts}
                 except Exception as exc:
                     attempts.append({'provider': 'zha', 'ieee': ieee, 'error': str(exc)})
-                    logger.info("Sentero device remove failed provider=zha entity=%s device=%s ieee=%s error=%s", entity_id, device_id, ieee, exc)
+                    logger.warning("Device remove attempt failed", extra={"component": "device_mapping", "provider": "zha", "device_id": device_id, "source_ref": entity_id})
                 continue
             if provider == 'zigbee2mqtt':
                 for mqtt_id in mqtt_ids:
                     try:
                         response = self._mqtt_publish(
-                            'zigbee2mqtt/bridge/request/device/remove',
+                            self._zigbee2mqtt_topic('bridge/request/device/remove'),
                             {'id': mqtt_id, 'force': True},
                         )
                         return {'ok': True, 'provider': 'zigbee2mqtt', 'id': mqtt_id, 'response': response, 'attempts': attempts}
                     except Exception as exc:
                         attempts.append({'provider': 'zigbee2mqtt', 'id': mqtt_id, 'error': str(exc)})
-                        logger.info("Sentero device remove failed provider=zigbee2mqtt entity=%s device=%s id=%s error=%s", entity_id, device_id, mqtt_id, exc)
+                        logger.warning("Device remove attempt failed", extra={"component": "device_mapping", "provider": "zigbee2mqtt", "device_id": device_id, "source_ref": entity_id})
         return {
             'ok': False,
             'reason': 'zigbee_remove_unavailable',
@@ -550,14 +570,17 @@ class DeviceMappingService:
             reachable = sensor_reachable_status(state)
             battery_entity = find_battery_entity({**row, **(state or {})}, states)
             battery_level = parse_battery(battery_entity.get('state')) if battery_entity else None
-            logger.info(
-                "Sentero sensor health role=%s stored_entity=%s resolved_entity=%s reachable=%s battery_entity=%s battery_level=%s",
-                row.get('role'),
-                entity_id,
-                state.get('entity_id') if state else None,
-                reachable,
-                battery_entity.get('entity_id') if battery_entity else None,
-                battery_level,
+            logger.debug(
+                "Sensor health resolved",
+                extra={
+                    "component": "device_mapping",
+                    "role": row.get('role'),
+                    "source_ref": entity_id,
+                    "resolved_entity": state.get('entity_id') if state else None,
+                    "reachable": reachable,
+                    "battery_entity": battery_entity.get('entity_id') if battery_entity else None,
+                    "battery_level": battery_level,
+                },
             )
             result.append({
                 **row,
@@ -618,14 +641,41 @@ class DeviceMappingService:
         return self.source_mode in {'mqtt', 'zigbee2mqtt', 'z2m'}
 
     def _mqtt_publish(self, topic: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.mqtt.publish(topic, payload)
+        try:
+            return self.mqtt.publish(topic, payload)
+        except Exception as direct_exc:
+            if self.source_mode not in {'homeassistant', 'mixed'}:
+                raise
+            try:
+                response = self.ha.call_service(
+                    'mqtt',
+                    'publish',
+                    {
+                        'topic': topic,
+                        'payload': json.dumps(payload, ensure_ascii=False),
+                    },
+                )
+                logger.info(
+                    "MQTT publish sent through Home Assistant",
+                    extra={"component": "mqtt", "topic": topic, "sensor_source": self.source_mode},
+                )
+                return {'ok': True, 'provider': 'homeassistant_mqtt', 'topic': topic, 'payload': payload, 'response': response}
+            except Exception:
+                logger.exception("MQTT publish failed through direct MQTT and Home Assistant", extra={"component": "mqtt", "topic": topic})
+                raise direct_exc
+
+    def _zigbee2mqtt_topic(self, suffix: str) -> str:
+        prefix = os.getenv('SENTERO_ZIGBEE2MQTT_TOPIC_PREFIX') or os.getenv('ZIGBEE2MQTT_TOPIC_PREFIX') or 'zigbee2mqtt'
+        clean_prefix = str(prefix or 'zigbee2mqtt').strip().strip('/') or 'zigbee2mqtt'
+        clean_suffix = str(suffix or '').strip().strip('/')
+        return f'{clean_prefix}/{clean_suffix}' if clean_suffix else clean_prefix
 
     def _entity_registry_by_entity_id(self) -> dict[str, dict[str, Any]]:
         try:
             response = self.ha.websocket_command({'type': 'config/entity_registry/list'}, timeout=12)
             rows = registry_result_list(response)
         except Exception as exc:
-            logger.info("Sentero HA entity registry unavailable ha_url=%s error=%s", getattr(self.ha, 'base_url', ''), exc)
+            logger.warning("HA entity registry unavailable", extra={"component": "homeassistant", "ha_url": getattr(self.ha, 'base_url', '')})
             return {}
         return {str(item.get('entity_id') or ''): item for item in rows if item.get('entity_id')}
 
@@ -634,7 +684,7 @@ class DeviceMappingService:
             response = self.ha.websocket_command({'type': 'config/device_registry/list'}, timeout=12)
             rows = registry_result_list(response)
         except Exception as exc:
-            logger.info("Sentero HA device registry unavailable ha_url=%s error=%s", getattr(self.ha, 'base_url', ''), exc)
+            logger.warning("HA device registry unavailable", extra={"component": "homeassistant", "ha_url": getattr(self.ha, 'base_url', '')})
             return {}
         return {str(item.get('id') or ''): item for item in rows if item.get('id')}
 
@@ -643,7 +693,7 @@ class DeviceMappingService:
             response = self.ha.websocket_command({'type': 'config/area_registry/list'}, timeout=12)
             return registry_result_list(response)
         except Exception as exc:
-            logger.info("Sentero HA area registry unavailable ha_url=%s error=%s", getattr(self.ha, 'base_url', ''), exc)
+            logger.warning("HA area registry unavailable", extra={"component": "homeassistant", "ha_url": getattr(self.ha, 'base_url', '')})
             return []
 
     def _ensure_home_assistant_area(self, room: str | None) -> str | None:
@@ -663,7 +713,7 @@ class DeviceMappingService:
             if isinstance(result, dict):
                 return result.get('area_id') or result.get('id')
         except Exception as exc:
-            logger.info("Sentero HA area create failed room=%s label=%s error=%s", room, label, exc)
+            logger.warning("HA area create failed", extra={"component": "homeassistant", "room_id": room})
         return None
 
     def _apply_home_assistant_metadata(self, entity: dict[str, Any], name: str, room: str | None) -> dict[str, Any]:
@@ -697,7 +747,7 @@ class DeviceMappingService:
                 detail['updated'].append('device_registry')
             except Exception as exc:
                 detail.setdefault('errors', []).append({'target': 'device_registry', 'error': str(exc)})
-                logger.info("Sentero HA device metadata update failed entity=%s device=%s area=%s error=%s", entity_id, device_id, area_id, exc)
+                logger.warning("HA device metadata update failed", extra={"component": "homeassistant", "device_id": device_id, "source_ref": entity_id, "room_id": area_id})
         payload = {'type': 'config/entity_registry/update', 'entity_id': entity_id}
         if name:
             payload['name'] = name
@@ -708,7 +758,7 @@ class DeviceMappingService:
             detail['updated'].append('entity_registry')
         except Exception as exc:
             detail.setdefault('errors', []).append({'target': 'entity_registry', 'error': str(exc)})
-            logger.info("Sentero HA entity metadata update failed entity=%s area=%s error=%s", entity_id, area_id, exc)
+            logger.warning("HA entity metadata update failed", extra={"component": "homeassistant", "source_ref": entity_id, "room_id": area_id})
         zigbee2mqtt_rename = self._rename_zigbee2mqtt_device(entity, name)
         if zigbee2mqtt_rename.get('ok'):
             detail['updated'].append('zigbee2mqtt')
@@ -728,13 +778,13 @@ class DeviceMappingService:
             return {'ok': False, 'reason': 'no_zigbee2mqtt_id', 'candidates': candidates}
         try:
             response = self._mqtt_publish(
-                'zigbee2mqtt/bridge/request/device/rename',
+                self._zigbee2mqtt_topic('bridge/request/device/rename'),
                 {'from': source_id, 'to': clean_name, 'homeassistant_rename': not self.uses_mqtt_source()},
             )
-            logger.info("Sentero Zigbee2MQTT rename sent from=%s to=%s entity=%s", source_id, clean_name, entity.get('entity_id'))
+            logger.info("Zigbee2MQTT rename sent", extra={"component": "device_mapping", "device_id": source_id, "source_ref": entity.get('entity_id')})
             return {'ok': True, 'provider': 'zigbee2mqtt', 'from': source_id, 'to': clean_name, 'response': response}
         except Exception as exc:
-            logger.info("Sentero Zigbee2MQTT rename failed from=%s to=%s entity=%s error=%s", source_id, clean_name, entity.get('entity_id'), exc)
+            logger.warning("Zigbee2MQTT rename failed", extra={"component": "device_mapping", "device_id": source_id, "source_ref": entity.get('entity_id')})
             return {'ok': False, 'reason': 'rename_failed', 'from': source_id, 'to': clean_name, 'error': str(exc)}
 
     def _try_matter_pairing(self, pairing_code: str) -> dict[str, Any]:
@@ -755,28 +805,28 @@ class DeviceMappingService:
             if provider == 'zha':
                 try:
                     response = self.ha.call_service('zha', 'permit', {'duration': duration})
-                    logger.info("Sentero Zigbee permit_join sent provider=zha duration=%s", duration)
+                    logger.info("Zigbee permit_join sent", extra={"component": "wizard", "provider": "zha", "duration": duration})
                     return {'ok': True, 'provider': 'zha', 'duration': duration, 'response': response, 'attempts': attempts}
                 except Exception as exc:
                     attempts.append({'provider': 'zha', 'error': str(exc)})
-                    logger.info("Sentero Zigbee permit_join failed provider=zha error=%s", exc)
+                    logger.warning("Zigbee permit_join failed", extra={"component": "wizard", "provider": "zha", "duration": duration})
                 continue
             if provider == 'zigbee2mqtt':
                 try:
                     response = self._mqtt_publish(
-                        'zigbee2mqtt/bridge/request/permit_join',
+                        self._zigbee2mqtt_topic('bridge/request/permit_join'),
                         {'value': True, 'time': duration},
                     )
-                    logger.info("Sentero Zigbee permit_join sent provider=zigbee2mqtt duration=%s", duration)
+                    logger.info("Zigbee permit_join sent", extra={"component": "wizard", "provider": "zigbee2mqtt", "duration": duration})
                     return {'ok': True, 'provider': 'zigbee2mqtt', 'duration': duration, 'response': response, 'attempts': attempts}
                 except Exception as exc:
                     attempts.append({'provider': 'zigbee2mqtt', 'error': str(exc)})
-                    logger.info("Sentero Zigbee permit_join failed provider=zigbee2mqtt error=%s", exc)
+                    logger.warning("Zigbee permit_join failed", extra={"component": "wizard", "provider": "zigbee2mqtt", "duration": duration})
         return {'ok': False, 'reason': 'zigbee_pairing_unavailable', 'message': 'Zigbee-Anlernen nicht verfuegbar', 'attempts': attempts}
 
 
 def sensor_source_mode() -> str:
-    return os.getenv('SENTERO_SENSOR_SOURCE', 'mqtt').strip().lower()
+    return os.getenv('SENTERO_SENSOR_SOURCE', 'homeassistant').strip().lower()
 
 
 def normalize_snapshot_item(item: dict[str, Any]) -> dict[str, Any]:

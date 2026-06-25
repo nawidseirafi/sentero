@@ -16,6 +16,8 @@ TAG_MATTER = "matter"
 TAG_SETUP = "setup"
 TAG_NOTIFICATIONS = "notifications"
 TAG_SENSORS = "sensors"
+TAG_DEVICES = "devices"
+TAG_EVENTS = "events"
 TAG_BEHAVIOR = "behavior"
 TAG_SENTERO = "sentero"
 
@@ -27,6 +29,8 @@ OPENAPI_TAGS = [
     {"name": TAG_SETUP, "description": "Household setup, rooms, contacts and pairing workflow."},
     {"name": TAG_MATTER, "description": "Matter commissioning and device assignment."},
     {"name": TAG_SENSORS, "description": "Sensor roles and role checks."},
+    {"name": TAG_DEVICES, "description": "Normalized Sentero devices independent of sensor source."},
+    {"name": TAG_EVENTS, "description": "Normalized Sentero sensor events independent of sensor source."},
     {"name": TAG_NOTIFICATIONS, "description": "Notification channels, tests and logs."},
 ]
 
@@ -92,6 +96,14 @@ class NotificationPayload(BaseModel):
 
 class SensorRoleNamePayload(BaseModel):
     name: str
+
+
+class DeviceRenamePayload(BaseModel):
+    name: str
+
+
+class DeviceAssignRoomPayload(BaseModel):
+    room_id: str
 
 
 class ChannelSettingsPayload(BaseModel):
@@ -246,6 +258,44 @@ def sentero_behavior_history(limit: int = Query(20, ge=1, le=100)):
 @router.get("/behavior/timeline", tags=[TAG_BEHAVIOR])
 def sentero_behavior_timeline():
     return get_services().sentero.behavior_timeline_today()
+
+
+@router.get("/devices", tags=[TAG_DEVICES])
+def sentero_devices(dev: bool = Query(False)):
+    return get_services().sensors.devices(include_internal=is_dev_mode(dev))
+
+
+@router.get("/events", tags=[TAG_EVENTS])
+def sentero_events(limit: int = Query(100, ge=1, le=500), dev: bool = Query(False)):
+    return get_services().sensors.events(limit=limit, include_internal=is_dev_mode(dev))
+
+
+@router.get("/rooms", tags=[TAG_DEVICES])
+def sentero_rooms():
+    return get_services().sensors.rooms()
+
+
+@router.get("/dashboard", tags=[TAG_SENTERO])
+def sentero_dashboard():
+    return get_services().sensors.dashboard()
+
+
+@router.get("/sensor-source/status", tags=[TAG_SENSORS])
+def sentero_sensor_source_status():
+    return get_services().sensors.source_status()
+
+
+@router.post("/devices/{device_id}/assign-room", tags=[TAG_DEVICES])
+def sentero_device_assign_room(device_id: str, payload: DeviceAssignRoomPayload):
+    return get_services().sensors.assign_room(device_id, payload.room_id)
+
+
+@router.post("/devices/{device_id}/rename", tags=[TAG_DEVICES])
+def sentero_device_rename(device_id: str, payload: DeviceRenamePayload):
+    try:
+        return get_services().sensors.rename(device_id, payload.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/setup/status", tags=[TAG_SETUP])

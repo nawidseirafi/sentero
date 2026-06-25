@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -11,8 +12,10 @@ from urllib.parse import urlparse
 import httpx
 import yaml
 
+from backend.logging_config import get_logger, is_debug_logging
 from ..paths import CONFIG_PATH, ENV_PATH
 
+logger = get_logger(__name__)
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -70,6 +73,11 @@ class HomeAssistantService:
             or env_values.get("HA_TOKEN")
             or _resolve_secret(config.get("token"), env_values)
         )
+        self._connected_logged = False
+        logger.debug(
+            "Home Assistant service configured",
+            extra={"component": "homeassistant", "ha_url": self.base_url, "token_configured": bool(self.token)},
+        )
 
     def configured(self) -> bool:
         return bool(self.base_url and self.token)
@@ -77,18 +85,38 @@ class HomeAssistantService:
     def get_states(self) -> list[dict[str, Any]]:
         if not self.configured():
             raise RuntimeError("Home Assistant URL oder Token ist nicht konfiguriert.")
+        started = time.perf_counter()
+        logger.debug("Home Assistant request start", extra={"component": "homeassistant", "method": "GET", "path": "/api/states"})
         try:
             with httpx.Client(timeout=8) as client:
                 response = client.get(self._api_url("/api/states"), headers=self._headers())
                 response.raise_for_status()
                 data = response.json()
         except Exception as exc:
+            logger.exception("Home Assistant states request failed", extra={"component": "homeassistant", "ha_url": self.base_url})
             raise self._runtime_error("Home Assistant States konnten nicht geladen werden", exc) from exc
+        logger.debug(
+            "Home Assistant request completed",
+            extra={
+                "component": "homeassistant",
+                "method": "GET",
+                "path": "/api/states",
+                "status_code": response.status_code,
+                "item_count": len(data) if isinstance(data, list) else 0,
+                "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+            },
+        )
+        if not self._connected_logged:
+            logger.info("Home Assistant connected", extra={"component": "homeassistant", "ha_url": self.base_url})
+            self._connected_logged = True
+        if is_debug_logging():
+            logger.debug("Home Assistant states response", extra={"component": "homeassistant", "item_count": len(data) if isinstance(data, list) else 0})
         return data if isinstance(data, list) else []
 
     def render_template(self, template: str) -> str:
         if not self.configured():
             raise RuntimeError("Home Assistant URL oder Token ist nicht konfiguriert.")
+        logger.debug("Home Assistant template render start", extra={"component": "homeassistant"})
         try:
             with httpx.Client(timeout=8) as client:
                 response = client.post(
@@ -99,6 +127,7 @@ class HomeAssistantService:
                 response.raise_for_status()
                 return response.text
         except Exception as exc:
+            logger.exception("Home Assistant template render failed", extra={"component": "homeassistant"})
             raise self._runtime_error("Home Assistant Template konnte nicht gerendert werden", exc) from exc
 
     def get_state(self, entity_id: str | None) -> dict[str, Any] | None:
@@ -107,15 +136,28 @@ class HomeAssistantService:
             return None
         if not self.configured():
             raise RuntimeError("Home Assistant URL oder Token ist nicht konfiguriert.")
+        started = time.perf_counter()
+        logger.debug("Home Assistant entity request start", extra={"component": "homeassistant", "entity_id": entity})
         try:
             with httpx.Client(timeout=8) as client:
                 response = client.get(self._api_url(f"/api/states/{entity}"), headers=self._headers())
                 if response.status_code == 404:
+                    logger.warning("Home Assistant entity not found", extra={"component": "homeassistant", "entity_id": entity})
                     return None
                 response.raise_for_status()
                 data = response.json()
         except Exception as exc:
+            logger.exception("Home Assistant entity request failed", extra={"component": "homeassistant", "entity_id": entity})
             raise self._runtime_error(f"Home Assistant konnte {entity} nicht lesen", exc) from exc
+        logger.debug(
+            "Home Assistant entity request completed",
+            extra={
+                "component": "homeassistant",
+                "entity_id": entity,
+                "status_code": response.status_code,
+                "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+            },
+        )
         return data if isinstance(data, dict) else None
 
     def fetch_entity_state(self, entity_id: str | None) -> dict[str, Any] | None:
@@ -133,12 +175,14 @@ class HomeAssistantService:
     def get_calendars(self) -> list[dict[str, Any]]:
         if not self.configured():
             raise RuntimeError("Home Assistant URL oder Token ist nicht konfiguriert.")
+        logger.debug("Home Assistant calendars request start", extra={"component": "homeassistant"})
         try:
             with httpx.Client(timeout=8) as client:
                 response = client.get(self._api_url("/api/calendars"), headers=self._headers())
                 response.raise_for_status()
                 data = response.json()
         except Exception as exc:
+            logger.exception("Home Assistant calendars request failed", extra={"component": "homeassistant"})
             raise self._runtime_error("Home Assistant Kalender konnten nicht geladen werden", exc) from exc
         return data if isinstance(data, list) else []
 
@@ -148,6 +192,7 @@ class HomeAssistantService:
             return []
         if not self.configured():
             raise RuntimeError("Home Assistant URL oder Token ist nicht konfiguriert.")
+        logger.debug("Home Assistant calendar events request start", extra={"component": "homeassistant", "entity_id": clean_entity_id})
         try:
             with httpx.Client(timeout=8) as client:
                 response = client.get(
@@ -160,6 +205,7 @@ class HomeAssistantService:
                 response.raise_for_status()
                 data = response.json()
         except Exception as exc:
+            logger.exception("Home Assistant calendar events request failed", extra={"component": "homeassistant", "entity_id": clean_entity_id})
             raise self._runtime_error(f"Home Assistant Kalender {clean_entity_id} konnte nicht gelesen werden", exc) from exc
         return data if isinstance(data, list) else []
 
@@ -170,6 +216,10 @@ class HomeAssistantService:
         clean_service = str(service or "").strip()
         if not clean_domain or not clean_service:
             raise RuntimeError("Home Assistant Service ist unvollstaendig.")
+        logger.debug(
+            "Home Assistant service call start",
+            extra={"component": "homeassistant", "domain": clean_domain, "service": clean_service},
+        )
         try:
             with httpx.Client(timeout=8) as client:
                 response = client.post(
@@ -180,6 +230,10 @@ class HomeAssistantService:
                 response.raise_for_status()
                 data = response.json()
         except Exception as exc:
+            logger.exception(
+                "Home Assistant service call failed",
+                extra={"component": "homeassistant", "domain": clean_domain, "service": clean_service},
+            )
             raise self._runtime_error("Home Assistant Service-Aufruf fehlgeschlagen", exc) from exc
         return {"ok": True, "result": data}
 
@@ -196,6 +250,7 @@ class HomeAssistantService:
             raise RuntimeError("Python-Paket 'websockets' ist fuer Home Assistant WebSocket nicht installiert.") from exc
 
         websocket_url = self._websocket_url()
+        logger.debug("Home Assistant websocket command start", extra={"component": "homeassistant", "websocket_url": websocket_url})
         async with websockets.connect(websocket_url, open_timeout=timeout) as websocket:
             auth_required = json.loads(await asyncio.wait_for(websocket.recv(), timeout=timeout))
             if auth_required.get("type") != "auth_required":
@@ -210,6 +265,7 @@ class HomeAssistantService:
             payload["id"] = 1
             await websocket.send(json.dumps(payload))
             response = json.loads(await asyncio.wait_for(websocket.recv(), timeout=timeout))
+            logger.debug("Home Assistant websocket command completed", extra={"component": "homeassistant", "success": response.get("success")})
             return response if isinstance(response, dict) else {"success": False, "response": response}
 
     # ------------------------------------------------------------------
@@ -242,6 +298,7 @@ class HomeAssistantService:
             ) from exc
 
         url = self._matter_websocket_url()
+        logger.debug("Matter websocket commissioning start", extra={"component": "matter", "url": url, "network_only": network_only})
         try:
             async with websockets.connect(url, open_timeout=10) as ws:
                 await ws.send(json.dumps({
@@ -259,6 +316,7 @@ class HomeAssistantService:
                     if msg.get("message_id") == "1":
                         return msg
         except Exception as exc:
+            logger.exception("Matter websocket commissioning failed", extra={"component": "matter", "url": url})
             raise RuntimeError(
                 f"Matter Server WebSocket-Fehler ({url}): {type(exc).__name__}: {exc}"
             ) from exc
