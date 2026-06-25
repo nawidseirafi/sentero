@@ -3,8 +3,14 @@ sentero:
   behavior:
     learning_days: 14
 
+app:
+  dev_mode: false
+
+logging:
+  level: INFO
+
 sensor_sources:
-  source: ${SENTERO_SENSOR_SOURCE}
+  source: mixed
   development:
     adapter: homeassistant
   production:
@@ -13,20 +19,28 @@ sensor_sources:
       - mqtt
 
 home_assistant:
-  url: HA_URL
+  url: http://homeassistant.local:8123
   token: HA_TOKEN
 
 mqtt:
-  host: SENTERO_MQTT_HOST
-  port: SENTERO_MQTT_PORT
+  host: homeassistant.local
+  port: 1883
   username: SENTERO_MQTT_USERNAME
   password: SENTERO_MQTT_PASSWORD
-  topic_prefix: SENTERO_MQTT_TOPIC_PREFIX
-  zigbee2mqtt_topic_prefix: SENTERO_ZIGBEE2MQTT_TOPIC_PREFIX
+  topic_prefix: zigbee2mqtt
+  snapshot_timeout: 0.5
+  bootstrap_events: ""
+
+esp32:
+  topic_prefix: sentero
+
+zigbee:
+  provider: auto
 
 updates:
   channel: stable
-  mode: dry_run
+  mode: zip
+  base_url: https://seirafi.de/robotersteve/sentero
   manifest_path: update-manifest.json
   manifest_url: ""
 

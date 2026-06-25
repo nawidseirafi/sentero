@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from backend.config import config_float, config_str
 from backend.logging_config import get_logger, is_debug_logging
 from backend.services.mqtt_service import MqttService
 
@@ -13,7 +14,7 @@ logger = get_logger(__name__)
 
 IGNORED_TOPIC_PARTS = {"bridge", "availability"}
 BINARY_DEVICE_CLASSES = {"contact", "occupancy", "motion", "presence", "opening"}
-STATE_KEYS = ("contact", "occupancy", "motion", "presence", "open", "state")
+STATE_KEYS = ("contact", "occupancy", "motion", "presence", "open", "action", "state")
 
 
 class Zigbee2MqttSensorSource:
@@ -23,8 +24,8 @@ class Zigbee2MqttSensorSource:
         self.mqtt = mqtt or MqttService()
         self.host = self.mqtt.host
         self.port = self.mqtt.port
-        self.topic_prefix = os.getenv("SENTERO_ZIGBEE2MQTT_TOPIC_PREFIX") or os.getenv("ZIGBEE2MQTT_TOPIC_PREFIX", "zigbee2mqtt").strip() or "zigbee2mqtt"
-        self.snapshot_timeout = float(os.getenv("SENTERO_MQTT_SNAPSHOT_TIMEOUT", "2.5") or "2.5")
+        self.topic_prefix = os.getenv("SENTERO_ZIGBEE2MQTT_TOPIC_PREFIX") or os.getenv("ZIGBEE2MQTT_TOPIC_PREFIX") or config_str("mqtt.topic_prefix", "") or config_str("mqtt.zigbee2mqtt_topic_prefix", "zigbee2mqtt") or "zigbee2mqtt"
+        self.snapshot_timeout = float(os.getenv("SENTERO_MQTT_SNAPSHOT_TIMEOUT") or config_float("mqtt.snapshot_timeout", 2.5))
         logger.debug(
             "Zigbee2MQTT source configured",
             extra={"component": "sensor_source", "sensor_source": self.name, "host": self.host, "port": self.port, "topic_prefix": self.topic_prefix},
@@ -34,7 +35,7 @@ class Zigbee2MqttSensorSource:
         return self.mqtt.configured()
 
     def snapshot(self) -> list[dict[str, Any]]:
-        seed = os.getenv("SENTERO_MQTT_BOOTSTRAP_EVENTS", "").strip()
+        seed = os.getenv("SENTERO_MQTT_BOOTSTRAP_EVENTS", "").strip() or config_str("mqtt.bootstrap_events", "")
         if seed:
             logger.debug("Zigbee2MQTT snapshot uses bootstrap seed", extra={"component": "sensor_source", "sensor_source": self.name})
             return self._snapshot_from_seed(seed)
@@ -91,13 +92,14 @@ class Zigbee2MqttSensorSource:
                 "Zigbee2MQTT payload received",
                 extra={"component": "sensor_source", "sensor_source": self.name, "topic": topic, "device_id": device, "payload": payload},
             )
+        enriched_payload = {**payload, "topic": topic, "source_ref": topic}
         rows: list[dict[str, Any]] = []
         state_key = next((key for key in STATE_KEYS if key in payload), None)
         if state_key:
-            rows.append(self._entity(device, state_key, payload.get(state_key), payload, timestamp))
+            rows.append(self._entity(device, state_key, payload.get(state_key), enriched_payload, timestamp))
         for key in ("battery", "battery_low", "linkquality"):
             if key in payload:
-                rows.append(self._entity(device, key, payload.get(key), payload, timestamp))
+                rows.append(self._entity(device, key, payload.get(key), enriched_payload, timestamp))
         logger.debug(
             "Zigbee2MQTT payload normalized",
             extra={"component": "sensor_source", "sensor_source": self.name, "topic": topic, "device_id": device, "row_count": len(rows)},
@@ -118,7 +120,7 @@ class Zigbee2MqttSensorSource:
         slug = slugify(device)
         clean_key = "contact" if key == "open" else key
         is_binary = clean_key in BINARY_DEVICE_CLASSES or clean_key == "state" and str(value).lower() in {"on", "off", "true", "false"}
-        domain = "binary_sensor" if is_binary else "sensor"
+        domain = "button" if clean_key == "action" else "binary_sensor" if is_binary else "sensor"
         suffix = "" if is_binary else f"_{slugify(clean_key)}"
         device_class = self._device_class(clean_key, is_binary)
         friendly_key = "" if is_binary else f" {clean_key.replace('_', ' ').title()}"
@@ -133,6 +135,9 @@ class Zigbee2MqttSensorSource:
             "device_id": slug,
             "platform": "zigbee2mqtt",
             "unique_id": f"zigbee2mqtt_{slug}_{clean_key}",
+            "topic": payload.get("topic") or payload.get("source_ref"),
+            "source_ref": payload.get("source_ref") or payload.get("topic"),
+            "payload_key": clean_key,
             "original_name": device,
             "device_name": device,
             "manufacturer": payload.get("manufacturer") or payload.get("vendor"),
@@ -151,6 +156,8 @@ class Zigbee2MqttSensorSource:
             return "opening"
         if key in {"occupancy", "motion", "presence"}:
             return "motion" if key == "motion" else key
+        if key == "action":
+            return "button"
         return None if is_binary else key
 
 

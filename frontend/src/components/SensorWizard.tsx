@@ -1,5 +1,5 @@
 import { Check, Loader2, Radio, Search, ShieldCheck } from 'lucide-react';
-import type { SenteroCandidate } from '@shared/api/client';
+import type { SenteroDiscoveredSensor } from '@shared/api/client';
 
 export type SensorBinding = {
   id: string;
@@ -10,15 +10,13 @@ export type SensorBinding = {
   status: 'idle' | 'searching' | 'connected' | 'missing' | 'skipped';
   sessionId?: number;
   score?: number;
-  entityId?: string;
+  sensorManagerId?: string;
 };
 
 export type SensorDiscoveryState = {
-  candidate?: SenteroCandidate | null;
-  candidates?: SenteroCandidate[];
+  sensor?: SenteroDiscoveredSensor | null;
   remainingSeconds?: number;
   error?: string;
-  provider?: string;
 };
 
 type Props = {
@@ -103,11 +101,7 @@ function SensorRow({ sensor, state, devMode, onChange, onSearch }: {
         </div>
       </div>
       {state?.error && <p className="sc-sensor-error">{state.error}</p>}
-      {devMode && (
-        <code className="sc-dev-line">
-          {sensor.entityId || state?.candidate?.entity_id || 'Keine Entity'} · Score {sensor.score ?? state?.candidate?.score ?? '-'} · Rest {state?.remainingSeconds ?? '-'}s · {state?.provider || 'zigbee'}
-        </code>
-      )}
+      {devMode && <code className="sc-dev-line">Score {sensor.score ?? state?.sensor?.confidence ?? '-'} · Rest {state?.remainingSeconds ?? '-'}s</code>}
     </div>
   );
 }

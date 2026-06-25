@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Battery, CheckCircle2, DoorClosed, DoorOpen, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plus, Save, Send, ShieldAlert, Trash2, UserRound, Wifi, WifiOff, X } from 'lucide-react';
-import { api, type SenteroNotificationChannel, type SenteroSensorRole, type SenteroSetupStatus } from '@shared/api/client';
+import { api, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus } from '@shared/api/client';
 import { UpdatePanel } from '../components/UpdatePanel';
 import { useSenteroAuth } from '../auth/SenteroAuthContext';
 import type { SenteroSettingsTab } from '../routes/routes';
@@ -18,6 +18,7 @@ const roomLabels: Record<string, string> = {
 const settingsTabs: Array<{ tab: SenteroSettingsTab; label: string; shortLabel: string }> = [
   { tab: 'profile', label: 'Profil', shortLabel: 'Profil' },
   { tab: 'sensors', label: 'Räume & Sensoren', shortLabel: 'Räume' },
+  { tab: 'network', label: 'Netzwerk', shortLabel: 'Netz' },
   { tab: 'contacts', label: 'Vertraute Personen', shortLabel: 'Personen' },
   { tab: 'notifications', label: 'Benachrichtigungen', shortLabel: 'Benachr.' },
   { tab: 'account', label: 'Konto & Zugriff', shortLabel: 'Konto' },
@@ -39,6 +40,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [roomDraft, setRoomDraft] = useState('');
   const [notifications, setNotifications] = useState({ anomalies: true, critical: true, daily_summary: false });
   const [accountForm, setAccountForm] = useState({ display_name: '', email: '' });
+  const [networkForm, setNetworkForm] = useState({ wifi_ssid: '', wifi_password: '' });
+  const [networkStatus, setNetworkStatus] = useState<SenteroSensorNetworkSettings | null>(null);
   const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '', new_password_confirm: '' });
   const [accountEditing, setAccountEditing] = useState(false);
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
@@ -87,14 +90,20 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
   async function load() {
     try {
-      const [nextStatus, nextSensors, nextChannels] = await Promise.all([
+      const [nextStatus, nextSensors, nextChannels, nextNetwork] = await Promise.all([
         api.senteroSetupStatus(),
         api.senteroSensorRoles(true),
         api.senteroNotificationChannels(),
+        api.senteroSensorNetwork(),
       ]);
       setStatus(nextStatus);
       setSensors(nextSensors.sensor_roles);
       setChannels(nextChannels.channels);
+      setNetworkStatus(nextNetwork);
+      setNetworkForm({
+        wifi_ssid: nextNetwork.wifi_ssid || '',
+        wifi_password: '',
+      });
       hydrateChannelForms(nextChannels.channels);
       const sensorRooms = Array.from(new Set(nextSensors.sensor_roles.map((sensor) => sensor.room).filter(Boolean))) as string[];
       const savedRooms = nextStatus.selected_rooms || [];
@@ -143,6 +152,35 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Profil konnte nicht gespeichert werden.');
+    }
+  }
+
+  async function saveNetwork() {
+    try {
+      const result = await api.saveSenteroSensorNetwork({
+        wifi_ssid: networkForm.wifi_ssid,
+        wifi_password: networkForm.wifi_password,
+      });
+      setNetworkStatus(result.network);
+      setNetworkForm((value) => ({ ...value, wifi_password: '' }));
+      toast('Netzwerk gespeichert');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Netzwerk konnte nicht gespeichert werden.');
+    }
+  }
+
+  async function testNetwork() {
+    try {
+      const result = await api.testSenteroSensorNetwork();
+      if (result.ok) {
+        toast(result.message || 'Netzwerk geprüft');
+        setError('');
+      } else {
+        setError(result.message || 'Netzwerk konnte nicht geprüft werden.');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Netzwerk konnte nicht geprüft werden.');
     }
   }
 
@@ -361,7 +399,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   }
 
   async function deleteSensor(role: string) {
-    if (!window.confirm('Sensor wirklich entfernen? Das Gerät muss danach neu gekoppelt werden.')) return;
+    if (!window.confirm('Sensor aus Sentero entfernen? Das Gerät bleibt im Sensornetzwerk bestehen.')) return;
     try {
       await api.deleteSenteroSensorRole(role);
       toast('Sensor entfernt');
@@ -495,6 +533,29 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
               );
             })}
           </div>
+        </section>
+      )}
+
+      {activeTab === 'network' && (
+        <section className="sc-panel sc-settings-panel sc-network-panel">
+          <div className="sc-settings-hero">
+            <h2>Netzwerk</h2>
+            <p>Diese Angaben nutzt Sentero, um WLAN-Sensoren automatisch mit Ihrem Zuhause zu verbinden.</p>
+          </div>
+          <div className="sc-form-grid">
+            <label>
+              WLAN-Name
+              <input value={networkForm.wifi_ssid} onChange={(event) => setNetworkForm((value) => ({ ...value, wifi_ssid: event.target.value }))} placeholder="Mein WLAN" />
+            </label>
+            <label>
+              WLAN-Passwort
+              <input type="password" value={networkForm.wifi_password} onChange={(event) => setNetworkForm((value) => ({ ...value, wifi_password: event.target.value }))} placeholder={networkStatus?.wifi_password_set ? 'Gespeichert' : 'Passwort'} />
+            </label>
+          </div>
+          <footer className="sc-account-actions">
+            <button className="sc-soft-action" type="button" onClick={() => void testNetwork()}><Wifi size={18} /> Testen</button>
+            <button className="sc-soft-action primary" type="button" onClick={() => void saveNetwork()}><Save size={18} /> Speichern</button>
+          </footer>
         </section>
       )}
 

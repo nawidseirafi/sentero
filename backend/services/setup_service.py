@@ -34,7 +34,7 @@ class SenteroSetupService:
             'trusted_contacts_count': len(contact_data),
             'trusted_contacts': contact_data,
             'notifications': notification_data,
-            'sensor_roles': self.mapping.roles(include_state=True),
+            'sensor_roles': self.mapping.roles(include_state=False),
             'updated_at': row['updated_at'],
         }
         logger.debug(

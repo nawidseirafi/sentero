@@ -8,6 +8,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from backend.config import config_int, config_str
 from backend.logging_config import get_logger, is_debug_logging
 from backend.paths import ENV_PATH
 
@@ -24,8 +25,8 @@ class MqttMessage:
 
 class MqttService:
     def __init__(self) -> None:
-        self.host = (os.getenv("SENTERO_MQTT_HOST") or os.getenv("MQTT_HOST") or "localhost").strip()
-        self.port = int(os.getenv("SENTERO_MQTT_PORT") or os.getenv("MQTT_PORT") or "1883")
+        self.host = (os.getenv("SENTERO_MQTT_HOST") or os.getenv("MQTT_HOST") or config_str("mqtt.host", "localhost") or "localhost").strip()
+        self.port = int(os.getenv("SENTERO_MQTT_PORT") or os.getenv("MQTT_PORT") or config_int("mqtt.port", 1883))
         self.username = (os.getenv("SENTERO_MQTT_USERNAME") or os.getenv("MQTT_USERNAME") or "").strip()
         self.password = os.getenv("SENTERO_MQTT_PASSWORD") or os.getenv("MQTT_PASSWORD") or ""
         logger.debug(
@@ -107,7 +108,7 @@ class MqttService:
         client.on_message = on_message
         try:
             client.connect(self.host, self.port, keepalive=20)
-            logger.info("MQTT broker connected", extra={"component": "mqtt", "host": self.host, "port": self.port})
+            logger.debug("MQTT broker connected", extra={"component": "mqtt", "host": self.host, "port": self.port})
             client.loop_start()
             deadline = time.monotonic() + max(timeout, 0.1)
             while time.monotonic() < deadline:
@@ -119,7 +120,7 @@ class MqttService:
             try:
                 client.loop_stop()
                 client.disconnect()
-                logger.info("MQTT broker disconnected", extra={"component": "mqtt", "host": self.host, "port": self.port})
+                logger.debug("MQTT broker disconnected", extra={"component": "mqtt", "host": self.host, "port": self.port})
             except Exception:
                 logger.debug("MQTT disconnect failed", exc_info=True, extra={"component": "mqtt"})
         logger.debug(

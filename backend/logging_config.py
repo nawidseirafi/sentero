@@ -8,6 +8,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from backend.config import config_str
 from backend.paths import ENV_PATH
 
 load_dotenv(ENV_PATH)
@@ -37,7 +38,7 @@ class SenteroFormatter(logging.Formatter):
 
 
 def configure_logging() -> None:
-    level_name = os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO"
+    level_name = (os.getenv("LOG_LEVEL") or config_str("logging.level", "INFO")).strip().upper() or "INFO"
     if level_name not in SUPPORTED_LEVELS:
         level_name = "INFO"
     logging.basicConfig(level=getattr(logging, level_name), handlers=[logging.StreamHandler(sys.stdout)], force=True)

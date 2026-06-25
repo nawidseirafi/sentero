@@ -4282,6 +4282,7 @@ button:disabled {
 }
 
 .sc-behavior-status-dot {
+  animation: sc-status-breathe 3.8s ease-in-out infinite;
   background: #35c777;
   border-radius: 999px;
   box-shadow: 0 0 0 10px rgba(53, 199, 119, 0.12);
@@ -4403,6 +4404,19 @@ button:disabled {
   top: 50%;
 }
 
+.sc-overview-now {
+  background: #66766f;
+  border: 3px solid #ecfbf2;
+  border-radius: 999px;
+  box-shadow: 0 0 0 4px rgba(90, 111, 101, 0.12);
+  height: 14px;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 14px;
+  z-index: 2;
+}
+
 .sc-overview-dots i {
   background: white;
   border: 2px solid #9fd8b8;
@@ -4432,6 +4446,24 @@ button:disabled {
   color: #5e7369;
   font-weight: 850;
   margin: 10px 0 0;
+}
+
+@keyframes sc-status-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 9px rgba(53, 199, 119, 0.12);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 15px rgba(53, 199, 119, 0.06);
+    transform: scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sc-behavior-status-dot {
+    animation: none;
+  }
 }
 
 

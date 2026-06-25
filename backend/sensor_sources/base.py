@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Protocol
+
+from backend.config import config_str
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,9 @@ class SensorSource(Protocol):
 
 
 def create_sensor_source() -> SensorSource:
-    mode = os.getenv("SENTERO_SENSOR_SOURCE", "homeassistant").strip().lower()
+    import os
+
+    mode = (os.getenv("SENTERO_SENSOR_SOURCE") or config_str("sensor_sources.source", "homeassistant") or "homeassistant").strip().lower()
     if mode in {"mqtt", "zigbee2mqtt", "z2m"}:
         from .zigbee2mqtt import Zigbee2MqttSensorSource
 
@@ -39,4 +42,3 @@ def create_sensor_source() -> SensorSource:
     from .homeassistant import HomeAssistantSensorSource
 
     return HomeAssistantSensorSource()
-

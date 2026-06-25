@@ -231,26 +231,27 @@ class SenteroUpdateService:
             return failed
 
     def channel(self) -> str:
-        return self._valid_channel(os.getenv("SENTERO_UPDATE_CHANNEL") or self._update_config().get("channel") or DEFAULT_CHANNEL)
+        return self._valid_channel(str(self._update_config().get("channel") or os.getenv("SENTERO_UPDATE_CHANNEL") or DEFAULT_CHANNEL))
 
     def execution_mode(self) -> str:
-        mode = str(os.getenv("SENTERO_UPDATE_MODE") or self._update_config().get("mode") or "dry_run").strip().lower()
+        mode = str(self._update_config().get("mode") or os.getenv("SENTERO_UPDATE_MODE") or "dry_run").strip().lower()
         return mode if mode in {"dry_run", "zip"} else "dry_run"
 
     def manifest_url(self) -> str:
+        config = self._update_config()
         configured = str(
-            os.getenv("SENTERO_UPDATE_MANIFEST_URL")
+            config.get("manifest_url")
+            or os.getenv("SENTERO_UPDATE_MANIFEST_URL")
             or os.getenv("UPDATE_MANIFEST_URL")
-            or self._update_config().get("manifest_url")
             or ""
         ).strip()
         if configured:
             return configured
-        base_url = str(os.getenv("UPDATE_BASE_URL") or os.getenv("SENTERO_UPDATE_BASE_URL") or "").strip()
+        base_url = str(config.get("base_url") or os.getenv("UPDATE_BASE_URL") or os.getenv("SENTERO_UPDATE_BASE_URL") or "").strip()
         return f"{base_url.rstrip('/')}/stable/latest.json" if base_url else ""
 
     def manifest_path(self) -> Path:
-        raw = os.getenv("SENTERO_UPDATE_MANIFEST_PATH") or self._update_config().get("manifest_path")
+        raw = self._update_config().get("manifest_path") or os.getenv("SENTERO_UPDATE_MANIFEST_PATH")
         if raw:
             path = Path(str(raw)).expanduser()
             return path if path.is_absolute() else PROJECT_DIR / path
@@ -431,4 +432,3 @@ class SenteroUpdateService:
         if len(children) == 1 and children[0].is_dir():
             return children[0]
         return extract_dir
-

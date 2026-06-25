@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, HeartHandshake, Mail, Plus, ShieldCheck, Trash2, UserRound, X } from 'lucide-react';
-import { api, type SenteroCandidates, type SenteroSensorRole } from '@shared/api/client';
+import { api, type SenteroSensorRole } from '@shared/api/client';
 import { SensorWizard, type SensorBinding, type SensorDiscoveryState } from './SensorWizard';
 
 type Profile = {
@@ -235,13 +235,18 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     updateSensor(sensor.id, { status: 'searching' });
     setDiscovery((current) => ({ ...current, [sensor.id]: { remainingSeconds: ZIGBEE_DISCOVERY_SECONDS } }));
     try {
-      const result = await api.startSenteroZigbeePairing({ role: sensor.id, room: sensor.roomId, duration: ZIGBEE_DISCOVERY_SECONDS });
-      if (result.status === 'pairing_needs_manual_action') {
+      const result = await api.startSenteroSensorDiscovery({
+        sensor_type: sensor.type === 'door' ? 'door_contact' : 'presence_sensor',
+        room_id: sensor.roomId,
+        role: sensor.id,
+        duration: ZIGBEE_DISCOVERY_SECONDS,
+      });
+      if (result.status === 'manual_action') {
         throw new Error(result.message || 'Die Sensor-Einrichtung ist noch nicht bereit.');
       }
-      updateSensor(sensor.id, { sessionId: result.session_id });
-      setDiscovery((current) => ({ ...current, [sensor.id]: { ...(current[sensor.id] || {}), provider: result.detail?.provider, remainingSeconds: ZIGBEE_DISCOVERY_SECONDS } }));
-      pollSensor(sensor.id, result.session_id, Date.now(), sensor.name, sensor.roomId);
+      updateSensor(sensor.id, { sessionId: result.discovery_id });
+      setDiscovery((current) => ({ ...current, [sensor.id]: { ...(current[sensor.id] || {}), remainingSeconds: ZIGBEE_DISCOVERY_SECONDS } }));
+      pollSensor(sensor.id, result.discovery_id, Date.now(), sensor.name, sensor.roomId);
     } catch (err) {
       updateSensor(sensor.id, { status: 'missing' });
       setDiscovery((current) => ({ ...current, [sensor.id]: { error: err instanceof Error ? err.message : 'Sensor nicht gefunden.' } }));
@@ -252,7 +257,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     window.clearTimeout(timers.current[sensorId]);
     timers.current[sensorId] = window.setTimeout(async () => {
       try {
-        const result = await api.senteroDiscoveryCandidates(sessionId, devMode);
+        const result = await api.senteroDiscoveredSensors(sessionId, devMode);
         const done = await applyCandidate(sensorId, sessionId, result, sensorName, roomId);
         if (!done && Date.now() - startedAt < ZIGBEE_DISCOVERY_SECONDS * 1000) {
           pollSensor(sensorId, sessionId, startedAt, sensorName, roomId);
@@ -264,16 +269,16 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     }, 2000);
   }
 
-  async function applyCandidate(sensorId: string, sessionId: number, result: SenteroCandidates, sensorName: string, roomId: string) {
-    const score = result.candidate ? (result.candidate.score ?? result.candidate.confidence) : 0;
-    const found = Boolean(result.candidate && score >= 50);
-    const timedOut = result.remaining_seconds === 0 || (result.status === 'no_signal_detected' && (result.remaining_seconds ?? 0) <= 0);
-    setDiscovery((current) => ({ ...current, [sensorId]: { candidate: result.candidate, candidates: result.candidates, remainingSeconds: result.remaining_seconds } }));
-    if (found && result.candidate) {
-      const name = sensorName || result.candidate.label || 'Sensor';
+  async function applyCandidate(sensorId: string, sessionId: number, result: { status: string; sensor?: { id: string; name: string; type: string; confidence: number } | null; remaining_seconds?: number }, sensorName: string, roomId: string) {
+    const score = result.sensor?.confidence || 0;
+    const found = Boolean(result.sensor && result.status === 'found' && score >= 50);
+    const timedOut = result.remaining_seconds === 0 || result.status === 'not_found';
+    setDiscovery((current) => ({ ...current, [sensorId]: { sensor: result.sensor || null, remainingSeconds: result.remaining_seconds } }));
+    if (found && result.sensor) {
+      const name = sensorName || result.sensor.name || 'Sensor';
       try {
-        await api.confirmSenteroDiscovery(sessionId, result.candidate.entity_id, { name, room: roomId });
-        updateSensor(sensorId, { status: 'connected', sessionId, score, entityId: result.candidate.entity_id, name });
+        await api.registerSenteroSensor(result.sensor.id, { discovery_id: sessionId, name, room_id: roomId }, devMode);
+        updateSensor(sensorId, { status: 'connected', sessionId, score, sensorManagerId: result.sensor.id, name });
       } catch (err) {
         updateSensor(sensorId, { status: 'missing' });
         setDiscovery((current) => ({ ...current, [sensorId]: { ...(current[sensorId] || {}), error: err instanceof Error ? err.message : 'Sensor konnte nicht gespeichert werden.' } }));

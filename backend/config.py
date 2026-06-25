@@ -19,6 +19,34 @@ def load_global_config() -> dict[str, Any]:
     return read_yaml(CONFIG_PATH)
 
 
+def config_value(path: str, default: Any = None) -> Any:
+    value: Any = load_global_config()
+    for part in path.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return default
+        value = value[part]
+    return value
+
+
+def config_str(path: str, default: str = "") -> str:
+    value = config_value(path, default)
+    return str(value if value is not None else default).strip()
+
+
+def config_int(path: str, default: int) -> int:
+    try:
+        return int(config_value(path, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def config_float(path: str, default: float) -> float:
+    try:
+        return float(config_value(path, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def load_agent_section(agent_id: str, section: str | None = None) -> dict[str, Any]:
     config = load_global_config()
     key = section or agent_id
@@ -32,4 +60,3 @@ def resolve_project_path(value: Any, default: Path | str) -> Path:
     if path.is_absolute():
         return path
     return (PROJECT_DIR / path).resolve()
-

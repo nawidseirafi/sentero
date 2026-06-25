@@ -134,6 +134,35 @@ export type SenteroPairingStart = {
   detail?: { ok?: boolean; provider?: string; reason?: string; message?: string; attempts?: unknown[] } | null;
 };
 
+export type SenteroSensorDiscoveryStart = {
+  discovery_id: number;
+  status: 'searching' | 'manual_action' | string;
+  message: string;
+  sensor_type: string;
+  room_id?: string | null;
+};
+
+export type SenteroDiscoveredSensor = {
+  id: string;
+  name: string;
+  type: string;
+  confidence: number;
+};
+
+export type SenteroSensorDiscoveryResult = {
+  discovery_id: number;
+  status: 'found' | 'searching' | 'not_found' | string;
+  message: string;
+  sensor?: SenteroDiscoveredSensor | null;
+  remaining_seconds?: number;
+};
+
+export type SenteroSensorNetworkSettings = {
+  wifi_ssid: string;
+  wifi_password_set: boolean;
+  configured: boolean;
+};
+
 export type SenteroCandidates = {
   session_id: number;
   status: 'signal_detected' | 'no_signal_detected' | 'waiting_for_signal' | string;
@@ -145,37 +174,6 @@ export type SenteroCandidates = {
   changed_count?: number | null;
   current_state_count?: number | null;
   baseline_state_count?: number | null;
-};
-
-export type SenteroMatterStatus = {
-  status: 'waiting' | 'commissioning' | 'completed' | 'failed' | string;
-  commissioning_status?: string;
-  setup_payload?: string;
-  ha_response?: unknown;
-  error?: string | null;
-  logs?: unknown[];
-};
-
-export type SenteroMatterDevice = {
-  device_detected: boolean;
-  friendly_name: string;
-  suggestions: Array<{ role?: string; kind?: string; label: string; score?: number }>;
-  device_id?: string | null;
-  entity_ids?: string[];
-  suggestions_raw?: unknown[];
-  home_assistant_response?: unknown;
-  logs?: unknown[];
-};
-
-export type SenteroMatterCapabilities = {
-  home_assistant: boolean;
-  matter_integration: boolean;
-  matter_server: boolean;
-  commissioning_available: boolean;
-  ipv6_available: boolean;
-  thread_available: boolean;
-  message: string;
-  details?: unknown;
 };
 
 export type MessageCenterItem = {
@@ -365,25 +363,20 @@ export const api = {
     request<SenteroSetupStatus>('/api/sentero/setup/rooms', { method: 'POST', body: JSON.stringify({ rooms }) }),
   startSenteroDiscovery: (payload: { role: string; room?: string | null; pairing_code?: string }) =>
     request<SenteroPairingStart>('/api/sentero/setup/discovery/start', { method: 'POST', body: JSON.stringify(payload) }),
-  startSenteroPairing: (payload: { role: string; room?: string | null; pairing_code?: string }) =>
-    request<SenteroPairingStart>('/api/sentero/setup/pairing/matter/start', { method: 'POST', body: JSON.stringify(payload) }),
   startSenteroZigbeePairing: (payload: { role: string; room?: string | null; duration?: number }) =>
     request<SenteroPairingStart>('/api/sentero/setup/pairing/zigbee/start', { method: 'POST', body: JSON.stringify(payload) }),
+  startSenteroSensorDiscovery: (payload: { sensor_type: string; room_id?: string | null; role?: string | null; duration?: number }) =>
+    request<SenteroSensorDiscoveryStart>('/api/sentero/sensors/start-discovery', { method: 'POST', body: JSON.stringify(payload) }),
+  senteroDiscoveredSensors: (discoveryId: number, dev = false) =>
+    request<SenteroSensorDiscoveryResult>(`/api/sentero/sensors/discovered?discovery_id=${discoveryId}${dev ? '&dev=true' : ''}`),
+  registerSenteroSensor: (sensorId: string, payload: { discovery_id: number; name?: string | null; room_id?: string | null }, dev = false) =>
+    request<{ status: string; sensor: { id: string; name: string; room_id?: string | null; type: string } }>(`/api/sentero/sensors/${encodeURIComponent(sensorId)}/register${dev ? '?dev=true' : ''}`, { method: 'POST', body: JSON.stringify(payload) }),
+  senteroSensorNetwork: () => request<SenteroSensorNetworkSettings>('/api/sentero/sensors/network'),
+  saveSenteroSensorNetwork: (payload: { wifi_ssid?: string; wifi_password?: string }) =>
+    request<{ status: string; network: SenteroSensorNetworkSettings }>('/api/sentero/sensors/network', { method: 'POST', body: JSON.stringify(payload) }),
+  testSenteroSensorNetwork: () => request<{ ok: boolean; message: string }>('/api/sentero/sensors/network/test', { method: 'POST' }),
   senteroDiscoveryCandidates: (sessionId: number, dev = false) =>
     request<SenteroCandidates>(`/api/sentero/setup/discovery/${sessionId}/candidates${dev ? '?dev=true' : ''}`),
-  startSenteroMatter: (payload: { setup_code?: string; qr_payload?: string }) =>
-    request<{ commissioning_id: string }>('/api/sentero/matter/start', { method: 'POST', body: JSON.stringify(payload) }),
-  senteroMatterCapabilities: (dev = false) =>
-    request<SenteroMatterCapabilities>(`/api/sentero/matter/capabilities${dev ? '?dev=true' : ''}`),
-  senteroMatterStatus: (commissioningId: string, dev = false) =>
-    request<SenteroMatterStatus>(`/api/sentero/matter/status/${encodeURIComponent(commissioningId)}${dev ? '?dev=true' : ''}`),
-  senteroMatterDevice: (commissioningId: string, dev = false) =>
-    request<SenteroMatterDevice>(`/api/sentero/matter/device/${encodeURIComponent(commissioningId)}${dev ? '?dev=true' : ''}`),
-  assignSenteroMatterDevice: (commissioningId: string, payload: { room: string; role: string }) =>
-    request<{ status: string; room: string; role: SenteroSensorRole }>(`/api/sentero/matter/device/${encodeURIComponent(commissioningId)}/assign`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
   confirmSenteroDiscovery: (sessionId: number, entityId: string, payload?: { name?: string; room?: string }) =>
     request<{ status: string; role: SenteroSensorRole }>(`/api/sentero/setup/discovery/${sessionId}/confirm`, {
       method: 'POST',
