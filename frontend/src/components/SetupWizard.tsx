@@ -241,7 +241,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
   async function searchSensor(sensor: SensorBinding) {
     updateSensor(sensor.id, { status: 'searching' });
     setDiscovery((current) => ({ ...current, [sensor.id]: { remainingSeconds: ZIGBEE_DISCOVERY_SECONDS } }));
-    if (sensor.type === 'motion') {
+    if (isPresenceBinding(sensor)) {
       try {
         const name = sensor.name || `${roomLabel(sensor.roomId)} Präsenzsensor`;
         const result = await api.startSenteroPresenceProvisioning({ room_id: sensor.roomId, display_name: name });
@@ -674,6 +674,12 @@ function roomFromRole(role: string) {
 
 function defaultSensorName(roomLabel: string, type: SensorBinding['type']) {
   return type === 'motion' ? `${roomLabel} Präsenz` : `${roomLabel} Türkontakt`;
+}
+
+function isPresenceBinding(sensor: SensorBinding) {
+  const type = String(sensor.type || '').toLowerCase();
+  const id = String(sensor.id || '').toLowerCase();
+  return type !== 'door' || id.endsWith('_presence') || id.endsWith('_motion');
 }
 
 function uniqueValues(values: string[]) {

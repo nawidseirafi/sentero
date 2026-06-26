@@ -76,8 +76,9 @@ function SensorRow({ sensor, state, devMode, onChange, onSearch, onSkip }: {
   onSearch: (sensor: SensorBinding) => void;
   onSkip: (sensor: SensorBinding) => void;
 }) {
-  const label = sensor.type === 'motion' ? 'Präsenzsensor' : 'Türsensor';
-  const help = sensor.type === 'motion'
+  const presence = isPresenceBinding(sensor);
+  const label = presence ? 'Präsenzsensor' : 'Türsensor';
+  const help = presence
     ? 'Präsenzsensor einschalten. Sentero verbindet ihn automatisch.'
     : 'Erkennt, ob eine Tür oder ein Fenster geöffnet wurde.';
 
@@ -115,4 +116,10 @@ function SensorStatus({ status, remainingSeconds }: { status: SensorBinding['sta
   if (status === 'missing') return <span className="sc-sensor-state missing">Sensor konnte nicht verbunden werden. Bitte einschalten und erneut versuchen.</span>;
   if (status === 'skipped') return <span className="sc-sensor-state skipped">Übersprungen</span>;
   return <span className="sc-sensor-state idle">Bereit</span>;
+}
+
+function isPresenceBinding(sensor: SensorBinding) {
+  const type = String(sensor.type || '').toLowerCase();
+  const id = String(sensor.id || '').toLowerCase();
+  return type !== 'door' || id.endsWith('_presence') || id.endsWith('_motion');
 }

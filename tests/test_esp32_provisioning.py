@@ -29,10 +29,10 @@ class FakeHttp:
     def __init__(self, body: dict | None = None, status_code: int = 200) -> None:
         self.body = body or {"success": True, "device_id": "c1001-living-01", "model": "C1001", "firmware": "1.0.0"}
         self.status_code = status_code
-        self.requests: list[tuple[str, dict, float]] = []
+        self.requests: list[tuple[str, dict, float, dict | None]] = []
 
-    def post(self, url: str, json: dict, timeout: float) -> FakeResponse:
-        self.requests.append((url, json, timeout))
+    def post(self, url: str, json: dict, timeout: float, headers: dict | None = None) -> FakeResponse:
+        self.requests.append((url, json, timeout, headers))
         return FakeResponse(self.body, self.status_code)
 
 
@@ -101,8 +101,23 @@ class Esp32ProvisioningTests(unittest.TestCase):
         self.assertEqual(role["entity_id"], topic)
         self.assertEqual(role["source"], "mqtt")
         self.assertEqual(http.requests[0][0], "http://192.168.4.1/api/provision")
+        self.assertEqual(http.requests[0][3]["Accept"], "application/json")
         self.assertIn("sentero/c1001-living-01/availability", mqtt.requested_topics)
         self.assertIn(topic, mqtt.requested_topics)
+
+    def test_successful_java_sensor_response_uses_camel_case_device_id(self) -> None:
+        topic = "sentero/c1001-living-02/state"
+        state = MqttMessage(topic=topic, payload={"presence": True, "battery": 99}, raw_payload="{}")
+        http = FakeHttp({"success": True, "deviceId": "c1001-living-02", "model": "C1001", "firmware": "1.0.0"})
+        service, mapping, _http, mqtt = self.service(messages={topic: [state]}, http=http)
+
+        result = service.provision("living_room", "Wohnzimmer Präsenzsensor")
+        role = mapping.get_role("living_room_presence", dev=True)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["device"]["id"], "c1001-living-02")
+        self.assertEqual(role["entity_id"], topic)
+        self.assertIn("sentero/c1001-living-02/availability", mqtt.requested_topics)
 
     def test_mqtt_timeout_after_successful_response(self) -> None:
         service, _mapping, _http, _mqtt = self.service(mqtt=TimeoutMqtt())

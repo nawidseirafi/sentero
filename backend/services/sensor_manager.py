@@ -64,6 +64,19 @@ class SensorManager:
             "Sensor discovery requested",
             extra={"component": "sensor_manager", "sensor_type": clean_type, "room_id": room_id, "sensor_source": sensor_source_mode()},
         )
+        if clean_type == "presence_sensor":
+            logger.warning(
+                "Presence sensor discovery blocked because ESP32 provisioning is required",
+                extra={"component": "sensor_manager", "sensor_type": clean_type, "room_id": room_id, "sensor_source": sensor_source_mode()},
+            )
+            return {
+                "discovery_id": 0,
+                "status": "manual_action",
+                "message": "Präsenzsensoren werden über die automatische Verbindung eingerichtet.",
+                "sensor_type": clean_type,
+                "room_id": room_id,
+                "detail": {"reason": "presence_requires_provisioning"},
+            }
         source = sensor_source_mode()
         if source in {"mqtt", "zigbee2mqtt", "z2m", "mixed"}:
             result = self.mapping.start_mqtt_discovery(target_role, room_id, duration=duration)

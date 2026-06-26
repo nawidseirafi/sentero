@@ -88,7 +88,7 @@ class Esp32ProvisioningService:
             logger.debug("Provisioning payload prepared", extra={"component": "esp32_provisioning", "payload": masked_payload(payload)})
 
         response = self._post_provisioning_payload(payload)
-        device_id = str(response.get("device_id") or "").strip()
+        device_id = str(response.get("device_id") or response.get("deviceId") or "").strip()
         if not device_id:
             raise RuntimeError("Sensor hat keine Geräte-ID zurückgegeben.")
         logger.info(
@@ -191,7 +191,13 @@ class Esp32ProvisioningService:
     def _post_provisioning_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         url = self.provisioning_url()
         try:
-            response = self.http.post(url, json=payload, timeout=self.provisioning_timeout())
+            logger.info("Calling presence sensor provisioning endpoint", extra={"component": "esp32_provisioning", "url": url})
+            response = self.http.post(
+                url,
+                json=payload,
+                timeout=self.provisioning_timeout(),
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+            )
             logger.debug(
                 "Provisioning HTTP response",
                 extra={"component": "esp32_provisioning", "status_code": getattr(response, "status_code", None), "url": url},
@@ -201,8 +207,20 @@ class Esp32ProvisioningService:
         except requests.Timeout as exc:
             logger.warning("Provisioning timeout", extra={"component": "esp32_provisioning", "url": url})
             raise RuntimeError("Präsenzsensor ist nicht erreichbar. Bitte Sensor einschalten und erneut versuchen.") from exc
+        except requests.HTTPError as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None) or getattr(response, "status_code", None)
+            logger.exception(
+                "HTTP provisioning failed",
+                extra={"component": "esp32_provisioning", "url": url, "status_code": status_code},
+            )
+            if status_code == 406:
+                raise RuntimeError("Präsenzsensor hat das JSON-Format der Einrichtung nicht akzeptiert.") from exc
+            raise RuntimeError("Präsenzsensor konnte nicht verbunden werden.") from exc
         except Exception as exc:
-            logger.exception("HTTP provisioning failed", extra={"component": "esp32_provisioning", "url": url})
+            status_code = getattr(locals().get("response", None), "status_code", None)
+            logger.exception("HTTP provisioning failed", extra={"component": "esp32_provisioning", "url": url, "status_code": status_code})
+            if status_code == 406:
+                raise RuntimeError("Präsenzsensor hat das JSON-Format der Einrichtung nicht akzeptiert.") from exc
             raise RuntimeError("Präsenzsensor konnte nicht verbunden werden.") from exc
         if not isinstance(body, dict) or body.get("success") is not True:
             logger.error("Sensor rejected provisioning", extra={"component": "esp32_provisioning", "response": safe_response(body)})

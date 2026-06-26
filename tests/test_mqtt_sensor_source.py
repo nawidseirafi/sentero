@@ -347,7 +347,7 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertEqual(mqtt.requests[1], (
             "zigbee2mqtt/bridge/request/device/remove",
             "zigbee2mqtt/bridge/response/device/remove",
-            {"id": "0xa4c13811eb64ffff"},
+            {"id": "0xa4c13811eb64ffff", "force": "true", "block": "false"},
         ))
         self.assertIsNone(role)
 
@@ -501,7 +501,7 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertEqual(mqtt.requests[1], (
             "zigbee2mqtt/bridge/request/device/remove",
             "zigbee2mqtt/bridge/response/device/remove",
-            {"id": "0xa4c1381219fcffff"},
+            {"id": "0xa4c1381219fcffff", "force": "true", "block": "false"},
         ))
 
     def test_delete_zigbee2mqtt_sensor_does_not_try_child_entity_names(self) -> None:
@@ -688,7 +688,7 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertTrue(role["reachable"])
         self.assertEqual(role["battery_level"], 100)
 
-    def test_mixed_mode_is_mqtt_capable_for_discovery(self) -> None:
+    def test_presence_sensor_discovery_is_blocked_for_esp32_provisioning(self) -> None:
         mqtt = SnapshotMqtt([])
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
             os.environ,
@@ -700,11 +700,11 @@ class MqttSensorSourceTests(unittest.TestCase):
             mapping.sensor_source.sources[0].mqtt = mqtt
             manager = SensorManager(mapping)
             started = manager.start_discovery("presence_sensor", room_id="living_room", duration=60)
-            mqtt.messages = [FakeMessage("zigbee2mqtt/Wohnzimmer", {"occupancy": True, "linkquality": 90})]
-            found = manager.discovered(started["discovery_id"])
 
-        self.assertEqual(found["status"], "found")
-        self.assertEqual(found["sensor"]["type"], "presence_sensor")
+        self.assertEqual(started["status"], "manual_action")
+        self.assertEqual(started["discovery_id"], 0)
+        self.assertEqual(started["detail"]["reason"], "presence_requires_provisioning")
+        self.assertEqual(mqtt.published, [])
 
     def test_mixed_mqtt_discovery_does_not_call_homeassistant(self) -> None:
         mqtt = SnapshotMqtt([])
