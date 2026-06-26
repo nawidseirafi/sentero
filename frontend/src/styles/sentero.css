@@ -333,21 +333,24 @@ button:disabled {
   text-align: left;
 }
 
+
 .sc-shell-brand {
   background: var(--sc-green-soft);
   font-size: 1.24rem;
   font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
 
-.sc-shell-brand span {
+.sc-shell-logo {
+  width: 52px;
+  object-fit: contain;
+  flex-shrink: 0;
   align-items: center;
-  background: var(--sc-green);
-  border-radius: 15px;
   color: white;
   display: inline-flex;
-  height: 44px;
   justify-content: center;
-  width: 44px;
 }
 
 .sc-sidebar-nav {

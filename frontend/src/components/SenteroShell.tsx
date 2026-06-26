@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Bell, Home, KeyRound, LogOut, Settings, ShieldCheck, Sparkles, UserRound, Users, Wifi, HardDrive} from 'lucide-react';
 import type { SenteroRoute, SenteroRouteName, SenteroSettingsTab } from '../routes/routes';
 import { senteroNavigation } from '../navigation/navigation';
+import logo from '../assets/logo2.png'
 
 type Props = {
   route: SenteroRoute;
@@ -27,12 +28,12 @@ const settingsItems: Array<{ tab: SenteroSettingsTab; label: string; icon: typeo
   { tab: 'system', label: 'System', icon: HardDrive },
 ];
 
-export function SenteroShell({ route, onNavigate, onLogout, children }: Props) {
+function SenteroShell({ route, onNavigate, onLogout, children }: Props) {
   return (
     <main className="sc-app-shell">
       <aside className="sc-sidebar" aria-label="Sentero Navigation">
         <button className="sc-shell-brand" type="button" onClick={() => onNavigate('dashboard')}>
-          <span><ShieldCheck size={26} aria-hidden="true" /></span>
+          <img className="sc-shell-logo" src={logo} alt="Sentero Logo" />
           <strong>Sentero</strong>
         </button>
         <nav className="sc-sidebar-nav">
@@ -95,3 +96,5 @@ export function SenteroShell({ route, onNavigate, onLogout, children }: Props) {
     </main>
   );
 }
+
+export default SenteroShell

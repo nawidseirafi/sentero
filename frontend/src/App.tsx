@@ -7,7 +7,7 @@ import { RoomsPage } from './pages/RoomsPage';
 import { ContactsPage } from './pages/ContactsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { SetupWizardPage } from './pages/SetupWizardPage';
-import { SenteroShell } from './components/SenteroShell';
+import SenteroShell  from './components/SenteroShell';
 import type { SenteroRoute, SenteroRouteName, SenteroSettingsTab } from './routes/routes';
 import { parseSenteroRoute, senteroRouteToPath } from './routes/routes';
 import './styles/sentero.css';
