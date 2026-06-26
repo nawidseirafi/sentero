@@ -5,6 +5,7 @@ from functools import lru_cache
 
 from backend.sensors.service import SenteroSensorService
 from backend.services.auth_service import SenteroAuthService
+from backend.services.box_network_service import BoxNetworkService
 from backend.services.device_mapping_service import DeviceMappingService
 from backend.services.notification_service import NotificationService
 from backend.services.sensor_manager import SensorManager
@@ -23,6 +24,7 @@ class SenteroServices:
     update: SenteroUpdateService
     sensors: SenteroSensorService
     sensor_manager: SensorManager
+    box_network: BoxNetworkService
 
 
 @lru_cache(maxsize=1)
@@ -37,6 +39,7 @@ def get_services() -> SenteroServices:
         update=SenteroUpdateService(),
         sensors=SenteroSensorService(mapping),
         sensor_manager=SensorManager(mapping),
+        box_network=BoxNetworkService(mapping),
     )
 
 

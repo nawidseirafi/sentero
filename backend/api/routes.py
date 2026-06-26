@@ -33,6 +33,7 @@ OPENAPI_TAGS = [
 ]
 
 router = APIRouter(prefix=API_PREFIX)
+box_setup_router = APIRouter(prefix="/api/setup")
 
 
 class ProfilePayload(BaseModel):
@@ -78,6 +79,11 @@ class SensorDiscoveryCancelPayload(BaseModel):
 class SensorNetworkPayload(BaseModel):
     wifi_ssid: str | None = None
     wifi_password: str | None = None
+
+
+class BoxNetworkWifiPayload(BaseModel):
+    ssid: str
+    password: str
 
 
 class Esp32ProvisioningStartPayload(BaseModel):
@@ -181,6 +187,21 @@ def api_error(exc: Exception) -> HTTPException:
 
 def is_dev_mode(dev: bool = False) -> bool:
     return dev or (config_str("app.dev_mode", "") or os.getenv("SENTERO_DEV_MODE", "")).lower() in {"1", "true", "yes", "on"}
+
+
+@box_setup_router.get("/box-network/status", tags=[TAG_SETUP])
+def box_network_status():
+    return get_services().box_network.status()
+
+
+@box_setup_router.post("/box-network/wifi", tags=[TAG_SETUP])
+def box_network_wifi(payload: BoxNetworkWifiPayload):
+    try:
+        return get_services().box_network.save_wifi(model_data(payload))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
 
 
 @router.get("/auth/status", tags=[TAG_AUTH])

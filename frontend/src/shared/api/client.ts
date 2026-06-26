@@ -163,6 +163,28 @@ export type SenteroSensorNetworkSettings = {
   configured: boolean;
 };
 
+export type BoxNetworkStatus = {
+  mode: 'disabled' | 'auto' | 'force' | string;
+  network_ready: boolean;
+  ethernet_active: boolean;
+  wifi_active: boolean;
+  ip_address?: string | null;
+  setup_ap_active: boolean;
+  hostname: string;
+  local_url: string;
+  message: string;
+  wifi_configured: boolean;
+  internet_reachable?: boolean | null;
+};
+
+export type BoxNetworkWifiResult = {
+  ok: boolean;
+  applied: boolean;
+  mode: string;
+  message: string;
+  status: BoxNetworkStatus;
+};
+
 export type SenteroSensorProvisioningStatus = {
   implemented: boolean;
   status: string;
@@ -418,6 +440,9 @@ export const api = {
   saveSenteroSensorNetwork: (payload: { wifi_ssid?: string; wifi_password?: string }) =>
     request<{ status: string; network: SenteroSensorNetworkSettings }>('/api/sentero/sensors/network', { method: 'POST', body: JSON.stringify(payload) }),
   testSenteroSensorNetwork: () => request<{ ok: boolean; message: string }>('/api/sentero/sensors/network/test', { method: 'POST' }),
+  boxNetworkStatus: () => request<BoxNetworkStatus>('/api/setup/box-network/status'),
+  saveBoxNetworkWifi: (payload: { ssid: string; password: string }) =>
+    request<BoxNetworkWifiResult>('/api/setup/box-network/wifi', { method: 'POST', body: JSON.stringify(payload) }),
   senteroSensorProvisioningStatus: () => request<SenteroSensorProvisioningStatus>('/api/sentero/sensors/provisioning/status'),
   startSenteroPresenceDiscovery: () =>
     request<{ ok: boolean; message: string; discovery: SenteroEsp32DiscoveryStatus }>('/api/sentero/sensors/provisioning/esp32/discovery/start', { method: 'POST' }),

@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .paths import FRONTEND_DIST
-from backend.api.routes import OPENAPI_TAGS, router
+from backend.api.routes import OPENAPI_TAGS, box_setup_router, router
 from backend.logging_config import configure_logging, get_logger
 from backend.services.container import get_services
 
@@ -66,6 +66,8 @@ PUBLIC_PATHS = {
     "/api/sentero/auth/forgot-password",
     "/api/sentero/auth/reset-password",
     "/api/sentero/auth/logout",
+    "/api/setup/box-network/status",
+    "/api/setup/box-network/wifi",
 }
 AUTH_SCHEME_NAME = "HTTPBearer"
 
@@ -113,6 +115,7 @@ async def require_sentero_auth(request, call_next):
 
 
 app.include_router(router)
+app.include_router(box_setup_router)
 
 
 def custom_openapi() -> dict:

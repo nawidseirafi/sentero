@@ -6,6 +6,10 @@ sentero:
 app:
   dev_mode: false
 
+box_setup:
+  mode: disabled
+  hostname: sentero
+
 logging:
   level: INFO
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, DoorClosed, DoorOpen, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plus, Save, Send, ShieldAlert, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
-import { api, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus } from '@shared/api/client';
+import { api, type BoxNetworkStatus, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus } from '@shared/api/client';
 import { UpdatePanel } from '../components/UpdatePanel';
 import { useSenteroAuth } from '../auth/SenteroAuthContext';
 import type { SenteroSettingsTab } from '../routes/routes';
@@ -44,6 +44,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [accountForm, setAccountForm] = useState({ display_name: '', email: '' });
   const [networkForm, setNetworkForm] = useState({ wifi_ssid: '', wifi_password: '' });
   const [networkStatus, setNetworkStatus] = useState<SenteroSensorNetworkSettings | null>(null);
+  const [boxNetworkForm, setBoxNetworkForm] = useState({ ssid: '', password: '' });
+  const [boxNetworkStatus, setBoxNetworkStatus] = useState<BoxNetworkStatus | null>(null);
   const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '', new_password_confirm: '' });
   const [accountEditing, setAccountEditing] = useState(false);
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
@@ -92,11 +94,12 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
   async function load() {
     try {
-      const [nextStatus, nextSensors, nextChannels, nextNetwork] = await Promise.all([
+      const [nextStatus, nextSensors, nextChannels, nextNetwork, nextBoxNetwork] = await Promise.all([
         api.senteroSetupStatus(),
         api.senteroSensorRoles(true),
         api.senteroNotificationChannels(),
         api.senteroSensorNetwork(),
+        api.boxNetworkStatus(),
       ]);
       setStatus(nextStatus);
       setSensors(nextSensors.sensor_roles);
@@ -106,6 +109,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         wifi_ssid: nextNetwork.wifi_ssid || '',
         wifi_password: '',
       });
+      setBoxNetworkStatus(nextBoxNetwork);
+      setBoxNetworkForm({ ssid: '', password: '' });
       hydrateChannelForms(nextChannels.channels);
       const sensorRooms = Array.from(new Set(nextSensors.sensor_roles.map((sensor) => sensor.room).filter(Boolean))) as string[];
       const savedRooms = nextStatus.selected_rooms || [];
@@ -166,6 +171,21 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       setNetworkStatus(result.network);
       setNetworkForm((value) => ({ ...value, wifi_password: '' }));
       toast('Netzwerk gespeichert');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Netzwerk konnte nicht gespeichert werden.');
+    }
+  }
+
+  async function saveBoxNetwork() {
+    try {
+      const result = await api.saveBoxNetworkWifi({
+        ssid: boxNetworkForm.ssid,
+        password: boxNetworkForm.password,
+      });
+      setBoxNetworkStatus(result.status);
+      setBoxNetworkForm({ ssid: '', password: '' });
+      toast(result.message || 'Netzwerk gespeichert');
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Netzwerk konnte nicht gespeichert werden.');
@@ -574,22 +594,63 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         <section className="sc-panel sc-settings-panel sc-network-panel">
           <div className="sc-settings-hero">
             <h2>Netzwerk</h2>
-            <p>Diese Angaben nutzt Sentero, um WLAN-Sensoren automatisch mit Ihrem Zuhause zu verbinden.</p>
+            <p>Verwalten Sie die Verbindung der Sentero-Box und die gespeicherten WLAN-Daten fuer Sensoren.</p>
           </div>
-          <div className="sc-form-grid">
-            <label>
-              WLAN-Name
-              <input value={networkForm.wifi_ssid} onChange={(event) => setNetworkForm((value) => ({ ...value, wifi_ssid: event.target.value }))} placeholder="Mein WLAN" />
-            </label>
-            <label>
-              WLAN-Passwort
-              <input type="password" value={networkForm.wifi_password} onChange={(event) => setNetworkForm((value) => ({ ...value, wifi_password: event.target.value }))} placeholder={networkStatus?.wifi_password_set ? 'Gespeichert' : 'Passwort'} />
-            </label>
+          <div className="sc-network-sections">
+            <div className="sc-network-card">
+              <div className="sc-network-card-head">
+                <div>
+                  <h3>Sentero-Box</h3>
+                  <p>{boxNetworkStatus?.message || 'Netzwerkstatus wird geladen.'}</p>
+                </div>
+                <span className={`sc-network-pill ${boxNetworkStatus?.network_ready ? 'ready' : 'setup'}`}>
+                  {boxNetworkStatus?.network_ready ? 'Verbunden' : 'Einrichten'}
+                </span>
+              </div>
+              <div className="sc-network-facts">
+                <span>Adresse: {boxNetworkStatus?.local_url || 'http://sentero.local'}</span>
+                <span>Modus: {boxNetworkStatus?.mode || 'disabled'}</span>
+                <span>Einrichtung: {boxNetworkStatus?.setup_ap_active ? 'aktiv' : 'nicht aktiv'}</span>
+              </div>
+              <div className="sc-form-grid">
+                <label>
+                  WLAN-Name
+                  <input value={boxNetworkForm.ssid} onChange={(event) => setBoxNetworkForm((value) => ({ ...value, ssid: event.target.value }))} placeholder="Mein WLAN" />
+                </label>
+                <label>
+                  WLAN-Passwort
+                  <input type="password" value={boxNetworkForm.password} onChange={(event) => setBoxNetworkForm((value) => ({ ...value, password: event.target.value }))} placeholder={boxNetworkStatus?.wifi_configured ? 'Gespeichert' : 'Passwort'} />
+                </label>
+              </div>
+              <p className="sc-network-note">Im Development werden diese Daten nur gespeichert. Die Netzwerkverbindung dieses Rechners wird nicht verändert.</p>
+              <footer className="sc-account-actions">
+                <button className="sc-soft-action primary" type="button" onClick={() => void saveBoxNetwork()}><Save size={18} /> Verbinden</button>
+              </footer>
+            </div>
+
+            <div className="sc-network-card">
+              <div className="sc-network-card-head">
+                <div>
+                  <h3>Sensoren</h3>
+                  <p>Diese Angaben nutzt Sentero, um WLAN-Sensoren automatisch mit Ihrem Zuhause zu verbinden.</p>
+                </div>
+              </div>
+              <div className="sc-form-grid">
+                <label>
+                  WLAN-Name
+                  <input value={networkForm.wifi_ssid} onChange={(event) => setNetworkForm((value) => ({ ...value, wifi_ssid: event.target.value }))} placeholder="Mein WLAN" />
+                </label>
+                <label>
+                  WLAN-Passwort
+                  <input type="password" value={networkForm.wifi_password} onChange={(event) => setNetworkForm((value) => ({ ...value, wifi_password: event.target.value }))} placeholder={networkStatus?.wifi_password_set ? 'Gespeichert' : 'Passwort'} />
+                </label>
+              </div>
+              <footer className="sc-account-actions">
+                <button className="sc-soft-action" type="button" onClick={() => void testNetwork()}><Wifi size={18} /> Testen</button>
+                <button className="sc-soft-action primary" type="button" onClick={() => void saveNetwork()}><Save size={18} /> Speichern</button>
+              </footer>
+            </div>
           </div>
-          <footer className="sc-account-actions">
-            <button className="sc-soft-action" type="button" onClick={() => void testNetwork()}><Wifi size={18} /> Testen</button>
-            <button className="sc-soft-action primary" type="button" onClick={() => void saveNetwork()}><Save size={18} /> Speichern</button>
-          </footer>
         </section>
       )}
 
