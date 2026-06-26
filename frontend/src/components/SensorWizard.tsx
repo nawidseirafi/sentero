@@ -1,4 +1,4 @@
-import { Check, Loader2, Radio, Search, ShieldCheck } from 'lucide-react';
+import { Check, Loader2, Radio, Search, ShieldCheck, Wifi } from 'lucide-react';
 import type { SenteroDiscoveredSensor } from '@shared/api/client';
 
 export type SensorBinding = {
@@ -88,6 +88,12 @@ function SensorRow({ sensor, state, devMode, onChange, onSearch, onSkip }: {
         <span className="sc-sensor-kind"><ShieldCheck size={20} /> {label}</span>
         <strong>{sensor.name || label}</strong>
         <small>{help}</small>
+        {presence && (
+          <div className="sc-sensor-preflight">
+            <Wifi size={17} />
+            <span>Bitte verbinden Sie den Sensor zuerst mit Ihrem Heimnetz. Danach kann Sentero ihn hier finden.</span>
+          </div>
+        )}
         <input
           value={sensor.name}
           onChange={(event) => onChange(sensor.id, { name: event.target.value })}

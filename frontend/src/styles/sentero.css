@@ -1356,6 +1356,27 @@ button:disabled {
   line-height: 1.35;
 }
 
+.sc-sensor-preflight {
+  align-items: flex-start;
+  background: #f4faf7;
+  border: 1px solid #d7ebe2;
+  border-radius: 14px;
+  color: #416b5b;
+  display: inline-flex;
+  font-size: 0.94rem;
+  font-weight: 750;
+  gap: 8px;
+  line-height: 1.35;
+  max-width: 520px;
+  padding: 10px 12px;
+}
+
+.sc-sensor-preflight svg {
+  color: var(--sc-green);
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
 .sc-sensor-kind {
   align-items: center;
   color: var(--sc-green);
