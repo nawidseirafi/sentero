@@ -43,7 +43,11 @@ export function SensorWizard({ sensors, discovery, devMode, connected, total, ro
         <span><Radio size={24} /></span>
         <div>
           <h3>Sensor verbinden</h3>
-          <p>Klicken Sie auf „Sensor suchen“. Schalten Sie Präsenzsensoren ein. Bei Türsensoren drücken Sie anschließend die Pairing-Taste.</p>
+         <p>
+           Klicken Sie auf <strong>„Sensor suchen“</strong>.<br/>
+           <b>Präsenzsensoren</b> müssen zunächst mit Ihrem Heim-WLAN verbunden werden. Danach erkennt Sentero sie automatisch.<br/>
+           <b>Türsensoren</b> werden während der Suche hinzugefügt. Halten Sie dazu die Pairing-Taste 3–5 Sekunden gedrückt.
+         </p>
         </div>
         <strong>{connected}/{total} Sensor verbunden</strong>
       </div>
