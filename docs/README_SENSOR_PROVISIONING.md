@@ -484,6 +484,9 @@ Wenn ein ESP32/C1001-Präsenzsensor aus Sentero gelöscht wird, wird er
 nicht per HTTP angesprochen. HTTP ist ausschließlich für die
 Ersteinrichtung reserviert. Runtime-Kommandos laufen über MQTT.
 
+Der Sensorbauer muss dieses MQTT-Kommando implementieren. Sentero sendet
+beim Löschen eines Sensors genau diese Nachricht:
+
 ### Command Topic
 
 ``` text
@@ -498,6 +501,10 @@ Payload:
   "reason": "removed_from_sentero"
 }
 ```
+
+Das Topic-Prefix ist standardmäßig `sentero` und kann über
+`SENTERO_ESP32_TOPIC_PREFIX` oder `esp32.topic_prefix` geändert werden.
+Das Kommando wird nicht per HTTP gesendet.
 
 ### Status Topic
 
@@ -517,6 +524,22 @@ Erwartete Bestätigung:
   "status": "factory_resetting"
 }
 ```
+
+Sentero wartet nach dem Publish bis zu 10 Sekunden auf diese Bestätigung
+auf dem Status-Topic. Die Bestätigung gilt als passend, wenn
+`status` exakt `factory_resetting` ist und `device_id` entweder fehlt
+oder der gelöschten Sensor-ID entspricht.
+
+Nach Empfang von `factory_reset` soll der Sensor:
+
+1.  `factory_resetting` auf `sentero/<device_id>/status` veröffentlichen
+2.  WLAN-, MQTT- und Device-Konfiguration löschen
+3.  gespeicherte Tokens und Raum-/Friendly-Name-Metadaten löschen
+4.  neu starten
+5.  wieder in den Einrichtungsmodus wechseln
+
+`availability` darf dafür nicht verwendet werden. Dieses Topic bleibt
+ausschließlich für `online` und `offline`.
 
 ### Ablauf
 
