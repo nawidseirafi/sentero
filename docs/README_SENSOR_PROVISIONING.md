@@ -185,6 +185,7 @@ esp32:
   provisioning_url: http://192.168.4.1/api/provision
   provisioning_timeout: 10
   mqtt_wait_timeout: 30
+  token: SENTERO_ESP32_DEVICE_TOKEN
 ```
 
 Umgebungsvariablen können diese Werte überschreiben:
@@ -198,6 +199,11 @@ SENTERO_ESP32_DEVICE_TOKEN=
 ```
 
 Passwörter und Tokens werden nicht geloggt.
+
+`esp32.token` kann ein direkter Token oder ein Name einer Umgebungsvariable sein.
+Wenn `SENTERO_ESP32_DEVICE_TOKEN` in `.env` gesetzt ist, hat dieser Wert Vorrang.
+Wenn in `sentero.yaml` nur der Platzhalter steht und die Umgebungsvariable fehlt,
+wird kein Token an den Sensor gesendet.
 
 ------------------------------------------------------------------------
 

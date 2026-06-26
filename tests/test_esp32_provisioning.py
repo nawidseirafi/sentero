@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.services.device_mapping_service import DeviceMappingService
-from backend.services.esp32_provisioning_service import Esp32ProvisioningService, masked_payload
+from backend.services.esp32_provisioning_service import Esp32ProvisioningService, masked_payload, resolve_secret
 from backend.services.mqtt_service import MqttMessage
 from backend.services.sensor_manager import SensorManager
 
@@ -74,6 +74,17 @@ class Esp32ProvisioningTests(unittest.TestCase):
         self.assertNotIn("wifi-secret", str(masked))
         self.assertNotIn("mqtt-secret", str(masked))
         self.assertNotIn("device-token", str(masked))
+
+    def test_config_token_placeholder_resolves_from_environment(self) -> None:
+        with patch.dict(os.environ, {"SENTERO_ESP32_DEVICE_TOKEN": "device-token"}, clear=False):
+            self.assertEqual(resolve_secret("SENTERO_ESP32_DEVICE_TOKEN"), "device-token")
+
+    def test_config_token_placeholder_is_empty_when_environment_is_missing(self) -> None:
+        with patch.dict(os.environ, {"SENTERO_ESP32_DEVICE_TOKEN": ""}, clear=False):
+            self.assertEqual(resolve_secret("SENTERO_ESP32_DEVICE_TOKEN"), "")
+
+    def test_config_token_can_be_literal_value(self) -> None:
+        self.assertEqual(resolve_secret("literal-device-token"), "literal-device-token")
 
     def test_missing_wifi_data_returns_clear_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

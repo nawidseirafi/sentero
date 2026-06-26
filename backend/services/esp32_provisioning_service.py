@@ -188,7 +188,10 @@ class Esp32ProvisioningService:
         return (os.getenv("SENTERO_TIMEZONE") or config_str("app.timezone", "Europe/Berlin") or "Europe/Berlin").strip()
 
     def device_token(self) -> str:
-        return (os.getenv("SENTERO_ESP32_DEVICE_TOKEN") or "").strip()
+        return (
+            os.getenv("SENTERO_ESP32_DEVICE_TOKEN")
+            or resolve_secret(config_str("esp32.token", ""))
+        ).strip()
 
     def _post_provisioning_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         url = self.provisioning_url()
@@ -331,6 +334,18 @@ def safe_response(value: Any) -> Any:
     if isinstance(value, list):
         return [safe_response(item) for item in value]
     return value
+
+
+def resolve_secret(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    resolved = os.getenv(text)
+    if resolved:
+        return resolved.strip()
+    if text.isupper() and all(char.isalnum() or char == "_" for char in text):
+        return ""
+    return text
 
 
 def clean_text(value: Any) -> str | None:
