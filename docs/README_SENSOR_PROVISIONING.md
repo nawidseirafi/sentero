@@ -117,10 +117,17 @@ Beispiel:
   },
   "device": {
     "timezone": "Europe/Berlin",
+    "room_id": "living_room",
+    "display_name": "Wohnzimmer Präsenzsensor",
     "token": "optional"
   }
 }
 ```
+
+`room_id` und `display_name` werden vom Wizard an Sentero übergeben und beim
+Provisioning an den Sensor weitergereicht. Der Sensor soll diese Werte fuer
+eigene MQTT-Metadaten verwenden, Sentero bleibt aber weiterhin die fuehrende
+Device Registry.
 
 ## Response
 

@@ -100,10 +100,20 @@ class Esp32ProvisioningTests(unittest.TestCase):
         self.assertEqual(result["device"]["source"], "mqtt")
         self.assertEqual(role["entity_id"], topic)
         self.assertEqual(role["source"], "mqtt")
-        self.assertEqual(http.requests[0][0], "http://192.168.4.1/api/provision")
+        self.assertEqual(http.requests[0][0], "http://localhost:8088/api/provision")
         self.assertEqual(http.requests[0][3]["Accept"], "application/json")
+        self.assertEqual(http.requests[0][1]["device"]["room_id"], "living_room")
+        self.assertEqual(http.requests[0][1]["device"]["display_name"], "Wohnzimmer Präsenzsensor")
         self.assertIn("sentero/c1001-living-01/availability", mqtt.requested_topics)
         self.assertIn(topic, mqtt.requested_topics)
+
+    def test_payload_includes_room_and_display_name_for_sensor_mqtt_metadata(self) -> None:
+        service, _mapping, _http, _mqtt = self.service()
+
+        payload = service.build_payload(room_id="living_room", display_name="Wohnzimmer Präsenzsensor")
+
+        self.assertEqual(payload["device"]["room_id"], "living_room")
+        self.assertEqual(payload["device"]["display_name"], "Wohnzimmer Präsenzsensor")
 
     def test_successful_java_sensor_response_uses_camel_case_device_id(self) -> None:
         topic = "sentero/c1001-living-02/state"

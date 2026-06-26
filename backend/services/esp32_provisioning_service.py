@@ -83,7 +83,7 @@ class Esp32ProvisioningService:
 
         started = time.perf_counter()
         logger.info("Provisioning started", extra={"component": "esp32_provisioning", "room_id": clean_room})
-        payload = self.build_payload()
+        payload = self.build_payload(room_id=clean_room, display_name=clean_name)
         if is_debug_logging():
             logger.debug("Provisioning payload prepared", extra={"component": "esp32_provisioning", "payload": masked_payload(payload)})
 
@@ -134,7 +134,7 @@ class Esp32ProvisioningService:
             "role": role,
         }
 
-    def build_payload(self) -> dict[str, Any]:
+    def build_payload(self, room_id: str | None = None, display_name: str | None = None) -> dict[str, Any]:
         network = self._network_settings(public=False)
         ssid = str(network.get("wifi_ssid") or "").strip()
         password = str(network.get("wifi_password") or "")
@@ -157,6 +157,8 @@ class Esp32ProvisioningService:
             },
             "device": {
                 "timezone": self.timezone(),
+                **({"room_id": clean_text(room_id)} if clean_text(room_id) else {}),
+                **({"display_name": clean_text(display_name)} if clean_text(display_name) else {}),
                 **({"token": self.device_token()} if self.device_token() else {}),
             },
         }
