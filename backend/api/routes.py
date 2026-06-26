@@ -83,6 +83,7 @@ class SensorNetworkPayload(BaseModel):
 class Esp32ProvisioningStartPayload(BaseModel):
     room_id: str
     display_name: str
+    device_id: str | None = None
 
 
 class ConfirmPayload(BaseModel):
@@ -379,10 +380,26 @@ def sentero_sensor_manager_provisioning_status():
     return get_services().sensor_manager.provisioning_status()
 
 
+@router.post("/sensors/provisioning/esp32/discovery/start", tags=[TAG_SENSORS])
+def sentero_sensor_manager_start_esp32_discovery():
+    try:
+        return get_services().sensor_manager.start_esp32_discovery()
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.get("/sensors/provisioning/esp32/discovered", tags=[TAG_SENSORS])
+def sentero_sensor_manager_esp32_discovered():
+    try:
+        return get_services().sensor_manager.esp32_discovery_status()
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
 @router.post("/sensors/provisioning/esp32/start", tags=[TAG_SENSORS])
 def sentero_sensor_manager_start_esp32_provisioning(payload: Esp32ProvisioningStartPayload):
     try:
-        return get_services().sensor_manager.start_esp32_provisioning(payload.room_id, payload.display_name)
+        return get_services().sensor_manager.start_esp32_provisioning(payload.room_id, payload.display_name, device_id=payload.device_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

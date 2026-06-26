@@ -8,6 +8,7 @@ from typing import Any
 
 from backend.logging_config import get_logger
 from backend.services.device_mapping_service import DeviceMappingService, sensor_source_mode
+from backend.services.esp32_discovery_service import Esp32DiscoveryService
 from backend.services.esp32_provisioning_service import Esp32ProvisioningService
 
 logger = get_logger(__name__)
@@ -22,7 +23,8 @@ class SensorManager:
 
     def __init__(self, mapping: DeviceMappingService) -> None:
         self.mapping = mapping
-        self.esp32_provisioning = Esp32ProvisioningService(mapping)
+        self.esp32_discovery = Esp32DiscoveryService(mapping)
+        self.esp32_provisioning = Esp32ProvisioningService(mapping, discovery=self.esp32_discovery)
         self.ensure_schema()
 
     def ensure_schema(self) -> None:
@@ -197,8 +199,19 @@ class SensorManager:
     def provisioning_status(self) -> dict[str, Any]:
         return self.esp32_provisioning.status()
 
-    def start_esp32_provisioning(self, room_id: str, display_name: str) -> dict[str, Any]:
-        return self.esp32_provisioning.provision(room_id=room_id, display_name=display_name)
+    def esp32_discovery_status(self) -> dict[str, Any]:
+        return self.esp32_discovery.status()
+
+    def start_esp32_discovery(self) -> dict[str, Any]:
+        self.esp32_discovery.ensure_listening()
+        return {
+            "ok": True,
+            "message": "Präsenzsensor wird gesucht.",
+            "discovery": self.esp32_discovery.status(),
+        }
+
+    def start_esp32_provisioning(self, room_id: str, display_name: str, device_id: str | None = None) -> dict[str, Any]:
+        return self.esp32_provisioning.provision(room_id=room_id, display_name=display_name, device_id=device_id)
 
     def mapping_update_room(self, sensor_id: str, room_id: str) -> dict[str, Any]:
         # Persistent device-model assignment is prepared in SenteroSensorService.

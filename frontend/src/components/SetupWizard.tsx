@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, HeartHandshake, Mail, Plus, ShieldCheck, Trash2, UserRound, X } from 'lucide-react';
-import { api, type SenteroSensorRole } from '@shared/api/client';
+import { api, type SenteroEsp32DiscoverySensor, type SenteroSensorRole } from '@shared/api/client';
 import { SensorWizard, type SensorBinding, type SensorDiscoveryState } from './SensorWizard';
 
 type Profile = {
@@ -29,6 +29,7 @@ type SensorPlan = { motion: boolean; door: boolean };
 
 const steps = ['Willkommen', 'Profil', 'Räume', 'Sensoren', 'Vertraute Personen', 'Benachrichtigungen', 'Abschluss'];
 const ZIGBEE_DISCOVERY_SECONDS = 180;
+const PRESENCE_DISCOVERY_TIMEOUT_MS = 8000;
 
 const roomOptions = [
   { id: 'living_room', label: 'Wohnzimmer', door: true },
@@ -244,7 +245,16 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     if (isPresenceBinding(sensor)) {
       try {
         const name = sensor.name || `${roomLabel(sensor.roomId)} Präsenzsensor`;
-        const result = await api.startSenteroPresenceProvisioning({ room_id: sensor.roomId, display_name: name });
+        await api.startSenteroPresenceDiscovery();
+        const discovered = await waitForPresenceSensor();
+        setDiscovery((current) => ({
+          ...current,
+          [sensor.id]: {
+            sensor: { id: discovered.id, name: discovered.name, type: discovered.type, confidence: 100 },
+            remainingSeconds: Math.ceil(PRESENCE_DISCOVERY_TIMEOUT_MS / 1000),
+          },
+        }));
+        const result = await api.startSenteroPresenceProvisioning({ room_id: sensor.roomId, display_name: name, device_id: discovered.id });
         updateSensor(sensor.id, { status: 'connected', score: 100, sensorManagerId: result.device.id, name: result.device.name });
         setDiscovery((current) => ({ ...current, [sensor.id]: { sensor: { id: result.device.id, name: result.device.name, type: result.device.type, confidence: 100 }, remainingSeconds: 0 } }));
       } catch (err) {
@@ -680,6 +690,21 @@ function isPresenceBinding(sensor: SensorBinding) {
   const type = String(sensor.type || '').toLowerCase();
   const id = String(sensor.id || '').toLowerCase();
   return type !== 'door' || id.endsWith('_presence') || id.endsWith('_motion');
+}
+
+async function waitForPresenceSensor(): Promise<SenteroEsp32DiscoverySensor> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < PRESENCE_DISCOVERY_TIMEOUT_MS) {
+    const status = await api.senteroPresenceDiscovered();
+    const sensor = status.pending[0];
+    if (sensor) return sensor;
+    await wait(600);
+  }
+  throw new Error('Präsenzsensor wurde noch nicht im Netzwerk gefunden.');
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function uniqueValues(values: string[]) {

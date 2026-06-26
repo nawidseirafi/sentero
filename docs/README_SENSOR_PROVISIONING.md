@@ -12,10 +12,16 @@ Bereits vorhanden:
 - MQTT-Zugangsdaten werden aus `.env`/`config/sentero.yaml` gelesen.
 - Status-Endpunkt:
   - `GET /api/sentero/sensors/provisioning/status`
+- UDP-Discovery:
+  - Sentero lauscht auf UDP-Port `37020`.
+  - Sensor sendet alle 2 Sekunden Broadcasts an `255.255.255.255:37020`.
+- Discovery-Endpunkte:
+  - `POST /api/sentero/sensors/provisioning/esp32/discovery/start`
+  - `GET /api/sentero/sensors/provisioning/esp32/discovered`
 - Start-Endpunkt:
   - `POST /api/sentero/sensors/provisioning/esp32/start`
 - Direkte HTTP-Übergabe an den Sensor:
-  - `POST /api/provision`
+  - `POST http://<sensor-ip>/api/provision`
 - Warten auf MQTT-Availability und ersten MQTT-State:
   - `sentero/<device_id>/availability`
   - `sentero/<device_id>/state`
@@ -49,17 +55,25 @@ Der Wizard übernimmt die komplette Einrichtung.
 Sensor einschalten
         │
         ▼
-Provisioning-Modus
+Sensor-Hotspot-Seite öffnen
         │
         ▼
-Temporärer WLAN-Access-Point
-(z.B. Sentero-Setup-XXXX)
+WLAN-SSID und WLAN-Passwort eingeben
+        │
+        ▼
+Sensor verbindet sich mit Heim-WLAN
+        │
+        ▼
+Sensor sendet UDP-Broadcasts
+        │
+        ▼
+Sentero Backend findet Sensor
         │
         ▼
 Sentero Wizard startet Einrichtung
         │
         ▼
-Sentero Backend verbindet sich mit dem Sensor
+Sentero Backend ruft den Sensor per HTTP im Heimnetz auf
         │
         ▼
 Übertragung der Konfiguration
@@ -68,10 +82,7 @@ Sentero Backend verbindet sich mit dem Sensor
 Sensor speichert Konfiguration
         │
         ▼
-Neustart
-        │
-        ▼
-Verbindung mit Heim-WLAN
+Sensor speichert MQTT- und Device-Konfiguration
         │
         ▼
 Verbindung mit MQTT
@@ -86,14 +97,64 @@ Wizard zeigt:
 
 ------------------------------------------------------------------------
 
-# Provisioning-Schnittstelle
+# UDP-Discovery
 
-Während der Ersteinrichtung stellt der Sensor einen kleinen HTTP-Server
-bereit.
+Solange der Sensor im Heimnetz noch nicht provisioniert ist, sendet er alle
+2 Sekunden einen UDP-Broadcast.
+
+Port:
+
+``` text
+37020
+```
+
+Ziel:
+
+``` text
+255.255.255.255:37020
+```
+
+Payload:
+
+``` json
+{
+  "type": "sentero-discovery",
+  "protocol": 1,
+  "device_id": "c1001-a1b2c3d4",
+  "model": "C1001",
+  "firmware": "1.0.0",
+  "sensor_type": "presence_radar",
+  "http_port": 80,
+  "capabilities": [
+    "presence",
+    "fall_detection",
+    "breathing_detection",
+    "respiration_rate",
+    "signal_quality"
+  ]
+}
+```
+
+Sentero speichert daraus intern:
+
+- Absender-IP
+- HTTP-Port, Standard `80`
+- `device_id`
+- `model`
+- `firmware`
+- `capabilities`
+- Status `pending`
+
+------------------------------------------------------------------------
+
+# HTTP-Provisioning-Schnittstelle
+
+Nach erfolgreicher UDP-Discovery ruft Sentero den Sensor direkt im Heimnetz
+per HTTP auf.
 
 Beispiel:
 
-    http://192.168.4.1
+    http://192.168.178.44/api/provision
 
 ## Endpunkt
 
@@ -103,7 +164,7 @@ Beispiel:
 
 ``` json
 {
-  "protocol": 1,
+  "protocol": 2,
   "wifi": {
     "ssid": "MeinWLAN",
     "password": "********"
@@ -116,17 +177,18 @@ Beispiel:
     "topic_prefix": "sentero"
   },
   "device": {
-    "timezone": "Europe/Berlin",
+    "device_id": "c1001-a1b2c3d4",
+    "friendly_name": "Wohnzimmer Präsenzsensor",
     "room_id": "living_room",
-    "display_name": "Wohnzimmer Präsenzsensor",
+    "timezone": "Europe/Berlin",
     "token": "optional"
   }
 }
 ```
 
-`room_id` und `display_name` werden vom Wizard an Sentero übergeben und beim
+`room_id` und `friendly_name` werden vom Wizard an Sentero übergeben und beim
 Provisioning an den Sensor weitergereicht. Der Sensor soll diese Werte fuer
-eigene MQTT-Metadaten verwenden, Sentero bleibt aber weiterhin die fuehrende
+eigene MQTT-Metadaten verwenden. Sentero bleibt aber weiterhin die fuehrende
 Device Registry.
 
 ## Response
@@ -146,6 +208,14 @@ Device Registry.
 
     GET /api/sentero/sensors/provisioning/status
 
+### Discovery starten
+
+    POST /api/sentero/sensors/provisioning/esp32/discovery/start
+
+### Entdeckte Sensoren
+
+    GET /api/sentero/sensors/provisioning/esp32/discovered
+
 ### Präsenzsensor einrichten
 
     POST /api/sentero/sensors/provisioning/esp32/start
@@ -155,7 +225,8 @@ Request:
 ``` json
 {
   "room_id": "living_room",
-  "display_name": "Wohnzimmer Präsenzsensor"
+  "display_name": "Wohnzimmer Präsenzsensor",
+  "device_id": "c1001-a1b2c3d4"
 }
 ```
 
@@ -182,7 +253,8 @@ Nicht-sensitive Werte stehen in `config/sentero.yaml`:
 ``` yaml
 esp32:
   topic_prefix: sentero
-  provisioning_url: http://192.168.4.1/api/provision
+  discovery_port: 37020
+  discovery_wait_timeout: 6
   provisioning_timeout: 10
   mqtt_wait_timeout: 30
   token: SENTERO_ESP32_DEVICE_TOKEN
@@ -191,12 +263,23 @@ esp32:
 Umgebungsvariablen können diese Werte überschreiben:
 
 ``` dotenv
-SENTERO_ESP32_PROVISIONING_URL=http://192.168.4.1/api/provision
+SENTERO_ESP32_DISCOVERY_PORT=37020
+SENTERO_ESP32_DISCOVERY_WAIT_TIMEOUT=6
 SENTERO_ESP32_PROVISIONING_TIMEOUT=10
 SENTERO_ESP32_MQTT_WAIT_TIMEOUT=30
 SENTERO_ESP32_TOPIC_PREFIX=sentero
 SENTERO_ESP32_DEVICE_TOKEN=
 ```
+
+Eine feste `provisioning_url` wird nicht mehr verwendet. Sentero baut die URL
+aus der UDP-Discovery:
+
+``` text
+http://<sender-ip>:<http_port>/api/provision
+```
+
+Wenn `http_port` fehlt, verwendet Sentero Port `80`. Ein Fake-Server auf
+`localhost:8088` soll deshalb im UDP-Payload `"http_port": 8088` senden.
 
 Passwörter und Tokens werden nicht geloggt.
 

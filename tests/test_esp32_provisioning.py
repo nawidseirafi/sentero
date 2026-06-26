@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.services.device_mapping_service import DeviceMappingService
+from backend.services.esp32_discovery_service import PendingEsp32Sensor
 from backend.services.esp32_provisioning_service import Esp32ProvisioningService, masked_payload, resolve_secret
 from backend.services.mqtt_service import MqttMessage
 from backend.services.sensor_manager import SensorManager
@@ -60,6 +61,32 @@ class TimeoutMqtt(FakeMqtt):
         return []
 
 
+class FakeDiscovery:
+    def __init__(self, sensor: PendingEsp32Sensor | None = None) -> None:
+        self.sensor = sensor or PendingEsp32Sensor(
+            device_id="c1001-living-01",
+            ip_address="127.0.0.1",
+            http_port=8088,
+            model="C1001",
+            firmware="1.0.0",
+            sensor_type="presence_radar",
+            capabilities=["presence", "respiration_rate"],
+            last_seen_at="2026-01-01T00:00:00Z",
+        )
+        self.marked: list[str] = []
+
+    def status(self) -> dict:
+        return {"listening": True, "port": 37020, "pending": []}
+
+    def wait_for_pending(self, device_id: str | None = None, timeout: float | None = None) -> PendingEsp32Sensor | None:
+        if device_id and self.sensor and self.sensor.device_id != device_id:
+            return None
+        return self.sensor
+
+    def mark_provisioned(self, device_id: str) -> None:
+        self.marked.append(device_id)
+
+
 class Esp32ProvisioningTests(unittest.TestCase):
     def test_payload_masking_does_not_leak_passwords_or_token(self) -> None:
         service, _mapping, _http, _mqtt = self.service()
@@ -111,26 +138,39 @@ class Esp32ProvisioningTests(unittest.TestCase):
         self.assertEqual(result["device"]["source"], "mqtt")
         self.assertEqual(role["entity_id"], topic)
         self.assertEqual(role["source"], "mqtt")
-        self.assertEqual(http.requests[0][0], "http://localhost:8088/api/provision")
+        self.assertEqual(http.requests[0][0], "http://127.0.0.1:8088/api/provision")
         self.assertEqual(http.requests[0][3]["Accept"], "application/json")
         self.assertEqual(http.requests[0][1]["device"]["room_id"], "living_room")
-        self.assertEqual(http.requests[0][1]["device"]["display_name"], "Wohnzimmer Präsenzsensor")
+        self.assertEqual(http.requests[0][1]["device"]["device_id"], "c1001-living-01")
+        self.assertEqual(http.requests[0][1]["device"]["friendly_name"], "Wohnzimmer Präsenzsensor")
         self.assertIn("sentero/c1001-living-01/availability", mqtt.requested_topics)
         self.assertIn(topic, mqtt.requested_topics)
 
-    def test_payload_includes_room_and_display_name_for_sensor_mqtt_metadata(self) -> None:
+    def test_payload_includes_device_room_and_friendly_name_for_sensor_mqtt_metadata(self) -> None:
         service, _mapping, _http, _mqtt = self.service()
 
-        payload = service.build_payload(room_id="living_room", display_name="Wohnzimmer Präsenzsensor")
+        payload = service.build_payload(room_id="living_room", display_name="Wohnzimmer Präsenzsensor", device_id="c1001-living-01")
 
+        self.assertEqual(payload["protocol"], 2)
+        self.assertEqual(payload["device"]["device_id"], "c1001-living-01")
         self.assertEqual(payload["device"]["room_id"], "living_room")
-        self.assertEqual(payload["device"]["display_name"], "Wohnzimmer Präsenzsensor")
+        self.assertEqual(payload["device"]["friendly_name"], "Wohnzimmer Präsenzsensor")
 
     def test_successful_java_sensor_response_uses_camel_case_device_id(self) -> None:
         topic = "sentero/c1001-living-02/state"
         state = MqttMessage(topic=topic, payload={"presence": True, "battery": 99}, raw_payload="{}")
         http = FakeHttp({"success": True, "deviceId": "c1001-living-02", "model": "C1001", "firmware": "1.0.0"})
-        service, mapping, _http, mqtt = self.service(messages={topic: [state]}, http=http)
+        discovery = FakeDiscovery(PendingEsp32Sensor(
+            device_id="c1001-living-02",
+            ip_address="127.0.0.1",
+            http_port=8088,
+            model="C1001",
+            firmware="1.0.0",
+            sensor_type="presence_radar",
+            capabilities=["presence"],
+            last_seen_at="2026-01-01T00:00:00Z",
+        ))
+        service, mapping, _http, mqtt = self.service(messages={topic: [state]}, http=http, discovery=discovery)
 
         result = service.provision("living_room", "Wohnzimmer Präsenzsensor")
         role = mapping.get_role("living_room_presence", dev=True)
@@ -171,6 +211,7 @@ class Esp32ProvisioningTests(unittest.TestCase):
         messages: dict[str, list[MqttMessage]] | None = None,
         http: FakeHttp | None = None,
         mqtt: FakeMqtt | None = None,
+        discovery: FakeDiscovery | None = None,
     ) -> tuple[Esp32ProvisioningService, DeviceMappingService, FakeHttp, FakeMqtt]:
         with tempfile.TemporaryDirectory() as tmpdir:
             # Keep the temp directory alive by materializing it under /private/tmp for the test object lifetime.
@@ -180,7 +221,7 @@ class Esp32ProvisioningTests(unittest.TestCase):
         manager.save_network_settings({"wifi_ssid": "MeinWLAN", "wifi_password": "wifi-secret"})
         fake_http = http or FakeHttp()
         fake_mqtt = mqtt or FakeMqtt(messages)
-        return Esp32ProvisioningService(mapping, mqtt=fake_mqtt, http_client=fake_http), mapping, fake_http, fake_mqtt
+        return Esp32ProvisioningService(mapping, mqtt=fake_mqtt, http_client=fake_http, discovery=discovery or FakeDiscovery()), mapping, fake_http, fake_mqtt
 
 
 if __name__ == "__main__":

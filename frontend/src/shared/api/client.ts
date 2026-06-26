@@ -171,6 +171,24 @@ export type SenteroSensorProvisioningStatus = {
   mqtt_configured?: boolean;
   available_steps: string[];
   missing_steps: string[];
+  discovery?: SenteroEsp32DiscoveryStatus;
+};
+
+export type SenteroEsp32DiscoverySensor = {
+  id: string;
+  name: string;
+  type: string;
+  http_port?: number;
+  model?: string | null;
+  firmware?: string | null;
+  capabilities: string[];
+  last_seen_at: string;
+};
+
+export type SenteroEsp32DiscoveryStatus = {
+  listening: boolean;
+  port: number;
+  pending: SenteroEsp32DiscoverySensor[];
 };
 
 export type SenteroEsp32ProvisioningResult = {
@@ -401,7 +419,11 @@ export const api = {
     request<{ status: string; network: SenteroSensorNetworkSettings }>('/api/sentero/sensors/network', { method: 'POST', body: JSON.stringify(payload) }),
   testSenteroSensorNetwork: () => request<{ ok: boolean; message: string }>('/api/sentero/sensors/network/test', { method: 'POST' }),
   senteroSensorProvisioningStatus: () => request<SenteroSensorProvisioningStatus>('/api/sentero/sensors/provisioning/status'),
-  startSenteroPresenceProvisioning: (payload: { room_id: string; display_name: string }) =>
+  startSenteroPresenceDiscovery: () =>
+    request<{ ok: boolean; message: string; discovery: SenteroEsp32DiscoveryStatus }>('/api/sentero/sensors/provisioning/esp32/discovery/start', { method: 'POST' }),
+  senteroPresenceDiscovered: () =>
+    request<SenteroEsp32DiscoveryStatus>('/api/sentero/sensors/provisioning/esp32/discovered'),
+  startSenteroPresenceProvisioning: (payload: { room_id: string; display_name: string; device_id?: string | null }) =>
     request<SenteroEsp32ProvisioningResult>('/api/sentero/sensors/provisioning/esp32/start', { method: 'POST', body: JSON.stringify(payload) }),
   senteroDiscoveryCandidates: (sessionId: number, dev = false) =>
     request<SenteroCandidates>(`/api/sentero/setup/discovery/${sessionId}/candidates${dev ? '?dev=true' : ''}`),

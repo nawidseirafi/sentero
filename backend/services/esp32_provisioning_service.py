@@ -10,11 +10,11 @@ import requests
 from backend.config import config_float, config_str
 from backend.logging_config import get_logger, is_debug_logging
 from backend.services.device_mapping_service import DeviceMappingService, now
+from backend.services.esp32_discovery_service import Esp32DiscoveryService, PendingEsp32Sensor
 from backend.services.mqtt_service import MqttMessage, MqttService
 
 logger = get_logger(__name__)
 
-DEFAULT_PROVISIONING_URL = "http://192.168.4.1/api/provision"
 DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_MQTT_WAIT_SECONDS = 30.0
 C1001_CAPABILITY_KEYS = {
@@ -47,10 +47,12 @@ class Esp32ProvisioningService:
         mapping: DeviceMappingService,
         mqtt: MqttService | None = None,
         http_client: Any | None = None,
+        discovery: Esp32DiscoveryService | None = None,
     ) -> None:
         self.mapping = mapping
         self.mqtt = mqtt or mapping.mqtt or MqttService()
         self.http = http_client or requests
+        self.discovery = discovery or Esp32DiscoveryService(mapping)
 
     def status(self) -> dict[str, Any]:
         network = self._network_settings(public=True)
@@ -65,15 +67,16 @@ class Esp32ProvisioningService:
             "network_configured": bool(network.get("configured")),
             "mqtt_configured": bool(self.mqtt.configured()),
             "available_steps": [
-                "Netzwerkdaten speichern",
-                "Sensor im Einrichtungsmodus per HTTP konfigurieren",
+                "Sensor im Heimnetz per UDP finden",
+                "Sensor per HTTP konfigurieren",
                 "Auf MQTT-Verfügbarkeit warten",
                 "Sensor als Sentero-Präsenzsensor registrieren",
             ],
             "missing_steps": [],
+            "discovery": self.discovery.status(),
         }
 
-    def provision(self, room_id: str, display_name: str) -> dict[str, Any]:
+    def provision(self, room_id: str, display_name: str, device_id: str | None = None) -> dict[str, Any]:
         clean_room = str(room_id or "").strip()
         clean_name = str(display_name or "").strip()
         if not clean_room:
@@ -83,24 +86,29 @@ class Esp32ProvisioningService:
 
         started = time.perf_counter()
         logger.info("Provisioning started", extra={"component": "esp32_provisioning", "room_id": clean_room})
-        payload = self.build_payload(room_id=clean_room, display_name=clean_name)
+        pending = self.discovery.wait_for_pending(device_id=device_id)
+        if not pending:
+            raise RuntimeError("Präsenzsensor wurde noch nicht im Netzwerk gefunden.")
+        payload = self.build_payload(room_id=clean_room, display_name=clean_name, device_id=pending.device_id)
         if is_debug_logging():
             logger.debug("Provisioning payload prepared", extra={"component": "esp32_provisioning", "payload": masked_payload(payload)})
 
-        response = self._post_provisioning_payload(payload)
-        device_id = str(response.get("device_id") or response.get("deviceId") or "").strip()
-        if not device_id:
+        response = self._post_provisioning_payload(payload, pending=pending)
+        confirmed_device_id = str(response.get("device_id") or response.get("deviceId") or "").strip()
+        if not confirmed_device_id:
             raise RuntimeError("Sensor hat keine Geräte-ID zurückgegeben.")
+        if confirmed_device_id != pending.device_id:
+            raise RuntimeError("Präsenzsensor hat eine andere Geräte-ID bestätigt als entdeckt wurde.")
         logger.info(
             "Provisioning confirmed by sensor",
-            extra={"component": "esp32_provisioning", "device_id": device_id, "model": response.get("model")},
+            extra={"component": "esp32_provisioning", "device_id": confirmed_device_id, "model": response.get("model")},
         )
 
-        state = self._wait_for_mqtt_state(device_id)
-        source_ref = str(state.get("topic") or f"{self.topic_prefix()}/{device_id}/state")
+        state = self._wait_for_mqtt_state(confirmed_device_id)
+        source_ref = str(state.get("topic") or f"{self.topic_prefix()}/{confirmed_device_id}/state")
         capabilities = capabilities_from_state_payload(state.get("payload"))
         sensor = ProvisionedSensor(
-            device_id=device_id,
+            device_id=confirmed_device_id,
             name=clean_name,
             room_id=clean_room,
             model=clean_text(response.get("model")),
@@ -109,12 +117,13 @@ class Esp32ProvisioningService:
             capabilities=capabilities,
         )
         role = self._register_sensor(sensor)
+        self.discovery.mark_provisioned(confirmed_device_id)
         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
         logger.info(
             "Device registered",
             extra={
                 "component": "esp32_provisioning",
-                "device_id": device_id,
+                "device_id": confirmed_device_id,
                 "room_id": clean_room,
                 "source_ref": source_ref,
                 "elapsed_ms": elapsed_ms,
@@ -123,7 +132,7 @@ class Esp32ProvisioningService:
         return {
             "ok": True,
             "device": {
-                "id": device_id,
+                "id": confirmed_device_id,
                 "name": clean_name,
                 "type": "presence_radar",
                 "room_id": clean_room,
@@ -134,7 +143,7 @@ class Esp32ProvisioningService:
             "role": role,
         }
 
-    def build_payload(self, room_id: str | None = None, display_name: str | None = None) -> dict[str, Any]:
+    def build_payload(self, room_id: str | None = None, display_name: str | None = None, device_id: str | None = None) -> dict[str, Any]:
         network = self._network_settings(public=False)
         ssid = str(network.get("wifi_ssid") or "").strip()
         password = str(network.get("wifi_password") or "")
@@ -143,7 +152,7 @@ class Esp32ProvisioningService:
         if not self.mqtt.configured():
             raise ValueError("Die Sensornetzwerk-Verbindung ist noch nicht konfiguriert.")
         return {
-            "protocol": 1,
+            "protocol": 2,
             "wifi": {
                 "ssid": ssid,
                 "password": password,
@@ -157,8 +166,9 @@ class Esp32ProvisioningService:
             },
             "device": {
                 "timezone": self.timezone(),
+                **({"device_id": clean_text(device_id)} if clean_text(device_id) else {}),
                 **({"room_id": clean_text(room_id)} if clean_text(room_id) else {}),
-                **({"display_name": clean_text(display_name)} if clean_text(display_name) else {}),
+                **({"friendly_name": clean_text(display_name)} if clean_text(display_name) else {}),
                 **({"token": self.device_token()} if self.device_token() else {}),
             },
         }
@@ -171,12 +181,12 @@ class Esp32ProvisioningService:
             or "sentero"
         ).strip().strip("/") or "sentero"
 
-    def provisioning_url(self) -> str:
-        return (
-            os.getenv("SENTERO_ESP32_PROVISIONING_URL")
-            or config_str("esp32.provisioning_url", "")
-            or DEFAULT_PROVISIONING_URL
-        ).strip()
+    def provisioning_url(self, pending: PendingEsp32Sensor | None = None) -> str:
+        if pending and pending.ip_address:
+            port = int(getattr(pending, "http_port", 80) or 80)
+            port_part = "" if port == 80 else f":{port}"
+            return f"http://{pending.ip_address.strip()}{port_part}/api/provision"
+        raise RuntimeError("Präsenzsensor wurde noch nicht im Netzwerk gefunden.")
 
     def provisioning_timeout(self) -> float:
         return float(os.getenv("SENTERO_ESP32_PROVISIONING_TIMEOUT") or config_float("esp32.provisioning_timeout", DEFAULT_TIMEOUT_SECONDS))
@@ -193,8 +203,8 @@ class Esp32ProvisioningService:
             or resolve_secret(config_str("esp32.token", ""))
         ).strip()
 
-    def _post_provisioning_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        url = self.provisioning_url()
+    def _post_provisioning_payload(self, payload: dict[str, Any], pending: PendingEsp32Sensor | None = None) -> dict[str, Any]:
+        url = self.provisioning_url(pending)
         try:
             logger.info("Calling presence sensor provisioning endpoint", extra={"component": "esp32_provisioning", "url": url})
             response = self.http.post(
