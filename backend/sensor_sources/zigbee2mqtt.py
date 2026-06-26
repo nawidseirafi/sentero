@@ -111,6 +111,8 @@ class Zigbee2MqttSensorSource:
                 extra={"component": "sensor_source", "sensor_source": self.name, "topic": topic, "device_id": device, "payload": payload},
             )
         enriched_payload = {**payload, "topic": topic, "source_ref": topic, "source": self._source_from_topic(topic)}
+        if topic.strip("/").rsplit("/", 1)[-1] == "availability":
+            return [self._availability_entity(device, payload, enriched_payload, timestamp)]
         rows: list[dict[str, Any]] = []
         state_keys = [key for key in STATE_KEYS if key in payload and key != "state"]
         if not state_keys and "state" in payload:
@@ -168,6 +170,35 @@ class Zigbee2MqttSensorSource:
             "last_updated": timestamp,
             "source": payload.get("source") or self.name,
             "attributes": {key: value, **{k: v for k, v in payload.items() if k not in {key}}},
+        }
+
+    def _availability_entity(self, device: str, payload: dict[str, Any], enriched_payload: dict[str, Any], timestamp: str) -> dict[str, Any]:
+        slug = slugify(device)
+        status = str(payload.get("status") or payload.get("state") or "").strip().lower()
+        online = status in {"online", "on", "true", "1", "available"}
+        return {
+            "entity_id": f"binary_sensor.{slug}_availability",
+            "domain": "binary_sensor",
+            "state": "on" if online else "unavailable",
+            "friendly_name": f"{device} Verbindung",
+            "device_class": "connectivity",
+            "unit": None,
+            "unit_of_measurement": None,
+            "device_id": slug,
+            "platform": "mqtt",
+            "unique_id": f"mqtt_{slug}_availability",
+            "topic": enriched_payload.get("topic"),
+            "source_ref": enriched_payload.get("source_ref"),
+            "payload_key": "availability",
+            "original_name": device,
+            "device_name": device,
+            "manufacturer": payload.get("manufacturer") or enriched_payload.get("manufacturer"),
+            "model": payload.get("model") or enriched_payload.get("model"),
+            "identifiers": [["mqtt", device]],
+            "last_changed": timestamp,
+            "last_updated": timestamp,
+            "source": enriched_payload.get("source") or "mqtt",
+            "attributes": {**payload, "availability": status or None},
         }
 
     def _device_class(self, key: str, is_binary: bool) -> str | None:

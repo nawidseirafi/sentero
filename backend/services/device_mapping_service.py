@@ -429,21 +429,37 @@ class DeviceMappingService:
         data = dict(row)
         return data if dev else public_role(data)
 
-    def delete_role(self, role: str) -> dict[str, Any]:
+    def delete_role(self, role: str, local_only: bool = False) -> dict[str, Any]:
         mapped = self.get_role(role, dev=True)
         if not mapped:
             raise ValueError('sensor role not found')
         source = str(mapped.get('source') or '').strip()
-        external_sensor = source in {'zigbee2mqtt', 'mqtt'} or str(mapped.get('entity_id') or '').startswith('zigbee2mqtt/')
-        removal = self._remove_zigbee_device(mapped) if external_sensor else {
-            'ok': True,
-            'provider': source or 'sentero',
-            'reason': 'local_mapping_removed',
-            'message': 'Sensor wurde aus Sentero entfernt.',
-            'external_remove': 'not_applicable',
-            'entity_id': mapped.get('entity_id'),
-            'device_id': mapped.get('device_id'),
-        }
+        zigbee_sensor = source == 'zigbee2mqtt' or str(mapped.get('entity_id') or '').startswith('zigbee2mqtt/')
+        esp32_sensor = source == 'mqtt' and not zigbee_sensor
+        if local_only:
+            removal = {
+                'ok': True,
+                'provider': source or 'sentero',
+                'reason': 'local_only',
+                'message': 'Sensor wurde nur aus Sentero entfernt.',
+                'external_remove': 'skipped',
+                'entity_id': mapped.get('entity_id'),
+                'device_id': mapped.get('device_id'),
+            }
+        elif zigbee_sensor:
+            removal = self._remove_zigbee_device(mapped)
+        elif esp32_sensor:
+            removal = self._remove_esp32_sensor(mapped)
+        else:
+            removal = {
+                'ok': True,
+                'provider': source or 'sentero',
+                'reason': 'local_mapping_removed',
+                'message': 'Sensor wurde aus Sentero entfernt.',
+                'external_remove': 'not_applicable',
+                'entity_id': mapped.get('entity_id'),
+                'device_id': mapped.get('device_id'),
+            }
         if not removal.get('ok'):
             logger.warning(
                 "Sentero sensor delete blocked because external removal failed",
@@ -464,7 +480,67 @@ class DeviceMappingService:
             mapped.get('entity_id'),
             mapped.get('device_id'),
         )
+        logger.info("Sensor lokal gelöscht", extra={"component": "device_mapping", "role": role, "device_id": mapped.get('device_id'), "provider": removal.get('provider')})
         return {'deleted': True, 'role': role, 'removal': removal}
+
+    def _remove_esp32_sensor(self, mapped: dict[str, Any]) -> dict[str, Any]:
+        device_id = str(mapped.get('device_id') or '').strip()
+        if not device_id:
+            return {'ok': False, 'provider': 'mqtt', 'reason': 'missing_device_id', 'message': 'Sensor konnte nicht eindeutig identifiziert werden.'}
+        state = self._attach_state([mapped])[0]
+        if state.get('reachable') is False:
+            logger.warning("Sensor offline", extra={"component": "device_mapping", "provider": "mqtt", "device_id": device_id})
+            return {
+                'ok': False,
+                'provider': 'mqtt',
+                'reason': 'sensor_offline',
+                'message': 'Der Sensor ist derzeit nicht erreichbar. Er kann deshalb nicht auf Werkseinstellungen zurückgesetzt werden.',
+                'device_id': device_id,
+            }
+        try:
+            response = self.factory_reset_sensor(device_id)
+            return {'ok': True, 'provider': 'mqtt', 'reason': 'factory_reset_confirmed', 'message': 'Präsenzsensor wurde zurückgesetzt.', 'device_id': device_id, 'response': response}
+        except TimeoutError as exc:
+            logger.warning("Factory Reset Timeout", extra={"component": "device_mapping", "provider": "mqtt", "device_id": device_id})
+            return {'ok': False, 'provider': 'mqtt', 'reason': 'factory_reset_timeout', 'message': 'Sensor hat den Factory Reset nicht bestätigt.', 'device_id': device_id}
+        except Exception as exc:
+            logger.exception("Sensor konnte nicht gelöscht werden", extra={"component": "device_mapping", "provider": "mqtt", "device_id": device_id})
+            return {'ok': False, 'provider': 'mqtt', 'reason': 'factory_reset_failed', 'message': str(exc) or 'Sensor konnte nicht gelöscht werden.', 'device_id': device_id}
+
+    def factory_reset_sensor(self, device_id: str) -> dict[str, Any]:
+        clean_id = str(device_id or '').strip()
+        if not clean_id:
+            raise RuntimeError('Sensor konnte nicht eindeutig identifiziert werden.')
+        logger.info("Factory Reset angefordert", extra={"component": "device_mapping", "provider": "mqtt", "device_id": clean_id})
+        message = self.send_factory_reset_command(clean_id)
+        response = self.wait_for_factory_reset_ack(clean_id, message.payload)
+        logger.info("Factory Reset bestätigt", extra={"component": "device_mapping", "provider": "mqtt", "device_id": clean_id})
+        return response
+
+    def send_factory_reset_command(self, device_id: str):
+        command_topic = esp32_command_topic(device_id)
+        status_topic = esp32_status_topic(device_id)
+        payload = {'command': 'factory_reset', 'reason': 'removed_from_sentero'}
+        try:
+            return self.mqtt.request_response(
+                command_topic,
+                status_topic,
+                payload,
+                timeout=10.0,
+                response_filter=lambda response, wanted=device_id: esp32_factory_reset_ack_matches(response, wanted),
+            )
+        except TimeoutError:
+            logger.warning("Factory Reset nicht bestätigt", extra={"component": "device_mapping", "provider": "mqtt", "device_id": device_id})
+            raise
+        except Exception:
+            logger.exception("MQTT Publish fehlgeschlagen", extra={"component": "device_mapping", "provider": "mqtt", "device_id": device_id, "topic": command_topic})
+            raise
+
+    def wait_for_factory_reset_ack(self, device_id: str, payload: Any) -> dict[str, Any]:
+        if not esp32_factory_reset_ack_matches(payload, device_id):
+            logger.warning("Factory Reset nicht bestätigt", extra={"component": "device_mapping", "provider": "mqtt", "device_id": device_id})
+            raise TimeoutError('factory_reset_not_confirmed')
+        return payload if isinstance(payload, dict) else {'status': str(payload)}
 
     def rename_role(self, role: str, name: str) -> dict[str, Any]:
         clean_name = str(name or '').strip()
@@ -661,8 +737,12 @@ class DeviceMappingService:
                 state = self._cached_discovery_state(dict(row))
             value = state.get('state') if state else None
             reachable = sensor_reachable_status(state)
+            availability = find_mqtt_availability_state({**row, **(state or {})}, states)
+            if availability is not None:
+                reachable = availability
             battery_entity = find_battery_entity({**row, **(state or {})}, states)
             battery_level = parse_battery(battery_entity.get('state')) if battery_entity else battery_level_from_state(state)
+            power_source = power_source_from_state(state)
             logger.debug(
                 "Sensor health resolved",
                 extra={
@@ -671,8 +751,10 @@ class DeviceMappingService:
                     "source_ref": entity_id,
                     "resolved_entity": state.get('entity_id') if state else None,
                     "reachable": reachable,
+                    "availability": availability,
                     "battery_entity": battery_entity.get('entity_id') if battery_entity else None,
                     "battery_level": battery_level,
+                    "power_source": power_source,
                 },
             )
             result.append({
@@ -692,6 +774,7 @@ class DeviceMappingService:
                 'last_changed': state.get('last_changed') if state else None,
                 'last_updated': state.get('last_updated') if state else None,
                 'battery_level': battery_level,
+                'power_source': power_source,
             })
         return result
 
@@ -1579,6 +1662,66 @@ def battery_level_from_state(state: dict[str, Any] | None) -> int | None:
     return None
 
 
+def power_source_from_state(state: dict[str, Any] | None) -> str | None:
+    if not state:
+        return None
+    attrs = state.get('attributes') if isinstance(state.get('attributes'), dict) else {}
+    value = str(state.get('power_source') or attrs.get('power_source') or attrs.get('powerSource') or '').strip().lower()
+    if value in {'usb', 'mains', 'wired', 'external', 'power_adapter', 'netzteil', 'netzbetrieb'}:
+        return 'usb' if value == 'usb' else 'mains'
+    if value in {'battery', 'battery_powered', 'akku', 'batterie'}:
+        return 'battery'
+    return None
+
+
+def find_mqtt_availability_state(role: dict[str, Any], states: list[dict[str, Any]]) -> bool | None:
+    source = str(role.get('source') or role.get('platform') or '').strip().lower()
+    if source not in {'zigbee2mqtt', 'mqtt'} and not (role.get('topic') or role.get('source_ref') or role.get('entity_id')):
+        return None
+    wanted_ids = mqtt_identity_values(role)
+    for state in states:
+        payload_key = str(state.get('payload_key') or '').strip().lower()
+        device_class = str(state.get('device_class') or '').strip().lower()
+        entity_id = str(state.get('entity_id') or '').strip().lower()
+        topic = str(state.get('topic') or state.get('source_ref') or '').strip().lower()
+        if payload_key != 'availability' and device_class != 'connectivity' and not topic.endswith('/availability') and not entity_id.endswith('_availability'):
+            continue
+        if not wanted_ids.intersection(mqtt_identity_values(state)):
+            continue
+        attrs = state.get('attributes') if isinstance(state.get('attributes'), dict) else {}
+        value = str(attrs.get('status') or attrs.get('availability') or state.get('state') or '').strip().lower()
+        if value in {'offline', 'unavailable', 'off', 'false', '0', 'lost', 'disconnected'}:
+            return False
+        if value in {'online', 'available', 'on', 'true', '1', 'connected'}:
+            return True
+    return None
+
+
+def esp32_topic_prefix() -> str:
+    return (
+        os.getenv('SENTERO_ESP32_TOPIC_PREFIX')
+        or config_str('esp32.topic_prefix', '')
+        or config_str('mqtt.esp32_topic_prefix', '')
+        or 'sentero'
+    ).strip().strip('/') or 'sentero'
+
+
+def esp32_command_topic(device_id: str) -> str:
+    return f"{esp32_topic_prefix()}/{str(device_id).strip()}/command"
+
+
+def esp32_status_topic(device_id: str) -> str:
+    return f"{esp32_topic_prefix()}/{str(device_id).strip()}/status"
+
+
+def esp32_factory_reset_ack_matches(payload: Any, device_id: str) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    status = str(payload.get('status') or '').strip().lower()
+    ack_device = str(payload.get('device_id') or payload.get('deviceId') or '').strip()
+    return status == 'factory_resetting' and (not ack_device or ack_device == str(device_id).strip())
+
+
 def mqtt_identity_values(item: dict[str, Any]) -> set[str]:
     values: set[str] = set()
     for key in ('entity_id', 'source_ref', 'topic', 'device_id', 'unique_id', 'original_name', 'device_name', 'friendly_name'):
@@ -1873,8 +2016,12 @@ def public_role(data: dict[str, Any]) -> dict[str, Any]:
         'last_changed': data.get('last_changed'),
         'last_updated': data.get('last_updated'),
         'battery_level': data.get('battery_level'),
+        'power_source': data.get('power_source'),
         'device_class': data.get('device_class'),
         'domain': data.get('domain'),
+        'source': data.get('source'),
+        'device_id': data.get('device_id'),
+        'source_ref': data.get('entity_id'),
     }
 
 

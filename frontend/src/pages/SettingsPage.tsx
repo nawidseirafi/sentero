@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type React from 'react';
-import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, DoorClosed, DoorOpen, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plus, Save, Send, ShieldAlert, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
+import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, DoorClosed, DoorOpen, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
 import { api, type BoxNetworkStatus, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus } from '@shared/api/client';
 import { UpdatePanel } from '../components/UpdatePanel';
 import { useSenteroAuth } from '../auth/SenteroAuthContext';
@@ -420,14 +420,49 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     }
   }
 
-  async function deleteSensor(role: string) {
-    if (!window.confirm('Sensor aus Sentero entfernen? Das Gerät bleibt im Sensornetzwerk bestehen.')) return;
+  async function deleteSensor(sensor: SenteroSensorRole) {
+    const esp32Presence = isEsp32PresenceSensor(sensor);
+    if (esp32Presence && sensor.reachable === false) {
+      const localOnly = window.confirm(
+        'Sensor ist derzeit nicht erreichbar.\n\nEr kann deshalb nicht auf Werkseinstellungen zurückgesetzt werden.\n\nNur aus Sentero entfernen?\n\nWird der Sensor später wieder eingeschaltet, muss er zunächst manuell auf Werkseinstellungen zurückgesetzt werden.',
+      );
+      if (!localOnly) return;
+      try {
+        await api.deleteSenteroSensorRole(sensor.role, { localOnly: true });
+        toast('Sensor aus Sentero entfernt');
+        await load();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Sensor konnte nicht entfernt werden.');
+      }
+      return;
+    }
+    const message = esp32Presence
+      ? 'Präsenzsensor wirklich entfernen?\n\nDer Sensor wird auf Werkseinstellungen zurückgesetzt und muss anschließend neu eingerichtet werden.'
+      : 'Sensor aus Sentero entfernen?';
+    if (!window.confirm(message)) return;
     try {
-      await api.deleteSenteroSensorRole(role);
+      await api.deleteSenteroSensorRole(sensor.role);
       toast('Sensor entfernt');
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Sensor konnte nicht entfernt werden.');
+      const message = err instanceof Error ? err.message : 'Sensor konnte nicht entfernt werden.';
+      if (esp32Presence && message.includes('nicht erreichbar')) {
+        const localOnly = window.confirm(
+          'Der Sensor ist derzeit nicht erreichbar.\n\nEr kann deshalb nicht auf Werkseinstellungen zurückgesetzt werden.\n\nMöchten Sie ihn trotzdem nur aus Sentero entfernen?',
+        );
+        if (localOnly) {
+          try {
+            await api.deleteSenteroSensorRole(sensor.role, { localOnly: true });
+            toast('Sensor aus Sentero entfernt');
+            await load();
+            return;
+          } catch (localErr) {
+            setError(localErr instanceof Error ? localErr.message : 'Sensor konnte nicht entfernt werden.');
+            return;
+          }
+        }
+      }
+      setError(message);
     }
   }
 
@@ -569,16 +604,20 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                               {sensor.reachable === false ? <WifiOff size={17} /> : <CheckCircle2 size={17} />}
                               {sensor.reachable === false ? 'Nicht erreichbar' : sensor.reachable == null ? 'In HA vorhanden' : 'Erreichbar'}
                             </span>
-                            <span className={batteryClass(sensor.battery_level)}>
-                              <Battery size={17} />
-                              Akku {sensor.battery_level ?? 'unbekannt'}{sensor.battery_level == null ? '' : '%'}
-                            </span>
+                            {sensorPowerLabel(sensor) === 'USB-Strom' ? (
+                              <span className="battery"><Plug size={17} /> USB-Strom</span>
+                            ) : (
+                              <span className={batteryClass(sensor.battery_level)}>
+                                <Battery size={17} />
+                                Akku {sensor.battery_level ?? 'unbekannt'}{sensor.battery_level == null ? '' : '%'}
+                              </span>
+                            )}
                           </div>
                         </div>
                         <div className="sc-sensor-settings-actions">
                           <button type="button" onClick={() => void renameSensor(sensor)}><Pencil size={18} /> Name</button>
                           <button type="button" onClick={() => void testSensor(sensor.role)}><Wifi size={18} /> Test</button>
-                          <button type="button" onClick={() => void deleteSensor(sensor.role)}><Trash2 size={18} /> Löschen</button>
+                          <button type="button" onClick={() => void deleteSensor(sensor)}><Trash2 size={18} /> Löschen</button>
                         </div>
                       </div>
                     ))}
@@ -1079,9 +1118,18 @@ function DoorContactStatus({ sensor }: { sensor: SenteroSensorRole }) {
 
 function sensorType(sensor: SenteroSensorRole) {
   if (isDoorContactSensor(sensor)) return 'Türkontakt';
+  if (isEsp32PresenceSensor(sensor)) return 'Präsenzsensor';
   if (String(sensor.device_class || '') === 'vibration') return 'Vibrationssensor';
   if (String(sensor.domain || '') === 'lock') return 'Türsensor';
   return 'Bewegung';
+}
+
+function isEsp32PresenceSensor(sensor: SenteroSensorRole) {
+  return String(sensor.source || '').toLowerCase() === 'mqtt' && (
+    sensor.role.endsWith('_presence') ||
+    String(sensor.device_class || '').toLowerCase() === 'presence' ||
+    String(sensor.source_ref || '').includes('/state')
+  );
 }
 
 function isDoorContactSensor(sensor: SenteroSensorRole) {
@@ -1105,6 +1153,12 @@ function batteryClass(value?: number | null) {
   if (value < 30) return 'battery low';
   if (value < 50) return 'battery medium';
   return 'battery';
+}
+
+function sensorPowerLabel(sensor: SenteroSensorRole) {
+  const source = String(sensor.power_source || '').toLowerCase();
+  if (isEsp32PresenceSensor(sensor) && ['usb', 'mains', 'wired', 'external'].includes(source)) return 'USB-Strom';
+  return '';
 }
 
 function normalizeEmail(value: string) {

@@ -599,9 +599,9 @@ def sensor_role_save(payload: dict[str, Any]):
 
 
 @router.delete("/sensor-roles/{role}", tags=[TAG_SENSORS])
-def sensor_role_delete(role: str):
+def sensor_role_delete(role: str, local_only: bool = Query(False)):
     try:
-        return get_services().mapping.delete_role(role)
+        return get_services().mapping.delete_role(role, local_only=local_only)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

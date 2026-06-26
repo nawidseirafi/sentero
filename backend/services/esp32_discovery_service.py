@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from backend.config import config_float, config_int
@@ -17,6 +18,7 @@ logger = get_logger(__name__)
 DEFAULT_DISCOVERY_PORT = 37020
 DEFAULT_DISCOVERY_WAIT_SECONDS = 6.0
 DEFAULT_HTTP_PORT = 80
+DEFAULT_STORE_INTERVAL_SECONDS = 15.0
 DISCOVERY_TYPE = "sentero-discovery"
 
 
@@ -63,7 +65,6 @@ class Esp32DiscoveryService:
             con.commit()
 
     def status(self) -> dict[str, Any]:
-        self.ensure_listening()
         sensors = [sensor_to_public(sensor) for sensor in self.pending()]
         return {
             "listening": self.is_listening(),
@@ -133,17 +134,18 @@ class Esp32DiscoveryService:
             data = decode_payload(payload)
             ip_address = address[0] if isinstance(address, tuple) else str(address)
             sensor = validate_discovery_payload(data, ip_address)
-            self._store(sensor, data)
-            logger.info(
-                "ESP32 presence sensor discovered",
-                extra={
-                    "component": "esp32_discovery",
-                    "device_id": sensor.device_id,
-                    "sensor_type": sensor.sensor_type,
-                    "ip_address": ip_address,
-                    "http_port": sensor.http_port,
-                },
-            )
+            stored = self._store(sensor, data)
+            log_extra = {
+                "component": "esp32_discovery",
+                "device_id": sensor.device_id,
+                "sensor_type": sensor.sensor_type,
+                "ip_address": ip_address,
+                "http_port": sensor.http_port,
+            }
+            if stored:
+                logger.info("ESP32 presence sensor discovered", extra=log_extra)
+            else:
+                logger.debug("ESP32 presence sensor heartbeat received", extra=log_extra)
             return sensor
         except ValueError as exc:
             logger.warning("Invalid ESP32 discovery payload", extra={"component": "esp32_discovery", "reason": str(exc)})
@@ -185,12 +187,17 @@ class Esp32DiscoveryService:
             if sock:
                 sock.close()
 
-    def _store(self, sensor: PendingEsp32Sensor, raw_payload: dict[str, Any]) -> None:
+    def store_interval(self) -> float:
+        return float(os.getenv("SENTERO_ESP32_DISCOVERY_STORE_INTERVAL") or config_float("esp32.discovery_store_interval", DEFAULT_STORE_INTERVAL_SECONDS))
+
+    def _store(self, sensor: PendingEsp32Sensor, raw_payload: dict[str, Any]) -> bool:
         with self.mapping.connect() as con:
             existing = con.execute(
-                "select first_seen_at from esp32_pending_sensors where device_id = ?",
+                "select * from esp32_pending_sensors where device_id = ?",
                 (sensor.device_id,),
             ).fetchone()
+            if existing and not self._should_store(dict(existing), sensor):
+                return False
             first_seen = existing["first_seen_at"] if existing else sensor.last_seen_at
             con.execute(
                 """insert into esp32_pending_sensors
@@ -220,6 +227,26 @@ class Esp32DiscoveryService:
                 ),
             )
             con.commit()
+            return True
+
+    def _should_store(self, existing: dict[str, Any], sensor: PendingEsp32Sensor) -> bool:
+        if existing.get("status") != "pending":
+            return True
+        if str(existing.get("ip_address") or "") != sensor.ip_address:
+            return True
+        if valid_port(existing.get("http_port")) != sensor.http_port:
+            return True
+        if str(existing.get("model") or "") != str(sensor.model or ""):
+            return True
+        if str(existing.get("firmware") or "") != str(sensor.firmware or ""):
+            return True
+        try:
+            existing_capabilities = json.loads(existing.get("capabilities_json") or "[]")
+        except json.JSONDecodeError:
+            existing_capabilities = []
+        if sorted(str(item) for item in existing_capabilities) != sorted(sensor.capabilities):
+            return True
+        return seconds_since(existing.get("last_seen_at")) >= self.store_interval()
 
 
 def decode_payload(payload: bytes | str | dict[str, Any]) -> dict[str, Any]:
@@ -304,3 +331,16 @@ def valid_port(value: Any) -> int:
     except (TypeError, ValueError):
         return DEFAULT_HTTP_PORT
     return port if 1 <= port <= 65535 else DEFAULT_HTTP_PORT
+
+
+def seconds_since(value: Any) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return DEFAULT_STORE_INTERVAL_SECONDS
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds())
+    except ValueError:
+        return DEFAULT_STORE_INTERVAL_SECONDS

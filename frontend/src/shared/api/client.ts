@@ -51,8 +51,12 @@ export type SenteroSensorRole = {
   last_changed?: string | null;
   last_updated?: string | null;
   battery_level?: number | null;
+  power_source?: string | null;
   device_class?: string | null;
   domain?: string | null;
+  source?: string | null;
+  device_id?: string | null;
+  source_ref?: string | null;
 };
 
 export type SenteroProfileData = {
@@ -480,6 +484,9 @@ export const api = {
     }),
   testSenteroSensorRole: (role: string) =>
     request<{ ok: boolean; mode: string; message: string; entity_id?: string; state?: string }>(`/api/sentero/sensor-roles/${encodeURIComponent(role)}/test`, { method: 'POST' }),
-  deleteSenteroSensorRole: (role: string) =>
-    request<{ deleted: boolean; role: string }>(`/api/sentero/sensor-roles/${encodeURIComponent(role)}`, { method: 'DELETE' }),
+  deleteSenteroSensorRole: (role: string, options?: { localOnly?: boolean }) =>
+    request<{ deleted: boolean; role: string; removal?: { reason?: string; message?: string; provider?: string } }>(
+      `/api/sentero/sensor-roles/${encodeURIComponent(role)}${options?.localOnly ? '?local_only=true' : ''}`,
+      { method: 'DELETE' },
+    ),
 };

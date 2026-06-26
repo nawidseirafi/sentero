@@ -325,6 +325,25 @@ Akzeptiertes Availability-Topic:
 sentero/<device_id>/availability
 ```
 
+Availability ist ausschließlich für die Erreichbarkeit des Sensors
+gedacht. Erlaubte Statuswerte:
+
+``` json
+{ "device_id": "c1001-a1b2c3d4", "status": "online" }
+```
+
+``` json
+{ "device_id": "c1001-a1b2c3d4", "status": "offline" }
+```
+
+Lifecycle-Zustände wie `factory_resetting`, `booting`, `provisioning`
+oder ähnliche Zustände gehören nicht in `availability`, sondern in das
+separate Status-Topic:
+
+``` text
+sentero/<device_id>/status
+```
+
 Beispiel-State:
 
 ``` json
@@ -337,6 +356,21 @@ Beispiel-State:
   "signal_quality": 82
 }
 ```
+
+Für dauerhaft per USB/Netzteil versorgte ESP32/C1001-Sensoren ist
+`battery` optional und soll nur gesendet werden, wenn tatsächlich ein
+Akku vorhanden ist. Bei USB-Strom sendet der Sensor stattdessen:
+
+``` json
+{
+  "presence": true,
+  "power_source": "usb",
+  "signal_quality": 82
+}
+```
+
+Sentero zeigt diesen Sensor dann als netzbetrieben an und erzeugt keine
+Akku-Warnung wegen fehlender Batterieinformation.
 
 ------------------------------------------------------------------------
 
@@ -441,6 +475,88 @@ bewusst eine Neueinrichtung startet, zum Beispiel:
 -   Sensor austauschen
 
 Im normalen Betrieb bleibt die Provisioning-Schnittstelle deaktiviert.
+
+------------------------------------------------------------------------
+
+## Factory Reset
+
+Wenn ein ESP32/C1001-Präsenzsensor aus Sentero gelöscht wird, wird er
+nicht per HTTP angesprochen. HTTP ist ausschließlich für die
+Ersteinrichtung reserviert. Runtime-Kommandos laufen über MQTT.
+
+### Command Topic
+
+``` text
+sentero/<device_id>/command
+```
+
+Payload:
+
+``` json
+{
+  "command": "factory_reset",
+  "reason": "removed_from_sentero"
+}
+```
+
+### Status Topic
+
+``` text
+sentero/<device_id>/status
+```
+
+Dieses Topic beschreibt Lifecycle-Zustände des Sensors. Es ersetzt nicht
+das Availability-Topic. `availability` bleibt ausschließlich
+`online`/`offline`.
+
+Erwartete Bestätigung:
+
+``` json
+{
+  "device_id": "c1001-a1b2c3d4",
+  "status": "factory_resetting"
+}
+```
+
+### Ablauf
+
+1.  Sentero prüft, ob der Sensor erreichbar ist.
+    -   Dafür wird `sentero/<device_id>/availability` verwendet.
+    -   Erwartet wird `status: "online"`.
+2.  Sentero sendet das Factory-Reset-Kommando per MQTT.
+3.  Der Sensor bestätigt auf `sentero/<device_id>/status` mit
+    `status: "factory_resetting"`.
+4.  Sentero wartet bis zu 10 Sekunden auf diese Bestätigung.
+5.  Erst nach bestätigtem Reset löscht Sentero die lokale Registrierung.
+6.  Der Sensor löscht seine Provisioning-Konfiguration und startet neu.
+7.  Beim MQTT-Trennen setzt der Sensor bzw. MQTT Last Will
+    `sentero/<device_id>/availability` auf `offline`.
+8.  Danach befindet sich der Sensor wieder im Einrichtungszustand.
+
+Der Sensor muss dabei löschen:
+
+-   WLAN-Konfiguration
+-   MQTT-Host, Port, Benutzer und Passwort
+-   Geräte-Token
+-   `device_id`
+-   Anzeigename
+-   Raumzuordnung
+
+Nach dem Neustart öffnet der Sensor wieder seinen Setup-Hotspot. Nach
+erneuter WLAN-Einrichtung sendet er wieder UDP-Discovery.
+
+### Offline-Sensoren
+
+Wenn der Sensor offline ist, sendet Sentero kein Factory-Reset-Kommando.
+Die UI bietet dann nur eine bewusste lokale Entfernung an:
+
+``` text
+Nur aus Sentero entfernen
+```
+
+In diesem Fall bleibt der Sensor selbst unverändert. Wird er später
+wieder eingeschaltet, muss er manuell auf Werkseinstellungen
+zurückgesetzt werden, bevor er erneut sauber eingerichtet wird.
 
 ------------------------------------------------------------------------
 
