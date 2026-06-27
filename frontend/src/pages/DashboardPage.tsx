@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
+import { AlarmClock, House, Activity } from 'lucide-react';
 import { api, type SenteroBehaviorAssessment, type SenteroBehaviorLearning, type SenteroSensorRole, type SenteroSetupStatus } from '@shared/api/client';
 
 export function DashboardPage() {
@@ -51,7 +53,10 @@ export function DashboardPage() {
     <section className="sc-page sc-simple-dashboard" aria-label="Sentero Tagesstatus">
       <header className="sc-simple-hero">
         <p className="sc-simple-date">{formatHeaderDate(new Date())}</p>
-        <p className={`sc-simple-person ${dashboardState.tone}`}><span aria-hidden="true" /> {personName} · {currentLocation}</p>
+        <p className={`sc-simple-person ${dashboardState.tone}`}>
+          <span className="sc-simple-status-dot" aria-hidden="true" />
+          {personName} · {currentLocation}
+        </p>
         <h2>{dashboardState.headline}</h2>
         <p className="sc-simple-copy">
           {dashboardState.copy}
@@ -68,10 +73,10 @@ export function DashboardPage() {
       />
 
       <h3 className="sc-simple-section-title">Heute</h3>
-      <section className="sc-simple-facts" aria-label="Wichtige Tagespunkte">
-        <Fact label="Aufgestanden" value={morning || 'Noch offen'} />
-        <Fact label={currentRoom} value={lastUpdate || 'Keine Aktivität'} />
-        <Fact label="Letzte Bewegung" value={lastSeen} highlight={Boolean(latest)} />
+      <section className="sc-metric-grid" aria-label="Wichtige Tagespunkte">
+        <MetricCard icon={<AlarmClock size={20} />} label="Aufgestanden" value={morning || 'Noch offen'} />
+        <MetricCard icon={<House size={20} />} label={currentRoom} value={lastUpdate || 'Keine Aktivität'} muted={!lastUpdate} />
+        <MetricCard icon={<Activity size={20} />} label="Letzte Bewegung" value={lastSeen} highlight={Boolean(latest)} />
       </section>
     </section>
   );
@@ -146,11 +151,12 @@ function behaviorMeta(status?: string | null) {
   return { tone: 'green', dot: '🟢', label: 'Normal' };
 }
 
-function Fact({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+function MetricCard({ icon, label, value, highlight, muted }: { icon: ReactNode; label: string; value: string; highlight?: boolean; muted?: boolean }) {
   return (
-    <div className="sc-simple-fact">
-      <span>{label}</span>
-      <strong className={highlight ? 'highlight' : ''}>{value}</strong>
+    <div className="sc-metric-card">
+      <span className="sc-metric-icon" aria-hidden="true">{icon}</span>
+      <span className="sc-metric-label">{label}</span>
+      <strong className={`sc-metric-value${highlight ? ' highlight' : ''}${muted ? ' muted' : ''}`}>{value}</strong>
     </div>
   );
 }
