@@ -542,7 +542,6 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
             <ChevronLeft size={20} aria-hidden="true" />
             <span>Einstellungen</span>
           </button>
-          <h1>{activeTabMeta.label}</h1>
         </div>
       )}
 
