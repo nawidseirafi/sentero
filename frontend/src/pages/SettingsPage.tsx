@@ -552,7 +552,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
       {activeTab === 'profile' && (
         <section className="sc-panel sc-settings-panel">
-          <h2>Profil</h2>
+          <div className="sc-section-title">
+          <h2>Profil</h2></div>
           <div className="sc-form-grid">
             <label>Name der betreuten Person<input value={profile.name} onChange={(event) => setProfile((value) => ({ ...value, name: event.target.value }))} /></label>
             <label>
@@ -632,7 +633,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       {activeTab === 'network' && (
         <section className="sc-panel sc-settings-panel sc-network-panel">
           <div className="sc-settings-hero">
+             <div className="sc-section-title">
             <h2>Netzwerk</h2>
+             </div>
             <p>Verwalten Sie die Verbindung der Sentero-Box und die gespeicherten WLAN-Daten fuer Sensoren.</p>
           </div>
           <div className="sc-network-sections">
@@ -759,7 +762,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       {activeTab === 'notifications' && (
         <section className="sc-panel sc-settings-panel sc-notification-settings">
           <div className="sc-settings-hero">
+             <div className="sc-section-title">
             <h2>Benachrichtigungen</h2>
+             </div>
             <p>Legen Sie fest, wann und wie Vertrauenspersonen informiert werden.</p>
           </div>
 
@@ -815,7 +820,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       {activeTab === 'account' && (
         <section className="sc-panel sc-settings-panel sc-account-panel">
           <div className="sc-settings-hero">
+             <div className="sc-section-title">
             <h2>Konto & Zugriff</h2>
+             </div>
             <p>Verwalten Sie Ihr Sentero-Konto und Ihre Sicherheit.</p>
           </div>
 
@@ -895,7 +902,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
       {activeTab === 'system' && (
         <section className="sc-panel sc-settings-panel">
+           <div className="sc-section-title">
           <h2>System</h2>
+           </div>
           <div className="sc-system-grid">
             <p><strong>Home verbunden</strong><span>{status?.home.connected ? 'Ja' : 'Nein'}</span></p>
             <p><strong>Sensoren verbunden</strong><span>{sensors.filter((sensor) => sensor.configured).length}</span></p>
