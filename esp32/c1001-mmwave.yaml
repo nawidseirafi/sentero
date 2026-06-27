@@ -1,0 +1,255 @@
+substitutions:
+  firmware_manifest_url: "https://sentero.github.io/c1001-mmwave/manifest.json"
+
+esphome:
+  name: c1001-mmwave
+  friendly_name: c1001-mmwave
+  name_add_mac_suffix: true
+  project:
+    name: "sentero.c1001_mmwave"
+    version: "1.0.0"
+  includes:
+    - c1001_bridge.h
+    - sentero_discovery.h
+  libraries:
+    - bblanchon/ArduinoJson@^6.21.5
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: arduino
+
+logger:
+  level: INFO
+
+api:
+
+mqtt:
+  broker: 127.0.0.1
+  discovery: false
+  enable_on_boot: false
+  reboot_timeout: 0s
+
+ota:
+  - platform: esphome
+  - platform: http_request
+
+http_request:
+  verify_ssl: true
+  timeout: 10s
+  buffer_size_rx: 2048
+
+update:
+  - platform: http_request
+    name: "C1001 Firmware Update"
+    source: ${firmware_manifest_url}
+    update_interval: 12h
+    entity_category: config
+
+wifi:
+  reboot_timeout: 0s
+  ap:
+    ssid: "C1001 mmWave Setup"
+    password: "c1001setup"
+    ap_timeout: 0s
+
+captive_portal:
+
+uart:
+  id: c1001_uart
+  tx_pin: GPIO21
+  rx_pin: GPIO20
+  baud_rate: 115200
+  rx_buffer_size: 512
+
+binary_sensor:
+  - platform: template
+    name: "C1001 Präsenz"
+    id: c1001_presence
+    device_class: occupancy
+
+  - platform: template
+    name: "C1001 Sturz erkannt"
+    id: c1001_fall
+    device_class: safety
+
+  - platform: gpio
+    id: c1001_factory_reset_gpio
+    pin:
+      number: GPIO9
+      mode: INPUT_PULLUP
+      inverted: true
+    internal: true
+    on_press:
+      then:
+        - delay: 10s
+        - if:
+            condition:
+              binary_sensor.is_on: c1001_factory_reset_gpio
+            then:
+              - logger.log:
+                  level: WARN
+                  format: "Factory-Reset-Taster 10s gehalten"
+              - lambda: |-
+                  sentero_factory_reset();
+              - delay: 200ms
+              - button.press: c1001_factory_reset
+
+switch:
+  - platform: template
+    name: "C1001 FALL LED"
+    id: c1001_fall_led
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    turn_on_action:
+      - lambda: |-
+          c1001_set_fall_led(true);
+    turn_off_action:
+      - lambda: |-
+          c1001_set_fall_led(false);
+
+  - platform: template
+    name: "C1001 HP LED"
+    id: c1001_hp_led
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    turn_on_action:
+      - lambda: |-
+          c1001_set_hp_led(true);
+    turn_off_action:
+      - lambda: |-
+          c1001_set_hp_led(false);
+
+button:
+  - platform: template
+    name: "C1001 Sensor Neustart"
+    id: c1001_sensor_restart
+    on_press:
+      - lambda: |-
+          c1001_reset_sensor();
+
+  - platform: factory_reset
+    name: "C1001 Werkseinstellungen"
+    id: c1001_factory_reset
+    entity_category: config
+
+text_sensor:
+  - platform: template
+    name: "C1001 Bewegung"
+    id: c1001_motion
+
+  - platform: template
+    name: "C1001 Status"
+    id: c1001_status
+
+  - platform: template
+    name: "C1001 Letzter Frame"
+    id: c1001_last_frame
+    entity_category: diagnostic
+
+sensor:
+  - platform: template
+    name: "C1001 Bewegungswert"
+    id: c1001_moving_range
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "C1001 Arbeitsmodus"
+    id: c1001_work_mode
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  - platform: template
+    name: "C1001 Init Versuche"
+    id: c1001_attempts
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+number:
+  - platform: template
+    name: "C1001 Montagehöhe"
+    id: c1001_install_height
+    unit_of_measurement: "cm"
+    min_value: 100
+    max_value: 400
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 270
+    set_action:
+      - lambda: |-
+          c1001_set_install_height(x);
+
+  - platform: template
+    name: "C1001 Sturz Verzögerung"
+    id: c1001_fall_time
+    unit_of_measurement: "s"
+    min_value: 0
+    max_value: 60
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 5
+    set_action:
+      - lambda: |-
+          c1001_set_fall_time(x);
+
+  - platform: template
+    name: "C1001 Abwesenheitszeit"
+    id: c1001_unmanned_time
+    unit_of_measurement: "s"
+    min_value: 0
+    max_value: 60
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 1
+    set_action:
+      - lambda: |-
+          c1001_set_unmanned_time(x);
+
+  - platform: template
+    name: "C1001 Verweilzeit"
+    id: c1001_residence_time
+    unit_of_measurement: "s"
+    min_value: 0
+    max_value: 3600
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 200
+    set_action:
+      - lambda: |-
+          c1001_set_residence_time(x);
+
+  - platform: template
+    name: "C1001 Sturz Empfindlichkeit"
+    id: c1001_fall_sensitivity
+    min_value: 0
+    max_value: 3
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 3
+    set_action:
+      - lambda: |-
+          c1001_set_fall_sensitivity(x);
+
+interval:
+  - interval: 500ms
+    then:
+      - lambda: |-
+          c1001_update(id(c1001_uart), id(c1001_presence), id(c1001_fall),
+                       id(c1001_motion), id(c1001_status), id(c1001_last_frame),
+                       id(c1001_moving_range), id(c1001_work_mode),
+                       id(c1001_attempts));
+
+  - interval: 2s
+    then:
+      - lambda: |-
+          sentero_discovery_loop();
+
+  - interval: 200ms
+    then:
+      - lambda: |-
+          sentero_provisioning_loop();

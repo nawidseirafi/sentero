@@ -9,3 +9,4 @@ frontend/.vite/
 build/
 backups/
 /frontend/dist/
+/esp32/.esphome/

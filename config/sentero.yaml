@@ -39,6 +39,7 @@ esp32:
   topic_prefix: sentero
   discovery_port: 37020
   discovery_wait_timeout: 6
+  discovery_store_interval: 15
   provisioning_timeout: 10
   mqtt_wait_timeout: 30
   token: SENTERO_ESP32_DEVICE_TOKEN

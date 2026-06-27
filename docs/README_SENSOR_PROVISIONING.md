@@ -186,6 +186,11 @@ Beispiel:
 }
 ```
 
+`device.device_id` muss die echte Sensor-ID aus der UDP-Discovery sein.
+`c1001-a1b2c3d4` ist nur ein Beispielwert. Beim manuellen Test kann
+`device_id` weggelassen werden; der Sensor verwendet dann seine
+MAC-basierte ID.
+
 `room_id` und `friendly_name` werden vom Wizard an Sentero übergeben und beim
 Provisioning an den Sensor weitergereicht. Der Sensor soll diese Werte fuer
 eigene MQTT-Metadaten verwenden. Sentero bleibt aber weiterhin die fuehrende
