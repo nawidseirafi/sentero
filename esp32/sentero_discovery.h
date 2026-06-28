@@ -472,7 +472,7 @@ class SenteroProvisioning {
   void publish_state_(const Config &config) {
     const C1001Snapshot sensor = c1001_get_snapshot();
 
-    StaticJsonDocument<1024> doc;
+    StaticJsonDocument<1536> doc;
     const String display_name = config.friendly_name.length() > 0
         ? config.friendly_name
         : String("C1001 Praesenz");
@@ -498,6 +498,15 @@ class SenteroProvisioning {
     doc["last_sensor_update_ms"] = sensor.last_update_ms;
     doc["power_source"] = "usb";
     doc["signal_quality"] = signal_quality_();
+    doc["command_topic"] = topic_(config, "command");
+    JsonArray writable_settings = doc.createNestedArray("writable_settings");
+    writable_settings.add("hp_led");
+    writable_settings.add("fall_led");
+    writable_settings.add("install_height");
+    writable_settings.add("fall_time");
+    writable_settings.add("unmanned_time");
+    writable_settings.add("residence_time");
+    writable_settings.add("fall_sensitivity");
     if (config.friendly_name.length() > 0) doc["friendly_name"] = config.friendly_name;
     if (config.room_id.length() > 0) {
       doc["room_id"] = config.room_id;
@@ -537,17 +546,227 @@ class SenteroProvisioning {
     return 2 * (rssi + 100);
   }
 
+  void publish_command_status_(const Config &config, const char *command, bool ok, const char *message) {
+    StaticJsonDocument<256> doc;
+    doc["device_id"] = config.device_id;
+    doc["status"] = ok ? "command_accepted" : "command_rejected";
+    doc["command"] = command == nullptr ? "" : command;
+    doc["ok"] = ok;
+    doc["message"] = message == nullptr ? "" : message;
+
+    String payload;
+    serializeJson(doc, payload);
+    publish_(topic_(config, "status"), payload, false);
+  }
+
+  bool read_bool_(JsonVariantConst value, bool &out) {
+    if (value.isNull()) return false;
+    if (value.is<bool>()) {
+      out = value.as<bool>();
+      return true;
+    }
+    if (value.is<int>()) {
+      out = value.as<int>() != 0;
+      return true;
+    }
+    if (value.is<const char *>()) {
+      String text = value.as<const char *>();
+      text.trim();
+      text.toLowerCase();
+      if (text == "true" || text == "on" || text == "1" || text == "yes") {
+        out = true;
+        return true;
+      }
+      if (text == "false" || text == "off" || text == "0" || text == "no") {
+        out = false;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool read_number_(JsonVariantConst value, float &out) {
+    if (value.isNull()) return false;
+    if (value.is<float>() || value.is<double>() || value.is<int>() || value.is<long>() ||
+        value.is<unsigned int>() || value.is<unsigned long>()) {
+      out = value.as<float>();
+      return true;
+    }
+    return false;
+  }
+
+  bool bool_arg_(JsonObjectConst root, bool &out) {
+    return read_bool_(root["enabled"], out) ||
+           read_bool_(root["value"], out) ||
+           read_bool_(root["state"], out) ||
+           read_bool_(root["on"], out);
+  }
+
+  bool number_arg_(JsonObjectConst root, const char *primary_key, float &out) {
+    if (primary_key != nullptr && read_number_(root[primary_key], out)) return true;
+    return read_number_(root["value"], out);
+  }
+
+  bool apply_bool_command_(const Config &config, JsonObjectConst root, const char *command,
+                           void (*setter)(bool)) {
+    bool enabled = false;
+    if (!bool_arg_(root, enabled)) {
+      publish_command_status_(config, command, false, "missing_or_invalid_boolean");
+      return true;
+    }
+
+    setter(enabled);
+    publish_command_status_(config, command, true, enabled ? "enabled" : "disabled");
+    return true;
+  }
+
+  bool apply_number_command_(const Config &config, JsonObjectConst root, const char *command,
+                             const char *primary_key, float min_value, float max_value,
+                             void (*setter)(float)) {
+    float value = 0;
+    if (!number_arg_(root, primary_key, value)) {
+      publish_command_status_(config, command, false, "missing_or_invalid_number");
+      return true;
+    }
+    if (value < min_value || value > max_value) {
+      publish_command_status_(config, command, false, "value_out_of_range");
+      return true;
+    }
+
+    setter(value);
+    publish_command_status_(config, command, true, "applied");
+    return true;
+  }
+
+  bool apply_configure_command_(const Config &config, JsonObjectConst root, const char *command) {
+    JsonVariantConst settings_value = root["settings"];
+    JsonObjectConst settings = settings_value.is<JsonObjectConst>() ? settings_value.as<JsonObjectConst>() : root;
+
+    bool hp_led = false;
+    bool fall_led = false;
+    float install_height = 0;
+    float fall_time = 0;
+    float unmanned_time = 0;
+    float residence_time = 0;
+    float fall_sensitivity = 0;
+    const bool has_hp_led = read_bool_(settings["hp_led"], hp_led);
+    const bool has_fall_led = read_bool_(settings["fall_led"], fall_led);
+    const bool has_install_height = read_number_(settings["install_height"], install_height);
+    const bool has_fall_time = read_number_(settings["fall_time"], fall_time);
+    const bool has_unmanned_time = read_number_(settings["unmanned_time"], unmanned_time);
+    const bool has_residence_time = read_number_(settings["residence_time"], residence_time);
+    const bool has_fall_sensitivity = read_number_(settings["fall_sensitivity"], fall_sensitivity);
+
+    if (!settings["hp_led"].isNull() && !has_hp_led) {
+      publish_command_status_(config, command, false, "invalid_hp_led");
+      return true;
+    }
+    if (!settings["fall_led"].isNull() && !has_fall_led) {
+      publish_command_status_(config, command, false, "invalid_fall_led");
+      return true;
+    }
+    if (has_install_height && (install_height < 100 || install_height > 400)) {
+      publish_command_status_(config, command, false, "install_height_out_of_range");
+      return true;
+    }
+    if (has_fall_time && (fall_time < 0 || fall_time > 60)) {
+      publish_command_status_(config, command, false, "fall_time_out_of_range");
+      return true;
+    }
+    if (has_unmanned_time && (unmanned_time < 0 || unmanned_time > 60)) {
+      publish_command_status_(config, command, false, "unmanned_time_out_of_range");
+      return true;
+    }
+    if (has_residence_time && (residence_time < 0 || residence_time > 3600)) {
+      publish_command_status_(config, command, false, "residence_time_out_of_range");
+      return true;
+    }
+    if (has_fall_sensitivity && (fall_sensitivity < 0 || fall_sensitivity > 3)) {
+      publish_command_status_(config, command, false, "fall_sensitivity_out_of_range");
+      return true;
+    }
+    if (!has_hp_led && !has_fall_led && !has_install_height && !has_fall_time &&
+        !has_unmanned_time && !has_residence_time && !has_fall_sensitivity) {
+      publish_command_status_(config, command, false, "no_known_settings");
+      return true;
+    }
+
+    if (has_hp_led) c1001_set_hp_led(hp_led);
+    if (has_fall_led) c1001_set_fall_led(fall_led);
+    if (has_install_height) c1001_set_install_height(install_height);
+    if (has_fall_time) c1001_set_fall_time(fall_time);
+    if (has_unmanned_time) c1001_set_unmanned_time(unmanned_time);
+    if (has_residence_time) c1001_set_residence_time(residence_time);
+    if (has_fall_sensitivity) c1001_set_fall_sensitivity(fall_sensitivity);
+    publish_command_status_(config, command, true, "settings_applied");
+    return true;
+  }
+
   void handle_mqtt_message_(const std::string &topic, const std::string &payload) {
     Config config;
     if (!load_config_(config)) return;
     if (String(topic.c_str()) != topic_(config, "command")) return;
 
-    StaticJsonDocument<256> doc;
-    if (deserializeJson(doc, payload)) return;
-    const char *command = doc["command"] | "";
-    if (strcmp(command, "factory_reset") != 0) return;
+    StaticJsonDocument<512> doc;
+    if (deserializeJson(doc, payload)) {
+      publish_command_status_(config, "", false, "invalid_json");
+      return;
+    }
 
-    factory_reset_(&config);
+    JsonObjectConst root = doc.as<JsonObjectConst>();
+    String command = root["command"] | "";
+    command.trim();
+    command.toLowerCase();
+    command.replace("-", "_");
+    const char *command_c = command.c_str();
+
+    if (command.length() == 0) {
+      publish_command_status_(config, "", false, "missing_command");
+      return;
+    }
+    if (command == "factory_reset") {
+      factory_reset_(&config);
+      return;
+    }
+    if (command == "reset_sensor" || command == "sensor_restart" || command == "restart_sensor") {
+      c1001_reset_sensor();
+      publish_command_status_(config, command_c, true, "sensor_reset_requested");
+      return;
+    }
+    if (command == "set_hp_led" || command == "hp_led") {
+      apply_bool_command_(config, root, command_c, c1001_set_hp_led);
+      return;
+    }
+    if (command == "set_fall_led" || command == "fall_led") {
+      apply_bool_command_(config, root, command_c, c1001_set_fall_led);
+      return;
+    }
+    if (command == "set_install_height" || command == "install_height") {
+      apply_number_command_(config, root, command_c, "centimeters", 100, 400, c1001_set_install_height);
+      return;
+    }
+    if (command == "set_fall_time" || command == "fall_time") {
+      apply_number_command_(config, root, command_c, "seconds", 0, 60, c1001_set_fall_time);
+      return;
+    }
+    if (command == "set_unmanned_time" || command == "unmanned_time" || command == "absence_time") {
+      apply_number_command_(config, root, command_c, "seconds", 0, 60, c1001_set_unmanned_time);
+      return;
+    }
+    if (command == "set_residence_time" || command == "residence_time") {
+      apply_number_command_(config, root, command_c, "seconds", 0, 3600, c1001_set_residence_time);
+      return;
+    }
+    if (command == "set_fall_sensitivity" || command == "fall_sensitivity") {
+      apply_number_command_(config, root, command_c, "sensitivity", 0, 3, c1001_set_fall_sensitivity);
+      return;
+    }
+    if (command == "configure" || command == "set_config") {
+      apply_configure_command_(config, root, command_c);
+      return;
+    }
+
+    publish_command_status_(config, command_c, false, "unsupported_command");
   }
 
   void factory_reset_(const Config *config) {
