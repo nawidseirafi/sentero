@@ -15,6 +15,10 @@
 
 static constexpr const char *SENTERO_NVS_NAMESPACE = "sentero";
 static constexpr const char *SENTERO_LOG_TAG = "sentero";
+static constexpr const char *SENTERO_MANUFACTURER = "Sentero";
+static constexpr const char *SENTERO_DEVICE_MODEL = "C1001";
+static constexpr const char *SENTERO_SENSOR_TYPE = "presence_radar";
+static constexpr const char *SENTERO_FIRMWARE_VERSION = "1.0.0";
 
 inline bool sentero_nvs_get_bool(const char *key, bool fallback = false) {
   nvs_handle_t handle;
@@ -109,18 +113,17 @@ class SenteroDiscovery {
              "{\"type\":\"sentero-discovery\","
              "\"protocol\":1,"
              "\"device_id\":\"%s\","
-             "\"model\":\"C1001\","
-             "\"firmware\":\"1.0.0\","
-             "\"sensor_type\":\"presence_radar\","
+             "\"model\":\"%s\","
+             "\"firmware\":\"%s\","
+             "\"sensor_type\":\"%s\","
              "\"http_port\":80,"
              "\"capabilities\":["
              "\"presence\","
+             "\"motion\","
              "\"fall_detection\","
-             "\"breathing_detection\","
-             "\"respiration_rate\","
-             "\"power_source\","
              "\"signal_quality\"]}",
-             device_id.c_str());
+             device_id.c_str(), SENTERO_DEVICE_MODEL, SENTERO_FIRMWARE_VERSION,
+             SENTERO_SENSOR_TYPE);
 
     return std::string(payload);
   }
@@ -153,8 +156,9 @@ class SenteroProvisioning {
   bool mqtt_connected_{false};
   bool mqtt_configured_{false};
   uint32_t last_state_publish_ms_{0};
-  uint32_t last_published_sensor_update_ms_{0};
+  uint32_t last_availability_publish_ms_{0};
   uint32_t restart_at_ms_{0};
+  String last_state_signature_;
   String mqtt_uri_;
   String mqtt_client_id_;
   String mqtt_username_;
@@ -174,8 +178,13 @@ class SenteroProvisioning {
     String topic_prefix{"sentero"};
   };
 
+  static constexpr uint32_t STATE_CHANGE_MIN_INTERVAL_MS = 1000;
+  static constexpr uint32_t STATE_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+  static constexpr uint32_t AVAILABILITY_INTERVAL_MS = 60 * 1000;
+
   void start_http_once_() {
     if (server_ != nullptr) return;
+    if (sentero_nvs_get_bool("provisioned", false)) return;
     if (!esphome::wifi::global_wifi_component->is_connected()) return;
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -227,13 +236,35 @@ class SenteroProvisioning {
 
     JsonObject mqtt = doc["mqtt"];
     JsonObject device = doc["device"];
+    JsonObject wifi = doc["wifi"];
     const char *mqtt_host = mqtt["host"] | "";
-    const char *wifi_ssid = doc["wifi"]["ssid"] | "";
-    const char *wifi_password = doc["wifi"]["password"] | "";
+    if (strlen(mqtt_host) == 0) mqtt_host = doc["mqtt_host"] | "";
+    const char *wifi_ssid = wifi["ssid"] | "";
+    if (strlen(wifi_ssid) == 0) wifi_ssid = doc["wifi_ssid"] | "";
+    const char *wifi_password = wifi["password"] | "";
+    if (strlen(wifi_password) == 0) wifi_password = doc["wifi_password"] | "";
     String device_id = device["device_id"] | "";
+    if (device_id.length() == 0) device_id = doc["device_id"] | "";
     device_id.trim();
     if (sentero_is_placeholder_device_id(device_id)) device_id = sentero_default_device_id();
-    const char *friendly_name = device["friendly_name"] | device["display_name"] | "";
+    const char *friendly_name = device["friendly_name"] | "";
+    if (strlen(friendly_name) == 0) friendly_name = device["display_name"] | "";
+    if (strlen(friendly_name) == 0) friendly_name = doc["friendly_name"] | "";
+    if (strlen(friendly_name) == 0) friendly_name = doc["display_name"] | "";
+    if (strlen(friendly_name) == 0) friendly_name = doc["name"] | "";
+    const char *topic_prefix = mqtt["topic_prefix"] | "";
+    if (strlen(topic_prefix) == 0) topic_prefix = doc["topic_prefix"] | "sentero";
+    const char *mqtt_username = mqtt["username"] | "";
+    if (strlen(mqtt_username) == 0) mqtt_username = doc["mqtt_username"] | "";
+    const char *mqtt_password = mqtt["password"] | "";
+    if (strlen(mqtt_password) == 0) mqtt_password = doc["mqtt_password"] | "";
+    const char *room_id = device["room_id"] | "";
+    if (strlen(room_id) == 0) room_id = doc["room_id"] | "";
+    const char *device_token = device["token"] | "";
+    if (strlen(device_token) == 0) device_token = doc["device_token"] | "";
+    if (strlen(device_token) == 0) device_token = doc["token"] | "";
+    uint16_t mqtt_port = mqtt["port"] | 0;
+    if (mqtt_port == 0) mqtt_port = doc["mqtt_port"] | 1883;
     if (strlen(mqtt_host) == 0) {
       send_json_(req, "400 Bad Request", "{\"success\":false,\"error\":\"missing_required_fields\"}");
       return ESP_OK;
@@ -248,18 +279,21 @@ class SenteroProvisioning {
     sentero_nvs_put_string(prefs, "wifi_ssid", wifi_ssid);
     sentero_nvs_put_string(prefs, "wifi_pass", wifi_password);
     sentero_nvs_put_string(prefs, "mqtt_host", mqtt_host);
-    nvs_set_u16(prefs, "mqtt_port", mqtt["port"] | 1883);
-    sentero_nvs_put_string(prefs, "mqtt_user", mqtt["username"] | "");
-    sentero_nvs_put_string(prefs, "mqtt_pass", mqtt["password"] | "");
-    sentero_nvs_put_string(prefs, "topic_prefix", mqtt["topic_prefix"] | "sentero");
+    nvs_set_u16(prefs, "mqtt_port", mqtt_port);
+    sentero_nvs_put_string(prefs, "mqtt_user", mqtt_username);
+    sentero_nvs_put_string(prefs, "mqtt_pass", mqtt_password);
+    sentero_nvs_put_string(prefs, "topic_prefix", topic_prefix);
     sentero_nvs_put_string(prefs, "device_id", device_id.c_str());
     sentero_nvs_put_string(prefs, "friendly", friendly_name);
-    sentero_nvs_put_string(prefs, "room_id", device["room_id"] | "");
-    sentero_nvs_put_string(prefs, "token", device["token"] | "");
+    sentero_nvs_put_string(prefs, "room_id", room_id);
+    sentero_nvs_put_string(prefs, "token", device_token);
     nvs_commit(prefs);
     nvs_close(prefs);
 
     mqtt_configured_ = false;
+    last_state_publish_ms_ = 0;
+    last_availability_publish_ms_ = 0;
+    last_state_signature_ = "";
     if (mqtt_ != nullptr) {
       esp_mqtt_client_stop(mqtt_);
       esp_mqtt_client_destroy(mqtt_);
@@ -271,8 +305,8 @@ class SenteroProvisioning {
 
     char response[180];
     snprintf(response, sizeof(response),
-             "{\"success\":true,\"device_id\":\"%s\",\"model\":\"C1001\",\"firmware\":\"1.0.0\"}",
-             device_id.c_str());
+             "{\"success\":true,\"device_id\":\"%s\",\"model\":\"%s\",\"firmware\":\"%s\"}",
+             device_id.c_str(), SENTERO_DEVICE_MODEL, SENTERO_FIRMWARE_VERSION);
     send_json_(req, "200 OK", response);
     restart_at_ms_ = millis() + 1500;
     return ESP_OK;
@@ -314,13 +348,19 @@ class SenteroProvisioning {
     if (!mqtt_connected_) return;
 
     const uint32_t now = millis();
+    if (now - last_availability_publish_ms_ >= AVAILABILITY_INTERVAL_MS) {
+      publish_availability_(config, "online");
+      last_availability_publish_ms_ = now;
+    }
+
     const C1001Snapshot sensor = c1001_get_snapshot();
-    const bool sensor_changed = sensor.last_update_ms != last_published_sensor_update_ms_;
-    if ((sensor_changed && now - last_state_publish_ms_ >= 1000) ||
-        now - last_state_publish_ms_ >= 10000) {
+    const String signature = state_signature_(sensor);
+    const bool sensor_changed = signature != last_state_signature_;
+    if ((sensor_changed && now - last_state_publish_ms_ >= STATE_CHANGE_MIN_INTERVAL_MS) ||
+        now - last_state_publish_ms_ >= STATE_HEARTBEAT_INTERVAL_MS) {
       last_state_publish_ms_ = now;
-      last_published_sensor_update_ms_ = sensor.last_update_ms;
       publish_state_(config);
+      last_state_signature_ = signature;
     }
   }
 
@@ -332,6 +372,9 @@ class SenteroProvisioning {
     mqtt_lwt_topic_ = topic_(config, "availability");
     mqtt_lwt_payload_ = availability_payload_(config, "offline");
     mqtt_command_topic_ = topic_(config, "command");
+    last_state_publish_ms_ = 0;
+    last_availability_publish_ms_ = 0;
+    last_state_signature_ = "";
 
     esp_mqtt_client_config_t mqtt_cfg = {};
     mqtt_cfg.broker.address.uri = mqtt_uri_.c_str();
@@ -372,9 +415,10 @@ class SenteroProvisioning {
       Config config;
       if (load_config_(config)) {
         publish_availability_(config, "online");
+        last_availability_publish_ms_ = millis();
         publish_state_(config);
         last_state_publish_ms_ = millis();
-        last_published_sensor_update_ms_ = c1001_get_snapshot().last_update_ms;
+        last_state_signature_ = state_signature_(c1001_get_snapshot());
       }
     } else if (event_id == MQTT_EVENT_DISCONNECTED) {
       ESP_LOGW(SENTERO_LOG_TAG, "MQTT getrennt");
@@ -398,7 +442,11 @@ class SenteroProvisioning {
     config.mqtt_username = sentero_nvs_get_string("mqtt_user", "");
     config.mqtt_password = sentero_nvs_get_string("mqtt_pass", "");
     config.topic_prefix = sentero_nvs_get_string("topic_prefix", "sentero");
+    config.device_id.trim();
+    config.mqtt_host.trim();
     config.topic_prefix.trim();
+    while (config.topic_prefix.startsWith("/")) config.topic_prefix.remove(0, 1);
+    while (config.topic_prefix.endsWith("/")) config.topic_prefix.remove(config.topic_prefix.length() - 1);
     if (config.topic_prefix.length() == 0) config.topic_prefix = "sentero";
     return provisioned && config.device_id.length() > 0 && config.mqtt_host.length() > 0;
   }
@@ -424,8 +472,21 @@ class SenteroProvisioning {
   void publish_state_(const Config &config) {
     const C1001Snapshot sensor = c1001_get_snapshot();
 
-    StaticJsonDocument<512> doc;
+    StaticJsonDocument<1024> doc;
+    const String display_name = config.friendly_name.length() > 0
+        ? config.friendly_name
+        : String("C1001 Praesenz");
     doc["device_id"] = config.device_id;
+    doc["name"] = display_name;
+    doc["type"] = SENTERO_SENSOR_TYPE;
+    doc["manufacturer"] = SENTERO_MANUFACTURER;
+    doc["model"] = SENTERO_DEVICE_MODEL;
+    doc["firmware"] = SENTERO_FIRMWARE_VERSION;
+    JsonArray capabilities = doc.createNestedArray("capabilities");
+    capabilities.add("presence");
+    capabilities.add("motion");
+    capabilities.add("fall_detection");
+    capabilities.add("signal_quality");
     doc["presence"] = sensor.presence;
     doc["fall_detected"] = sensor.fall_detected;
     doc["motion"] = sensor.motion;
@@ -437,14 +498,28 @@ class SenteroProvisioning {
     doc["last_sensor_update_ms"] = sensor.last_update_ms;
     doc["power_source"] = "usb";
     doc["signal_quality"] = signal_quality_();
-    doc["model"] = "C1001";
-    doc["firmware"] = "1.0.0";
     if (config.friendly_name.length() > 0) doc["friendly_name"] = config.friendly_name;
-    if (config.room_id.length() > 0) doc["room_id"] = config.room_id;
+    if (config.room_id.length() > 0) {
+      doc["room_id"] = config.room_id;
+      doc["room_hint"] = config.room_id;
+    }
 
     String payload;
     serializeJson(doc, payload);
     publish_(topic_(config, "state"), payload, true);
+  }
+
+  String state_signature_(const C1001Snapshot &sensor) {
+    char signature[180];
+    snprintf(signature, sizeof(signature), "%u|%u|%s|%u|%u|%u|%s",
+             sensor.ready ? 1 : 0,
+             sensor.presence ? 1 : 0,
+             sensor.motion == nullptr ? "" : sensor.motion,
+             sensor.moving_range,
+             sensor.work_mode,
+             sensor.fall_detected ? 1 : 0,
+             sensor.status == nullptr ? "" : sensor.status);
+    return String(signature);
   }
 
   void publish_(const String &topic, const String &payload, bool retain) {
@@ -495,6 +570,7 @@ class SenteroProvisioning {
       nvs_commit(prefs);
       nvs_close(prefs);
     }
+    esp_wifi_restore();
     restart_at_ms_ = millis() + 500;
   }
 
