@@ -27,7 +27,7 @@ home_assistant:
   token: HA_TOKEN
 
 mqtt:
-  host: homeassistant.local
+  host: localhost
   port: 1883
   username: SENTERO_MQTT_USERNAME
   password: SENTERO_MQTT_PASSWORD
