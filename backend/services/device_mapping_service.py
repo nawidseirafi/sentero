@@ -520,7 +520,7 @@ class DeviceMappingService:
     def send_factory_reset_command(self, device_id: str):
         command_topic = esp32_command_topic(device_id)
         status_topic = esp32_status_topic(device_id)
-        payload = {'command': 'factory_reset', 'reason': 'removed_from_sentero'}
+        payload = {'command': 'factory_reset', 'enabled': 'true'}
         try:
             return self.mqtt.request_response(
                 command_topic,

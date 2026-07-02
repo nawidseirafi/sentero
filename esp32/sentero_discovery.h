@@ -726,7 +726,7 @@ class SenteroProvisioning {
       publish_command_status_(config, "", false, "missing_command");
       return;
     }
-    if (command == "factory_reset") {
+    if (command == "factory_reset" || command == "factory_resetting") {
       factory_reset_(&config);
       return;
     }

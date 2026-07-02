@@ -608,19 +608,20 @@ ermöglicht einen einheitlichen Betrieb aller Sentero-Sensoren.
 
 command:
 sentero/c1001-b16c33e0/command
+
+``` json
 {
   "command": "set_hp_led",
   "enabled": true
 }
+
 {
   "command": "set_fall_led",
   "enabled": true
 }
+
 {
-  "command": "factory_resetting",
-  "enabled": true
+  "command": "factory_reset",
+  "reason": "manual_test"
 }
-{
-  "status": "factory_resetting",
-  "device_id": c1001-b16c33e0
-}
+```
