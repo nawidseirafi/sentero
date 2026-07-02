@@ -11,8 +11,15 @@ esphome:
   includes:
     - c1001_bridge.h
     - sentero_discovery.h
+    - sentero_captive_portal.h
+    - sentero_portal_logo.h
   libraries:
     - bblanchon/ArduinoJson@^6.21.5
+  on_boot:
+    priority: 260
+    then:
+      - lambda: |-
+          sentero_captive_portal_setup();
 
 esp32:
   board: esp32-c3-devkitm-1
@@ -32,19 +39,11 @@ mqtt:
 
 ota:
   - platform: esphome
-  - platform: http_request
 
 http_request:
   verify_ssl: true
   timeout: 10s
   buffer_size_rx: 2048
-
-update:
-  - platform: http_request
-    name: "C1001 Firmware Update"
-    source: ${firmware_manifest_url}
-    update_interval: 12h
-    entity_category: config
 
 wifi:
   reboot_timeout: 0s
@@ -80,16 +79,22 @@ binary_sensor:
       mode: INPUT_PULLUP
       inverted: true
     internal: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
     on_press:
       then:
-        - delay: 10s
+        - logger.log:
+            level: WARN
+            format: "Factory-Reset-Taster gedrueckt"
+        - delay: 5s
         - if:
             condition:
               binary_sensor.is_on: c1001_factory_reset_gpio
             then:
               - logger.log:
                   level: WARN
-                  format: "Factory-Reset-Taster 10s gehalten"
+                  format: "Factory-Reset-Taster 5s gehalten"
               - lambda: |-
                   sentero_factory_reset();
               - delay: 200ms
