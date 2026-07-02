@@ -1,0 +1,25 @@
+Ja. Nimm einfach PowerShell statt der .http-Datei:
+
+$body = @{
+  protocol = 2
+  wifi = @{}
+  mqtt = @{
+    host = "192.168.0.201"
+    port = 1883
+    username = ""
+    password = ""
+    topic_prefix = "sentero"
+  }
+  device = @{
+    device_id = "c1001-b16c33e0"
+    friendly_name = "C1001 Praesenzsensor"
+    room_id = "test_room"
+    timezone = "Europe/Berlin"
+  }
+} | ConvertTo-Json -Depth 6
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://192.168.0.67/api/provision" `
+  -ContentType "application/json" `
+  -Body $body

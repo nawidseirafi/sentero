@@ -1,0 +1,46 @@
+@esp_ip = 192.168.0.67
+@mqtt_host = 192.168.0.201
+@mqtt_port = 1883
+@device_id = c1001-b16c33e0
+
+### Sentero ESP32 provisioning endpoint on the sensor
+POST http://{{esp_ip}}/api/provision
+Accept: application/json
+Content-Type: application/json
+
+{
+  "protocol": 2,
+  "wifi": {},
+  "mqtt": {
+    "host": "{{mqtt_host}}",
+    "port": {{mqtt_port}},
+    "username": "",
+    "password": "",
+    "topic_prefix": "sentero"
+  },
+  "device": {
+    "device_id": "{{device_id}}",
+    "friendly_name": "C1001 Praesenzsensor",
+    "room_id": "test_room",
+    "timezone": "Europe/Berlin"
+  }
+}
+
+### Sentero backend: start ESP32 UDP discovery
+POST http://localhost:8080/api/sentero/sensors/provisioning/esp32/discovery/start
+Accept: application/json
+
+### Sentero backend: list discovered ESP32 sensors
+GET http://localhost:8080/api/sentero/sensors/provisioning/esp32/discovered
+Accept: application/json
+
+### Sentero backend: provision discovered ESP32 sensor
+POST http://localhost:8080/api/sentero/sensors/provisioning/esp32/start
+Accept: application/json
+Content-Type: application/json
+
+{
+  "room_id": "test_room",
+  "display_name": "C1001 Praesenzsensor",
+  "device_id": "{{device_id}}"
+}
