@@ -104,7 +104,7 @@ Die erzeugte Firmware liegt danach unter:
 Port ggf. anpassen:
 
 ```bash
-/opt/homebrew/bin/esphome run c1001-mmwave.yaml --device /dev/cu.usbmodem11401
+/opt/homebrew/bin/esphome run c1001-mmwave.yaml --device /dev/cu.usbmodem101
 ```
 
 Der Befehl baut bei Bedarf neu, flasht die Firmware und oeffnet danach die Logs.

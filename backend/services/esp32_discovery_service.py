@@ -18,6 +18,7 @@ logger = get_logger(__name__)
 DEFAULT_DISCOVERY_PORT = 37020
 DEFAULT_DISCOVERY_WAIT_SECONDS = 6.0
 DEFAULT_HTTP_PORT = 80
+DEFAULT_PENDING_MAX_AGE_SECONDS = 180.0
 DEFAULT_STORE_INTERVAL_SECONDS = 15.0
 DISCOVERY_TYPE = "sentero-discovery"
 
@@ -99,12 +100,15 @@ class Esp32DiscoveryService:
             time.sleep(0.2)
         return None
 
-    def pending(self) -> list[PendingEsp32Sensor]:
+    def pending(self, fresh_only: bool = True) -> list[PendingEsp32Sensor]:
         with self.mapping.connect() as con:
             rows = con.execute(
                 "select * from esp32_pending_sensors where status = 'pending' order by last_seen_at desc"
             ).fetchall()
-        return [row_to_sensor(dict(row)) for row in rows]
+        sensors = [row_to_sensor(dict(row)) for row in rows]
+        if fresh_only:
+            sensors = [sensor for sensor in sensors if self.is_fresh(sensor)]
+        return sensors
 
     def latest_pending(self) -> PendingEsp32Sensor | None:
         sensors = self.pending()
@@ -119,7 +123,11 @@ class Esp32DiscoveryService:
                 "select * from esp32_pending_sensors where device_id = ? and status = 'pending'",
                 (clean_id,),
             ).fetchone()
-        return row_to_sensor(dict(row)) if row else None
+        sensor = row_to_sensor(dict(row)) if row else None
+        return sensor if sensor and self.is_fresh(sensor) else None
+
+    def is_fresh(self, sensor: PendingEsp32Sensor) -> bool:
+        return seconds_since(sensor.last_seen_at) <= self.pending_max_age()
 
     def mark_provisioned(self, device_id: str) -> None:
         with self.mapping.connect() as con:
@@ -189,6 +197,9 @@ class Esp32DiscoveryService:
 
     def store_interval(self) -> float:
         return float(os.getenv("SENTERO_ESP32_DISCOVERY_STORE_INTERVAL") or config_float("esp32.discovery_store_interval", DEFAULT_STORE_INTERVAL_SECONDS))
+
+    def pending_max_age(self) -> float:
+        return float(os.getenv("SENTERO_ESP32_PENDING_MAX_AGE") or config_float("esp32.pending_max_age", DEFAULT_PENDING_MAX_AGE_SECONDS))
 
     def _store(self, sensor: PendingEsp32Sensor, raw_payload: dict[str, Any]) -> bool:
         with self.mapping.connect() as con:

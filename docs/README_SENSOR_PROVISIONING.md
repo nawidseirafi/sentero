@@ -603,3 +603,24 @@ Sentero verwendet zwei klar getrennte Kommunikationsprotokolle:
 
 Diese Trennung vereinfacht die Firmware, erhöht die Sicherheit und
 ermöglicht einen einheitlichen Betrieb aller Sentero-Sensoren.
+
+
+
+command:
+sentero/c1001-b16c33e0/command
+{
+  "command": "set_hp_led",
+  "enabled": true
+}
+{
+  "command": "set_fall_led",
+  "enabled": true
+}
+{
+  "command": "factory_resetting",
+  "enabled": true
+}
+{
+  "status": "factory_resetting",
+  "device_id": c1001-b16c33e0
+}

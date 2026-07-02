@@ -303,9 +303,9 @@ class SenteroProvisioning {
 
     apply_wifi_config_(wifi_ssid, wifi_password);
 
-    char response[180];
+    char response[200];
     snprintf(response, sizeof(response),
-             "{\"success\":true,\"device_id\":\"%s\",\"model\":\"%s\",\"firmware\":\"%s\"}",
+             "{\"ok\":true,\"success\":true,\"device_id\":\"%s\",\"model\":\"%s\",\"firmware\":\"%s\"}",
              device_id.c_str(), SENTERO_DEVICE_MODEL, SENTERO_FIRMWARE_VERSION);
     send_json_(req, "200 OK", response);
     restart_at_ms_ = millis() + 1500;
@@ -456,9 +456,10 @@ class SenteroProvisioning {
   }
 
   String availability_payload_(const Config &config, const char *status) {
-    StaticJsonDocument<160> doc;
+    StaticJsonDocument<192> doc;
     doc["device_id"] = config.device_id;
     doc["status"] = status;
+    doc["firmware"] = SENTERO_FIRMWARE_VERSION;
     String payload;
     serializeJson(doc, payload);
     return payload;
@@ -482,6 +483,7 @@ class SenteroProvisioning {
     doc["manufacturer"] = SENTERO_MANUFACTURER;
     doc["model"] = SENTERO_DEVICE_MODEL;
     doc["firmware"] = SENTERO_FIRMWARE_VERSION;
+    doc["status"] = "online";
     JsonArray capabilities = doc.createNestedArray("capabilities");
     capabilities.add("presence");
     capabilities.add("motion");
