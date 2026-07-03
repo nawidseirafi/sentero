@@ -49,6 +49,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '', new_password_confirm: '' });
   const [accountEditing, setAccountEditing] = useState(false);
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  const [ledStates, setLedStates] = useState<Record<string, boolean>>({});
+  const [ledBusyRole, setLedBusyRole] = useState<string | null>(null);
   const [channels, setChannels] = useState<SenteroNotificationChannel[]>([]);
   const [setupChannel, setSetupChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
   const [helpChannel, setHelpChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
@@ -499,6 +501,31 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     }
   }
 
+  async function toggleSensorLeds(sensor: SenteroSensorRole) {
+    const enabled = !Boolean(ledStates[sensor.role]);
+    setLedBusyRole(sensor.role);
+    try {
+      const result = await api.commandSenteroSensorRole(sensor.role, {
+        command: 'configure',
+        settings: {
+          hp_led: enabled,
+          fall_led: enabled,
+        },
+      });
+      if (!result.ok) {
+        setError(result.message || 'LEDs konnten nicht geschaltet werden.');
+        return;
+      }
+      setLedStates((current) => ({ ...current, [sensor.role]: enabled }));
+      toast(enabled ? 'LEDs eingeschaltet' : 'LEDs ausgeschaltet');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'LEDs konnten nicht geschaltet werden.');
+    } finally {
+      setLedBusyRole(null);
+    }
+  }
+
   const activeTabMeta = settingsTabs.find((item) => item.tab === activeTab);
 
   function mobileNavigateTab(tab: SenteroSettingsTab) {
@@ -616,6 +643,19 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                           </div>
                         </div>
                         <div className="sc-sensor-settings-actions">
+                          {isEsp32PresenceSensor(sensor) && (
+                            <button
+                              className={`led-dot-btn ${ledStates[sensor.role] ? 'led-on' : 'led-off'}`}
+                              type="button"
+                              onClick={() => void toggleSensorLeds(sensor)}
+                              disabled={ledBusyRole === sensor.role || sensor.reachable === false}
+                              title={ledStates[sensor.role] ? 'LEDs ausschalten' : 'LEDs einschalten'}
+                              aria-label={ledStates[sensor.role] ? 'LEDs ausschalten' : 'LEDs einschalten'}
+                              aria-pressed={Boolean(ledStates[sensor.role])}
+                            >
+                              <span aria-hidden="true" />
+                            </button>
+                          )}
                           <button type="button" onClick={() => void renameSensor(sensor)}><Pencil size={18} /> Name</button>
                           <button type="button" onClick={() => void testSensor(sensor.role)}><Wifi size={18} /> Test</button>
                           <button type="button" onClick={() => void deleteSensor(sensor)}><Trash2 size={18} /> Löschen</button>

@@ -542,6 +542,51 @@ class DeviceMappingService:
             raise TimeoutError('factory_reset_not_confirmed')
         return payload if isinstance(payload, dict) else {'status': str(payload)}
 
+    def send_role_command(self, role: str, payload: dict[str, Any]) -> dict[str, Any]:
+        mapped = self.get_role(role, dev=True)
+        if not mapped:
+            raise ValueError('sensor role not found')
+        device_id = str(mapped.get('device_id') or '').strip()
+        if not device_id:
+            raise RuntimeError('Sensor konnte nicht eindeutig identifiziert werden.')
+        source = str(mapped.get('source') or '').strip()
+        if source != 'mqtt':
+            raise RuntimeError('Dieser Sensor unterstützt keine direkten MQTT-Kommandos.')
+        command = str(payload.get('command') or '').strip()
+        if not command:
+            raise RuntimeError('Sensor-Kommando fehlt.')
+        state = self._attach_state([mapped])[0]
+        if state.get('reachable') is False:
+            raise RuntimeError('Sensor ist derzeit nicht erreichbar.')
+
+        command_topic = esp32_command_topic(device_id)
+        status_topic = esp32_status_topic(device_id)
+        try:
+            message = self.mqtt.request_response(
+                command_topic,
+                status_topic,
+                payload,
+                timeout=5.0,
+                response_filter=lambda response, wanted=device_id, wanted_command=command: esp32_command_ack_matches(response, wanted, wanted_command),
+            )
+        except TimeoutError as exc:
+            logger.warning("Sensor-Kommando nicht bestätigt", extra={"component": "device_mapping", "provider": "mqtt", "device_id": device_id, "command": command})
+            raise RuntimeError('Sensor hat das Kommando nicht bestätigt.') from exc
+        except Exception:
+            logger.exception("Sensor-Kommando fehlgeschlagen", extra={"component": "device_mapping", "provider": "mqtt", "device_id": device_id, "topic": command_topic, "command": command})
+            raise
+
+        response = message.payload if isinstance(message.payload, dict) else {'status': str(message.payload)}
+        ok = bool(response.get('ok', response.get('status') == 'command_accepted'))
+        return {
+            'ok': ok,
+            'role': role,
+            'device_id': device_id,
+            'topic': command_topic,
+            'response': response,
+            'message': response.get('message') or ('Kommando ausgeführt' if ok else 'Kommando abgelehnt'),
+        }
+
     def rename_role(self, role: str, name: str) -> dict[str, Any]:
         clean_name = str(name or '').strip()
         if not clean_name:
@@ -1749,6 +1794,20 @@ def esp32_factory_reset_ack_matches(payload: Any, device_id: str) -> bool:
     status = str(payload.get('status') or '').strip().lower()
     ack_device = str(payload.get('device_id') or payload.get('deviceId') or '').strip()
     return status == 'factory_resetting' and (not ack_device or ack_device == str(device_id).strip())
+
+
+def esp32_command_ack_matches(payload: Any, device_id: str, command: str) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    status = str(payload.get('status') or '').strip().lower()
+    if status not in {'command_accepted', 'command_rejected'}:
+        return False
+    ack_device = str(payload.get('device_id') or payload.get('deviceId') or '').strip()
+    if ack_device and ack_device != str(device_id).strip():
+        return False
+    ack_command = str(payload.get('command') or '').strip().lower().replace('-', '_')
+    wanted_command = str(command or '').strip().lower().replace('-', '_')
+    return not ack_command or ack_command == wanted_command
 
 
 def mqtt_identity_values(item: dict[str, Any]) -> set[str]:

@@ -81,6 +81,13 @@ class SensorNetworkPayload(BaseModel):
     wifi_password: str | None = None
 
 
+class SensorRoleCommandPayload(BaseModel):
+    command: str
+    enabled: bool | None = None
+    value: Any | None = None
+    settings: dict[str, Any] | None = None
+
+
 class BoxNetworkWifiPayload(BaseModel):
     ssid: str
     password: str
@@ -612,6 +619,16 @@ def sensor_role_delete(role: str, local_only: bool = Query(False)):
 def sensor_role_test(role: str):
     try:
         return get_services().mapping.test_role(role)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.post("/sensor-roles/{role}/command", tags=[TAG_SENSORS])
+def sensor_role_command(role: str, payload: SensorRoleCommandPayload):
+    try:
+        return get_services().mapping.send_role_command(role, payload.model_dump(exclude_none=True))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

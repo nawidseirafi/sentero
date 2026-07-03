@@ -487,6 +487,11 @@ export const api = {
     }),
   testSenteroSensorRole: (role: string) =>
     request<{ ok: boolean; mode: string; message: string; entity_id?: string; state?: string }>(`/api/sentero/sensor-roles/${encodeURIComponent(role)}/test`, { method: 'POST' }),
+  commandSenteroSensorRole: (role: string, payload: { command: string; enabled?: boolean; value?: unknown; settings?: Record<string, unknown> }) =>
+    request<{ ok: boolean; message: string; response?: Record<string, unknown> }>(`/api/sentero/sensor-roles/${encodeURIComponent(role)}/command`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   deleteSenteroSensorRole: (role: string, options?: { localOnly?: boolean }) =>
     request<{ deleted: boolean; role: string; removal?: { reason?: string; message?: string; provider?: string } }>(
       `/api/sentero/sensor-roles/${encodeURIComponent(role)}${options?.localOnly ? '?local_only=true' : ''}`,

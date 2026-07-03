@@ -2156,6 +2156,43 @@ button:disabled {
   padding: 0 12px;
 }
 
+.sc-sensor-settings-actions .led-dot-btn {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  height: 40px;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0;
+  width: 40px;
+}
+
+.sc-sensor-settings-actions .led-dot-btn span {
+  background: #7fa984;
+  border-radius: 50%;
+  box-shadow: 0 0 0 5px rgba(201, 75, 75, 0.1);
+  height: 11px;
+  width: 11px;
+}
+
+.sc-sensor-settings-actions .led-dot-btn.led-on span {
+  background: #c94b4b;
+  box-shadow: 0 0 0 5px rgba(127, 169, 132, 0.12);
+}
+
+.sc-sensor-settings-actions .led-dot-btn:active {
+  transform: scale(0.94);
+}
+
+.sc-sensor-settings-actions .led-dot-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none;
+}
+
 .sc-sensor-health {
   align-items: center;
   display: flex;
