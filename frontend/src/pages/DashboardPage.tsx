@@ -3,24 +3,32 @@ import type { ReactNode } from 'react';
 import { AlarmClock, House, Activity } from 'lucide-react';
 import { api, type SenteroBehaviorAssessment, type SenteroBehaviorLearning, type SenteroSensorRole, type SenteroSetupStatus } from '@shared/api/client';
 
+type BehaviorEvent = { event_time: string; room?: string | null; role?: string | null; state?: string | null };
+
 export function DashboardPage() {
   const [status, setStatus] = useState<SenteroSetupStatus | null>(null);
+  const [roles, setRoles] = useState<SenteroSensorRole[]>([]);
   const [behavior, setBehavior] = useState<SenteroBehaviorAssessment | null>(null);
   const [learning, setLearning] = useState<SenteroBehaviorLearning | null>(null);
+  const [timelineEvents, setTimelineEvents] = useState<BehaviorEvent[]>([]);
   const [error, setError] = useState('');
 
   useEffect(() => {
     let active = true;
     async function load() {
       try {
-        const [next, latestBehavior] = await Promise.all([
+        const [next, liveRoles, latestBehavior, timeline] = await Promise.all([
           api.senteroSetupStatus(),
+          api.senteroSensorRoles(true),
           api.senteroBehaviorLatest().catch(() => ({ assessment: null, learning: undefined })),
+          api.senteroBehaviorTimeline().catch(() => ({ events: [], assessment: null })),
         ]);
         if (active) {
           setStatus(next);
+          setRoles(liveRoles.sensor_roles || next.sensor_roles || []);
           setBehavior(latestBehavior.assessment);
           setLearning(latestBehavior.learning || null);
+          setTimelineEvents(timeline.events || []);
           setError('');
         }
       } catch (err) {
@@ -35,19 +43,24 @@ export function DashboardPage() {
     };
   }, []);
 
-  const roles = status?.sensor_roles ?? [];
   const configuredRoles = roles.filter((role) => role.configured);
   const hasSensors = configuredRoles.length > 0;
   const latest = useMemo(() => latestPresenceRole(roles), [roles]);
+  const latestTimeline = useMemo(() => latestActivityEvent(timelineEvents), [timelineEvents]);
   const personName = status?.profile?.name?.trim() || 'Person';
-  const activitySlots = useMemo(() => activitySlotsFromRoles(roles), [roles]);
+  const activitySlots = useMemo(() => activitySlotsFromTimeline(timelineEvents, roles), [timelineEvents, roles]);
   const hasActivity = activitySlots.some((slot) => slot.active);
-  const lastUpdate = latest ? formatTime(new Date(timestamp(latest.last_changed || latest.last_updated || latest.updated_at))) : '';
-  const lastSeen = latest ? relativeTime(latest.last_changed || latest.last_updated || latest.updated_at) : 'Noch keine Daten';
-  const morning = firstActivityTime(roles);
-  const currentRoom = latest ? roomLocationLabel(latest.room) : 'Aktueller Raum';
-  const dashboardState = getDashboardState({ error, hasSensors, latest: Boolean(latest), behavior });
-  const currentLocation = latest ? roomLocationLabel(latest.room) : dashboardState.kicker;
+  const fallbackTime = latest ? latest.last_changed || latest.last_updated || latest.updated_at : null;
+  const latestTimelineTime = timestamp(latestTimeline?.event_time);
+  const latestRoleTime = timestamp(fallbackTime);
+  const useTimeline = latestTimelineTime >= latestRoleTime && latestTimelineTime > 0;
+  const lastEventTime = useTimeline ? latestTimeline?.event_time : fallbackTime;
+  const lastUpdate = lastEventTime ? formatTime(new Date(timestamp(lastEventTime))) : '';
+  const lastSeen = lastEventTime ? relativeTime(lastEventTime) : 'Noch keine Daten';
+  const morning = firstActivityTime(timelineEvents, roles);
+  const currentRoom = useTimeline ? roomLocationLabel(latestTimeline?.room) : latest ? roomLocationLabel(latest.room) : 'Aktueller Raum';
+  const dashboardState = getDashboardState({ error, hasSensors, latest: Boolean(latestTimeline || latest), behavior });
+  const currentLocation = useTimeline ? roomLocationLabel(latestTimeline?.room) : latest ? roomLocationLabel(latest.room) : dashboardState.kicker;
 
   return (
     <section className="sc-page sc-simple-dashboard" aria-label="Sentero Tagesstatus">
@@ -209,9 +222,11 @@ function isPresenceRole(role: SenteroSensorRole) {
   return role.role.endsWith('presence') || ['motion', 'occupancy', 'presence'].includes(String(role.device_class || ''));
 }
 
-function firstActivityTime(roles: SenteroSensorRole[]) {
-  const value = roles
-    .map((role) => timestamp(role.last_changed || role.last_updated || role.updated_at))
+function firstActivityTime(events: BehaviorEvent[], roles: SenteroSensorRole[]) {
+  const todayEvents = todayActivityEvents(events);
+  const value = (todayEvents.length > 0 ? todayEvents.map((event) => timestamp(event.event_time)) : roles
+    .filter((role) => role.configured && role.reachable !== false && isPresenceRole(role))
+    .map((role) => timestamp(role.last_changed || role.last_updated || role.updated_at)))
     .filter(Boolean)
     .sort((a, b) => a - b)[0];
   return value ? formatTime(new Date(value)) : '';
@@ -229,11 +244,34 @@ function roomLocationLabel(room?: string | null) {
   return room ? labels[room] || room : 'Raum unbekannt';
 }
 
-function activitySlotsFromRoles(roles: SenteroSensorRole[]) {
+function latestActivityEvent(events: BehaviorEvent[]) {
+  return todayActivityEvents(events)
+    .sort((a, b) => timestamp(b.event_time) - timestamp(a.event_time))[0];
+}
+
+function todayActivityEvents(events: BehaviorEvent[]) {
+  const today = new Date();
+  return events.filter((event) => {
+    if (!isActivityEvent(event)) return false;
+    const value = timestamp(event.event_time);
+    if (!value) return false;
+    return new Date(value).toDateString() === today.toDateString();
+  });
+}
+
+function isActivityEvent(event: BehaviorEvent) {
+  const state = String(event.state || '').toLowerCase();
+  return !['', 'unknown', 'unavailable', 'none', 'off', 'false', '0'].includes(state);
+}
+
+function activitySlotsFromTimeline(events: BehaviorEvent[], roles: SenteroSensorRole[]) {
   const slots = [0, 6, 12, 18, 24].map((hour) => ({ hour, label: String(hour).padStart(2, '0'), active: false }));
   const today = new Date();
-  for (const role of roles) {
-    const value = timestamp(role.last_changed || role.last_updated);
+  const values = todayActivityEvents(events).map((event) => timestamp(event.event_time));
+  if (values.length === 0) {
+    values.push(...roles.map((role) => timestamp(role.last_changed || role.last_updated)).filter(Boolean));
+  }
+  for (const value of values) {
     if (!value) continue;
     const date = new Date(value);
     if (date.toDateString() !== today.toDateString()) continue;
