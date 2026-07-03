@@ -600,6 +600,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                           </div>
                           <div className="sc-sensor-health">
                             {isDoorContactSensor(sensor) && <DoorContactStatus sensor={sensor} />}
+                            {isEsp32PresenceSensor(sensor) && <C1001Telemetry sensor={sensor} />}
                             <span className={sensor.reachable === false ? 'offline' : sensor.reachable == null ? 'unknown' : 'online'}>
                               {sensor.reachable === false ? <WifiOff size={17} /> : <CheckCircle2 size={17} />}
                               {sensor.reachable === false ? 'Nicht erreichbar' : sensor.reachable == null ? 'In HA vorhanden' : 'Erreichbar'}
@@ -1124,6 +1125,16 @@ function DoorContactStatus({ sensor }: { sensor: SenteroSensorRole }) {
   );
 }
 
+function C1001Telemetry({ sensor }: { sensor: SenteroSensorRole }) {
+  return (
+    <>
+      <span className={sensor.presence ? 'presence active' : 'presence inactive'}>presence: {formatBoolean(sensor.presence)}</span>
+      <span className={sensor.fall_detected ? 'fall detected' : 'fall clear'}>fall_detected: {formatBoolean(sensor.fall_detected)}</span>
+      <span className="motion">motion: {sensor.motion || 'unbekannt'}</span>
+    </>
+  );
+}
+
 function sensorType(sensor: SenteroSensorRole) {
   if (isDoorContactSensor(sensor)) return 'Türkontakt';
   if (isEsp32PresenceSensor(sensor)) return 'Präsenzsensor';
@@ -1167,6 +1178,11 @@ function sensorPowerLabel(sensor: SenteroSensorRole) {
   const source = String(sensor.power_source || '').toLowerCase();
   if (isEsp32PresenceSensor(sensor) && ['usb', 'mains', 'wired', 'external'].includes(source)) return 'USB-Strom';
   return '';
+}
+
+function formatBoolean(value?: boolean | null) {
+  if (value == null) return 'unbekannt';
+  return value ? 'true' : 'false';
 }
 
 function normalizeEmail(value: string) {

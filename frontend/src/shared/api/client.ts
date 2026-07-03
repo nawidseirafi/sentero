@@ -52,6 +52,9 @@ export type SenteroSensorRole = {
   last_updated?: string | null;
   battery_level?: number | null;
   power_source?: string | null;
+  presence?: boolean | null;
+  fall_detected?: boolean | null;
+  motion?: string | null;
   device_class?: string | null;
   domain?: string | null;
   source?: string | null;

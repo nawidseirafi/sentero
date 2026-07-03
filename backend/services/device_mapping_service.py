@@ -743,6 +743,7 @@ class DeviceMappingService:
             battery_entity = find_battery_entity({**row, **(state or {})}, states)
             battery_level = parse_battery(battery_entity.get('state')) if battery_entity else battery_level_from_state(state)
             power_source = power_source_from_state(state)
+            c1001_telemetry = c1001_telemetry_from_state(state)
             logger.debug(
                 "Sensor health resolved",
                 extra={
@@ -755,6 +756,9 @@ class DeviceMappingService:
                     "battery_entity": battery_entity.get('entity_id') if battery_entity else None,
                     "battery_level": battery_level,
                     "power_source": power_source,
+                    "presence": c1001_telemetry.get('presence'),
+                    "fall_detected": c1001_telemetry.get('fall_detected'),
+                    "motion": c1001_telemetry.get('motion'),
                 },
             )
             result.append({
@@ -775,6 +779,9 @@ class DeviceMappingService:
                 'last_updated': state.get('last_updated') if state else None,
                 'battery_level': battery_level,
                 'power_source': power_source,
+                'presence': c1001_telemetry.get('presence'),
+                'fall_detected': c1001_telemetry.get('fall_detected'),
+                'motion': c1001_telemetry.get('motion'),
             })
         return result
 
@@ -1674,6 +1681,28 @@ def power_source_from_state(state: dict[str, Any] | None) -> str | None:
     return None
 
 
+def c1001_telemetry_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
+    if not state:
+        return {'presence': None, 'fall_detected': None, 'motion': None}
+    attrs = state.get('attributes') if isinstance(state.get('attributes'), dict) else {}
+    presence = parse_bool_value(first_present(state, attrs, 'presence'))
+    if presence is None and str(state.get('payload_key') or '').strip().lower() == 'presence':
+        presence = parse_bool_value(state.get('state'))
+    fall_detected = parse_bool_value(first_present(state, attrs, 'fall_detected'))
+    motion = first_present(state, attrs, 'motion')
+    if motion is not None:
+        motion = str(motion)
+    return {'presence': presence, 'fall_detected': fall_detected, 'motion': motion}
+
+
+def first_present(item: dict[str, Any], attrs: dict[str, Any], key: str) -> Any:
+    if key in item and item.get(key) is not None:
+        return item.get(key)
+    if key in attrs and attrs.get(key) is not None:
+        return attrs.get(key)
+    return None
+
+
 def find_mqtt_availability_state(role: dict[str, Any], states: list[dict[str, Any]]) -> bool | None:
     source = str(role.get('source') or role.get('platform') or '').strip().lower()
     if source not in {'zigbee2mqtt', 'mqtt'} and not (role.get('topic') or role.get('source_ref') or role.get('entity_id')):
@@ -2017,6 +2046,9 @@ def public_role(data: dict[str, Any]) -> dict[str, Any]:
         'last_updated': data.get('last_updated'),
         'battery_level': data.get('battery_level'),
         'power_source': data.get('power_source'),
+        'presence': data.get('presence'),
+        'fall_detected': data.get('fall_detected'),
+        'motion': data.get('motion'),
         'device_class': data.get('device_class'),
         'domain': data.get('domain'),
         'source': data.get('source'),

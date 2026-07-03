@@ -743,6 +743,33 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertEqual(role["power_source"], "usb")
         self.assertIsNone(role["battery_level"])
 
+    def test_mqtt_presence_sensor_exposes_c1001_telemetry(self) -> None:
+        device_id = "c1001-test-01"
+        mqtt = SnapshotMqtt([
+            FakeMessage(f"sentero/{device_id}/state", {
+                "device_id": device_id,
+                "presence": True,
+                "fall_detected": False,
+                "motion": "Still",
+                "power_source": "usb",
+                "signal_quality": 88,
+            }),
+            FakeMessage(f"sentero/{device_id}/availability", {
+                "device_id": device_id,
+                "status": "online",
+            }),
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"SENTERO_SENSOR_SOURCE": "mqtt"}, clear=False):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            upsert_esp32_presence_role(mapping, device_id)
+            role = mapping.roles(include_state=True)[0]
+
+        self.assertIs(role["presence"], True)
+        self.assertIs(role["fall_detected"], False)
+        self.assertEqual(role["motion"], "Still")
+
     def test_delete_esp32_presence_sensor_sends_factory_reset_before_local_delete(self) -> None:
         device_id = "c1001-test-01"
         mqtt = FactoryResetMqtt(device_id, esp32_presence_messages(device_id, availability="online"))
@@ -759,7 +786,7 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertIsNone(stored)
         self.assertEqual(mqtt.requests[0][0], f"sentero/{device_id}/command")
         self.assertEqual(mqtt.requests[0][1], f"sentero/{device_id}/status")
-        self.assertEqual(mqtt.requests[0][2], {"command": "factory_reset", "reason": "removed_from_sentero"})
+        self.assertEqual(mqtt.requests[0][2], {"command": "factory_reset", "enabled": "true"})
 
     def test_delete_esp32_presence_sensor_timeout_keeps_local_mapping(self) -> None:
         device_id = "c1001-test-01"
