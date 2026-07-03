@@ -3,6 +3,7 @@
 #include "c1001_bridge.h"
 #include "esphome.h"
 #include "esphome/components/wifi/wifi_component.h"
+#include "esphome/components/web_server_base/web_server_base.h"
 #include <ArduinoJson.h>
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -133,15 +134,39 @@ class SenteroDiscovery {
   }
 };
 
-class SenteroProvisioning {
+class SenteroProvisioning : public AsyncWebHandler {
  public:
   void loop() {
-    start_http_once_();
+    register_handler_once_();
     mqtt_loop_();
 
     if (restart_at_ms_ != 0 && millis() >= restart_at_ms_) {
       ESP.restart();
     }
+  }
+
+  // AsyncWebHandler overrides: /api/provision wird auf demselben
+  // web_server_base-Server registriert wie der Captive Portal (Port 80),
+  // statt einen eigenen httpd-Server zu starten (der mit dem Captive-
+  // Portal-Server um Port 80 konkurrieren wuerde).
+  bool canHandle(AsyncWebServerRequest *request) const override {
+#ifdef USE_ESP32
+    char url_buf[AsyncWebServerRequest::URL_BUF_SIZE];
+    StringRef url = request->url_to(url_buf);
+#else
+    const auto &url = request->url();
+#endif
+    return request->method() == HTTP_POST && url == ESPHOME_F("/api/provision");
+  }
+
+  // Wichtig: ESPHomes web_server_idf ruft AsyncWebHandler::handleBody()
+  // fuer POST-Requests NIE auf (das existiert nur aus API-Kompatibilitaet
+  // zur Arduino-Variante). Fuer alles ausser Content-Type
+  // application/x-www-form-urlencoded / multipart/form-data liefert es die
+  // Anfrage wie ein GET aus, ohne den Body zu lesen. Fuer unser JSON lesen
+  // wir den Body deshalb hier selbst ueber den rohen httpd_req_t*.
+  void handleRequest(AsyncWebServerRequest *request) override {
+    process_provision_(request);
   }
 
   void factory_reset() {
@@ -151,7 +176,8 @@ class SenteroProvisioning {
   }
 
  private:
-  httpd_handle_t server_{nullptr};
+  static constexpr size_t MAX_BODY_SIZE = 4096;
+  bool registered_{false};
   esp_mqtt_client_handle_t mqtt_{nullptr};
   bool mqtt_connected_{false};
   bool mqtt_configured_{false};
@@ -182,56 +208,55 @@ class SenteroProvisioning {
   static constexpr uint32_t STATE_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
   static constexpr uint32_t AVAILABILITY_INTERVAL_MS = 60 * 1000;
 
-  void start_http_once_() {
-    if (server_ != nullptr) return;
-    if (sentero_nvs_get_bool("provisioned", false)) return;
-    if (!esphome::wifi::global_wifi_component->is_connected()) return;
+  void register_handler_once_() {
+    if (registered_) return;
+    auto *base = esphome::web_server_base::global_web_server_base;
+    if (base == nullptr) return;
 
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.server_port = 80;
-    config.max_uri_handlers = 4;
-    if (httpd_start(&server_, &config) != ESP_OK) {
-      server_ = nullptr;
+    base->add_handler_without_auth(this);
+    registered_ = true;
+    ESP_LOGI(SENTERO_LOG_TAG, "Sentero provisioning API registriert (/api/provision)");
+  }
+
+  void process_provision_(AsyncWebServerRequest *request) {
+    // Ein bereits provisioniertes Geraet darf nicht von einem zweiten Client
+    // umprovisioniert werden. Das geht erst wieder nach einem Factory Reset
+    // (z.B. per MQTT-Kommando {"command":"factory_reset"}), das den
+    // "provisioned"-Flag im NVS loescht.
+    if (sentero_nvs_get_bool("provisioned", false)) {
+      send_json_(request, 409, "{\"success\":false,\"error\":\"already_provisioned\"}");
       return;
     }
 
-    httpd_uri_t provision_uri;
-    memset(&provision_uri, 0, sizeof(provision_uri));
-    provision_uri.uri = "/api/provision";
-    provision_uri.method = HTTP_POST;
-    provision_uri.handler = &SenteroProvisioning::provision_handler_;
-    provision_uri.user_ctx = this;
-    httpd_register_uri_handler(server_, &provision_uri);
-  }
+    httpd_req_t *req = *request;
+    if (req->content_len == 0 || req->content_len > MAX_BODY_SIZE) {
+      send_json_(request, 400, "{\"success\":false,\"error\":\"body_too_large\"}");
+      return;
+    }
 
-  static esp_err_t provision_handler_(httpd_req_t *req) {
-    return static_cast<SenteroProvisioning *>(req->user_ctx)->handle_provision_(req);
-  }
-
-  esp_err_t handle_provision_(httpd_req_t *req) {
     std::string body;
     body.resize(req->content_len);
-    int received_total = 0;
+    size_t received_total = 0;
     while (received_total < req->content_len) {
       const int received = httpd_req_recv(req, &body[received_total], req->content_len - received_total);
       if (received <= 0) {
-        send_json_(req, "400 Bad Request", "{\"success\":false,\"error\":\"request_read_failed\"}");
-        return ESP_FAIL;
+        send_json_(request, 400, "{\"success\":false,\"error\":\"request_read_failed\"}");
+        return;
       }
-      received_total += received;
+      received_total += static_cast<size_t>(received);
     }
 
     StaticJsonDocument<2048> doc;
     DeserializationError error = deserializeJson(doc, body);
     if (error) {
-      send_json_(req, "400 Bad Request", "{\"success\":false,\"error\":\"invalid_json\"}");
-      return ESP_OK;
+      send_json_(request, 400, "{\"success\":false,\"error\":\"invalid_json\"}");
+      return;
     }
 
     const int protocol = doc["protocol"] | 1;
     if (protocol < 1 || protocol > 2) {
-      send_json_(req, "400 Bad Request", "{\"success\":false,\"error\":\"unsupported_protocol\"}");
-      return ESP_OK;
+      send_json_(request, 400, "{\"success\":false,\"error\":\"unsupported_protocol\"}");
+      return;
     }
 
     JsonObject mqtt = doc["mqtt"];
@@ -266,14 +291,14 @@ class SenteroProvisioning {
     uint16_t mqtt_port = mqtt["port"] | 0;
     if (mqtt_port == 0) mqtt_port = doc["mqtt_port"] | 1883;
     if (strlen(mqtt_host) == 0) {
-      send_json_(req, "400 Bad Request", "{\"success\":false,\"error\":\"missing_required_fields\"}");
-      return ESP_OK;
+      send_json_(request, 400, "{\"success\":false,\"error\":\"missing_required_fields\"}");
+      return;
     }
 
     nvs_handle_t prefs;
     if (nvs_open(SENTERO_NVS_NAMESPACE, NVS_READWRITE, &prefs) != ESP_OK) {
-      send_json_(req, "500 Internal Server Error", "{\"success\":false,\"error\":\"nvs_open_failed\"}");
-      return ESP_OK;
+      send_json_(request, 500, "{\"success\":false,\"error\":\"nvs_open_failed\"}");
+      return;
     }
     nvs_set_u8(prefs, "provisioned", 1);
     sentero_nvs_put_string(prefs, "wifi_ssid", wifi_ssid);
@@ -307,9 +332,8 @@ class SenteroProvisioning {
     snprintf(response, sizeof(response),
              "{\"ok\":true,\"success\":true,\"device_id\":\"%s\",\"model\":\"%s\",\"firmware\":\"%s\"}",
              device_id.c_str(), SENTERO_DEVICE_MODEL, SENTERO_FIRMWARE_VERSION);
-    send_json_(req, "200 OK", response);
+    send_json_(request, 200, response);
     restart_at_ms_ = millis() + 1500;
-    return ESP_OK;
   }
 
   void apply_wifi_config_(const char *ssid, const char *password) {
@@ -328,10 +352,8 @@ class SenteroProvisioning {
     }
   }
 
-  void send_json_(httpd_req_t *req, const char *status, const char *body) {
-    httpd_resp_set_status(req, status);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, body);
+  void send_json_(AsyncWebServerRequest *request, int status, const char *body) {
+    request->send(status, ESPHOME_F("application/json"), body);
   }
 
   void mqtt_loop_() {

@@ -622,6 +622,6 @@ sentero/c1001-b16c33e0/command
 
 {
   "command": "factory_reset",
-  "reason": "manual_test"
+  "enabled": "true"
 }
 ```

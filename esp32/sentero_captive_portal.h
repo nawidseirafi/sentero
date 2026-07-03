@@ -48,7 +48,7 @@ class SenteroCaptivePortal : public AsyncWebHandler, public esphome::Component {
       handle_wifi_save_(request);
       return;
     }
-    if (url == ESPHOME_F("/sentero-logo.jpg")) {
+    if (url == ESPHOME_F("/sentero-logo.png")) {
       handle_logo_(request);
       return;
     }
@@ -71,314 +71,234 @@ class SenteroCaptivePortal : public AsyncWebHandler, public esphome::Component {
   <title>Sentero Setup</title>
   <style>
     :root {
-      color-scheme: dark light;
-      --page: #0b0d0b;
-      --surface: #f4f1e8;
-      --surface-2: #e4e8dc;
-      --ink: #172019;
-      --muted: #60705f;
-      --accent: #6f8f73;
-      --accent-dark: #4e6f51;
-      --line: rgba(23, 32, 25, .16);
-      --danger: #aa4d3f;
-      --radius: 8px;
+      color-scheme: dark;
+      --bg: #0b0f0c;
+      --card: rgba(255,255,255,.05);
+      --card-border: rgba(255,255,255,.09);
+      --ink: #f2f3ee;
+      --muted: #93a091;
+      --accent: #7fa984;
+      --accent-ink: #0b140c;
+      --line: rgba(255,255,255,.10);
+      --field: rgba(255,255,255,.06);
+      --danger: #e0796a;
+      --ok: #7fa984;
+      --radius: 18px;
+      --radius-sm: 12px;
     }
-    * { box-sizing: border-box; }
-    html, body { min-height: 100%; }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; }
     body {
       margin: 0;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
       background:
-        linear-gradient(180deg, rgba(11,13,11,.62), rgba(11,13,11,.96)),
-        url("/sentero-logo.jpg") center top / min(920px, 160vw) auto no-repeat,
-        var(--page);
-      color: var(--surface);
-    }
-    button, input, select { font: inherit; }
-    .shell {
-      width: min(920px, 100%);
-      min-height: 100svh;
-      margin: 0 auto;
-      padding: 24px;
-      display: grid;
-      grid-template-columns: minmax(0, .95fr) minmax(320px, 1.05fr);
-      gap: 24px;
-      align-items: end;
-    }
-    .brand {
-      min-height: 440px;
-      display: flex;
-      flex-direction: column;
-      justify-content: flex-end;
-      padding-bottom: 18px;
-    }
-    .brand img {
-      width: min(320px, 72vw);
-      height: auto;
-      display: block;
-      margin-bottom: 22px;
-    }
-    .kicker {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-bottom: 16px;
-    }
-    .kicker span {
-      border: 1px solid rgba(244, 241, 232, .25);
-      background: rgba(244, 241, 232, .08);
-      border-radius: 999px;
-      padding: 6px 10px;
-      font-size: 13px;
-      color: rgba(244, 241, 232, .86);
-    }
-    h1 {
-      margin: 0;
-      font-size: 42px;
-      line-height: 1.04;
-      font-weight: 680;
-      letter-spacing: 0;
-    }
-    .brand p {
-      margin: 14px 0 0;
-      max-width: 34rem;
-      color: rgba(244, 241, 232, .76);
-      line-height: 1.55;
-    }
-    .panel {
-      background: var(--surface);
+        radial-gradient(120% 90% at 15% -10%, #16241a 0%, transparent 60%),
+        radial-gradient(120% 90% at 100% 110%, #17251b 0%, transparent 55%),
+        var(--bg);
       color: var(--ink);
-      border-radius: var(--radius);
-      border: 1px solid rgba(255,255,255,.18);
-      box-shadow: 0 20px 60px rgba(0,0,0,.30);
+      display: flex;
+      min-height: 100svh;
+      align-items: center;
+      justify-content: center;
       padding: 20px;
     }
-    .panel-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 18px;
-    }
-    .panel-title {
-      margin: 0;
-      font-size: 20px;
-      line-height: 1.2;
-      font-weight: 700;
-    }
-    .state {
-      min-width: 76px;
-      text-align: center;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      color: var(--accent-dark);
-      padding: 6px 10px;
-      font-size: 12px;
-      font-weight: 700;
-    }
-    label {
-      display: block;
-      margin: 14px 0 7px;
-      color: #344336;
-      font-size: 13px;
-      font-weight: 700;
-    }
-    input, select {
-      width: 100%;
-      min-height: 46px;
+    button, input { font: inherit; color: inherit; }
+    .wrap { width: 100%; max-width: 400px; animation: rise .45s ease both; }
+    @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+    .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+    .brand img { width: 40px; height: 40px; border-radius: 10px; display: block; object-fit: cover; flex-shrink: 0; }
+    .brand h1 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -.01em; }
+    .brand p { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      backdrop-filter: blur(20px);
       border-radius: var(--radius);
-      border: 1px solid var(--line);
-      background: #fffdf7;
-      color: var(--ink);
-      padding: 0 12px;
-      outline: none;
+      padding: 18px;
     }
-    input:focus, select:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(111, 143, 115, .22);
+    .card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+    .card-head h2 { margin: 0; font-size: 14px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 12px; font-weight: 600; color: var(--muted);
+      border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px 4px 8px;
     }
-    .row {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 8px;
-      align-items: center;
-    }
-    .ghost, .toggle {
-      min-height: 46px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: #eef0e8;
-      color: #253227;
-      padding: 0 13px;
-      cursor: pointer;
-    }
-    .ghost:disabled, .toggle:disabled {
-      opacity: .62;
-      cursor: wait;
-    }
-    .password {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 8px;
-    }
-    .primary {
-      width: 100%;
-      min-height: 48px;
-      margin-top: 18px;
-      border: 0;
-      border-radius: var(--radius);
-      background: var(--accent-dark);
-      color: #fff;
-      font-weight: 780;
-      cursor: pointer;
-    }
-    .primary:disabled {
-      opacity: .68;
-      cursor: wait;
-    }
-    .message {
-      min-height: 22px;
-      margin: 12px 0 0;
-      color: var(--muted);
-      font-size: 14px;
-      line-height: 1.45;
-    }
-    .message.error { color: var(--danger); }
-    .networks {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
-      margin-top: 10px;
-    }
+    .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); transition: background .2s; }
+    .badge.busy .dot { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+    .badge.ok .dot { background: var(--ok); }
+    .badge.err .dot { background: var(--danger); }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+    .networks { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
     .network {
-      min-height: 42px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: #fffdf7;
-      color: var(--ink);
-      padding: 8px 10px;
-      cursor: pointer;
-      text-align: left;
-      overflow: hidden;
+      display: flex; align-items: center; gap: 10px;
+      width: 100%; text-align: left;
+      background: var(--field); border: 1px solid transparent; border-radius: var(--radius-sm);
+      padding: 11px 12px; cursor: pointer; transition: border-color .15s, background .15s;
     }
-    .network strong {
-      display: block;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-size: 14px;
+    .network:active { transform: scale(.99); }
+    .network.selected { border-color: var(--accent); background: rgba(127,169,132,.14); }
+    .network svg.sig { flex-shrink: 0; }
+    .network .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 500; }
+    .network svg.lock { flex-shrink: 0; opacity: .55; }
+
+    .skeleton { height: 42px; border-radius: var(--radius-sm); background: linear-gradient(90deg, var(--field) 25%, rgba(255,255,255,.1) 37%, var(--field) 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; }
+    @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+
+    .hint { margin: 10px 2px 0; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+
+    .scan-link { background: none; border: 0; color: var(--accent); font-size: 13px; font-weight: 600; padding: 8px 2px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+    .scan-link:disabled { opacity: .5; cursor: wait; }
+    .scan-link svg { transition: transform .5s ease; }
+    .scan-link.spinning svg { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    hr.sep { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+
+    label { display: block; font-size: 12.5px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+    .field { margin-bottom: 12px; }
+    input[type="text"], input[type="password"] {
+      width: 100%; min-height: 46px; border-radius: var(--radius-sm);
+      border: 1px solid var(--line); background: var(--field); color: var(--ink);
+      padding: 0 13px; outline: none; transition: border-color .15s, background .15s;
     }
-    .network span {
-      display: block;
-      color: var(--muted);
-      font-size: 12px;
-      margin-top: 2px;
+    input::placeholder { color: #6b756a; }
+    input:focus { border-color: var(--accent); background: rgba(127,169,132,.09); }
+
+    .pw-row { position: relative; }
+    .pw-row input { padding-right: 44px; }
+    .icon-btn {
+      position: absolute; right: 4px; top: 4px; bottom: 4px; width: 38px;
+      display: flex; align-items: center; justify-content: center;
+      background: none; border: 0; border-radius: 9px; color: var(--muted); cursor: pointer;
     }
-    .meta {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 16px;
-      color: var(--muted);
-      font-size: 12px;
+    .icon-btn:active { background: rgba(255,255,255,.08); }
+
+    .primary {
+      width: 100%; min-height: 48px; margin-top: 4px; border: 0; border-radius: var(--radius-sm);
+      background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 15px;
+      cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+      transition: opacity .15s, transform .1s;
     }
-    .meta span {
-      border-top: 1px solid var(--line);
-      padding-top: 8px;
-      min-width: 0;
-    }
-    @media (max-width: 760px) {
-      .shell {
-        padding: 16px;
-        grid-template-columns: 1fr;
-        align-items: stretch;
-      }
-      .brand {
-        min-height: 300px;
-        padding-top: 72px;
-      }
-      h1 { font-size: 34px; }
-      .panel { padding: 16px; }
-      .networks { grid-template-columns: 1fr; }
-      .row, .password { grid-template-columns: 1fr; }
-    }
+    .primary:active { transform: scale(.99); }
+    .primary:disabled { opacity: .55; cursor: wait; }
+    .spinner { width: 15px; height: 15px; border-radius: 50%; border: 2px solid rgba(11,20,12,.3); border-top-color: var(--accent-ink); animation: spin .7s linear infinite; display: none; }
+    .primary.loading .spinner { display: inline-block; }
+    .primary.loading .btn-label { opacity: .85; }
+
+    .message { min-height: 18px; margin: 10px 2px 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .message.error { color: var(--danger); }
+    .message.ok { color: var(--ok); }
+
+    .meta { display: flex; justify-content: space-between; gap: 10px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 11.5px; color: #5c675a; }
+    .meta span:last-child { text-align: right; }
   </style>
 </head>
 <body>
-  <main class="shell">
-    <section class="brand">
-      <img src="/sentero-logo.jpg" alt="Sentero">
-      <h1>WLAN einrichten</h1>
-      <p>Verbinde den Praesenzsensor mit deinem Heimnetz.</p>
-    </section>
+  <div class="wrap">
+    <div class="brand">
+      <img src="/sentero-logo.png" alt="Sentero" width="40" height="40">
+      <div>
+        <h1>WLAN einrichten</h1>
+        <p>Verbinde den Sensor mit deinem Heimnetz</p>
+      </div>
+    </div>
 
-    <section class="panel" aria-label="WLAN Setup">
-      <div class="panel-head">
-        <h2 class="panel-title">Netzwerk</h2>
-        <span class="state" id="state">Bereit</span>
+    <section class="card" aria-label="WLAN Setup">
+      <div class="card-head">
+        <h2>Netzwerke</h2>
+        <span class="badge" id="state"><span class="dot"></span><span id="stateText">Lädt</span></span>
       </div>
 
-      <form id="wifiForm" action="/wifisave" method="get">
-        <label for="ssid">SSID</label>
-        <div class="row">
-          <select id="networkSelect" aria-label="Gefundene Netzwerke">
-            <option value="">Netzwerk waehlen</option>
-          </select>
-          <button class="ghost" type="button" id="refresh">Scan</button>
+      <div class="networks" id="networkList">
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+      </div>
+      <p class="hint" id="scanHint"></p>
+      <button type="button" class="scan-link" id="refresh">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v5h-5"/></svg>
+        Erneut scannen
+      </button>
+
+      <hr class="sep">
+
+      <form id="wifiForm" novalidate>
+        <div class="field">
+          <label for="ssid">SSID</label>
+          <input id="ssid" name="ssid" type="text" autocomplete="username" required placeholder="Netzwerkname">
+        </div>
+        <div class="field">
+          <label for="psk">Passwort</label>
+          <div class="pw-row">
+            <input id="psk" name="psk" type="password" autocomplete="current-password" placeholder="WLAN Passwort">
+            <button type="button" class="icon-btn" id="togglePass" aria-label="Passwort anzeigen">
+              <svg id="eyeIcon" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
         </div>
 
-        <input id="ssid" name="ssid" autocomplete="username" required placeholder="SSID">
-
-        <label for="psk">Passwort</label>
-        <div class="password">
-          <input id="psk" name="psk" type="password" autocomplete="current-password" placeholder="WLAN Passwort">
-          <button class="toggle" type="button" id="togglePass">Anzeigen</button>
-        </div>
-
-        <button class="primary" type="submit" id="submit">Verbinden</button>
-        <p class="message" id="message" role="status"></p>
+        <button class="primary" type="submit" id="submit">
+          <span class="spinner"></span>
+          <span class="btn-label">Verbinden</span>
+        </button>
+        <p class="message" id="message" role="status" aria-live="polite"></p>
       </form>
 
-      <div class="networks" id="networkList"></div>
       <div class="meta">
         <span id="deviceName">Sensor</span>
         <span id="deviceMac">MAC wird geladen</span>
       </div>
     </section>
-  </main>
+  </div>
 
   <script>
     const $ = (id) => document.getElementById(id);
     const form = $("wifiForm");
     const ssid = $("ssid");
     const psk = $("psk");
-    const select = $("networkSelect");
     const list = $("networkList");
+    const hint = $("scanHint");
     const message = $("message");
     const state = $("state");
+    const stateText = $("stateText");
     const submit = $("submit");
     const refresh = $("refresh");
+    const eyeIcon = $("eyeIcon");
 
-    function setMessage(text, error = false) {
+    const EYE_OPEN = eyeIcon.innerHTML;
+    const EYE_OFF = '<path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 7 11 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61C3.36 8.64 1 12 1 12s4 7 11 7a9.26 9.26 0 0 0 5.39-1.61"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/>';
+
+    function setState(text, mode) {
+      stateText.textContent = text;
+      state.className = "badge" + (mode ? " " + mode : "");
+    }
+    function setMessage(text, mode) {
       message.textContent = text;
-      message.className = error ? "message error" : "message";
+      message.className = "message" + (mode ? " " + mode : "");
     }
 
-    function quality(rssi) {
-      if (rssi >= -55) return "Sehr stark";
-      if (rssi >= -67) return "Stark";
-      if (rssi >= -75) return "Mittel";
-      return "Schwach";
+    function signalIcon(rssi) {
+      const bars = rssi >= -55 ? 4 : rssi >= -67 ? 3 : rssi >= -75 ? 2 : 1;
+      let s = '<svg class="sig" width="16" height="16" viewBox="0 0 20 16" fill="none">';
+      for (let i = 0; i < 4; i++) {
+        const h = 4 + i * 3.6, x = i * 5, y = 16 - h;
+        s += `<rect x="${x}" y="${y}" width="3.4" height="${h}" rx="1" fill="${i < bars ? 'var(--accent)' : 'var(--line)'}"/>`;
+      }
+      return s + "</svg>";
     }
+    const LOCK_ICON = '<svg class="lock" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
 
-    function chooseNetwork(name) {
+    function chooseNetwork(name, el) {
       ssid.value = name;
-      select.value = name;
+      document.querySelectorAll(".network.selected").forEach((n) => n.classList.remove("selected"));
+      if (el) el.classList.add("selected");
       psk.focus();
     }
 
     async function loadConfig() {
-      state.textContent = "Scan";
       try {
         const response = await fetch("/config.json", { cache: "no-store" });
         if (!response.ok) throw new Error("scan_failed");
@@ -390,88 +310,81 @@ class SenteroCaptivePortal : public AsyncWebHandler, public esphome::Component {
           .filter((ap) => ap && ap.ssid)
           .sort((a, b) => (b.rssi || -100) - (a.rssi || -100));
 
-        select.innerHTML = '<option value="">Netzwerk waehlen</option>';
         list.innerHTML = "";
-
         aps.forEach((ap) => {
-          const option = document.createElement("option");
-          option.value = ap.ssid;
-          option.textContent = ap.ssid;
-          select.appendChild(option);
-
           const button = document.createElement("button");
           button.type = "button";
           button.className = "network";
-          button.innerHTML = `<strong></strong><span>${quality(ap.rssi)} · ${ap.lock ? "gesichert" : "offen"}</span>`;
-          button.querySelector("strong").textContent = ap.ssid;
-          button.addEventListener("click", () => chooseNetwork(ap.ssid));
+          button.innerHTML = `${signalIcon(ap.rssi || -100)}<span class="name"></span>${ap.lock ? LOCK_ICON : ""}`;
+          button.querySelector(".name").textContent = ap.ssid;
+          button.addEventListener("click", () => chooseNetwork(ap.ssid, button));
           list.appendChild(button);
         });
 
-        state.textContent = aps.length ? `${aps.length} WLAN` : "Manuell";
-        if (!aps.length) {
-          setMessage("Keine Netzwerke gefunden. Scan erneut starten oder SSID manuell eintragen.");
+        if (aps.length) {
+          setState(`${aps.length} gefunden`, "ok");
+          hint.textContent = "";
         } else {
-          setMessage("");
+          setState("Manuell", "err");
+          hint.textContent = "Keine Netzwerke gefunden. Erneut scannen oder SSID unten manuell eintragen.";
         }
       } catch (err) {
-        state.textContent = "Manuell";
-        setMessage("Scan nicht verfuegbar. SSID manuell eintragen.", true);
+        setState("Manuell", "err");
+        list.innerHTML = "";
+        hint.textContent = "Scan nicht verfügbar. SSID unten manuell eintragen.";
       }
     }
 
     async function startScan() {
       refresh.disabled = true;
-      state.textContent = "Scan";
-      setMessage("Scan laeuft. Die Verbindung zum Setup-WLAN kann kurz pausieren...");
+      refresh.classList.add("spinning");
+      setState("Scan läuft", "busy");
+      hint.textContent = "Scan läuft, die Verbindung zum Setup-WLAN kann kurz pausieren...";
       try {
         const response = await fetch("/scan.json", { cache: "no-store" });
         if (!response.ok) throw new Error("scan_start_failed");
         await new Promise((resolve) => setTimeout(resolve, 4500));
         await loadConfig();
       } catch (err) {
-        state.textContent = "Manuell";
-        setMessage("Scan konnte nicht gestartet werden. SSID manuell eintragen.", true);
+        setState("Manuell", "err");
+        hint.textContent = "Scan konnte nicht gestartet werden. SSID unten manuell eintragen.";
       } finally {
         refresh.disabled = false;
+        refresh.classList.remove("spinning");
       }
     }
-
-    select.addEventListener("change", () => {
-      if (select.value) chooseNetwork(select.value);
-    });
 
     refresh.addEventListener("click", startScan);
 
     $("togglePass").addEventListener("click", () => {
       const hidden = psk.type === "password";
       psk.type = hidden ? "text" : "password";
-      $("togglePass").textContent = hidden ? "Ausblenden" : "Anzeigen";
+      eyeIcon.innerHTML = hidden ? EYE_OFF : EYE_OPEN;
+      $("togglePass").setAttribute("aria-label", hidden ? "Passwort verbergen" : "Passwort anzeigen");
     });
 
     form.addEventListener("submit", async (event) => {
       if (!window.fetch) return;
       event.preventDefault();
       if (!ssid.value.trim()) {
-        setMessage("SSID fehlt.", true);
+        setMessage("SSID fehlt.", "error");
         ssid.focus();
         return;
       }
 
       submit.disabled = true;
-      state.textContent = "Speichert";
+      submit.classList.add("loading");
       setMessage("WLAN wird gespeichert...");
 
       const params = new URLSearchParams({ ssid: ssid.value.trim(), psk: psk.value });
       try {
         const response = await fetch(`/wifisave?${params.toString()}`, { cache: "no-store" });
         if (!response.ok) throw new Error("save_failed");
-        state.textContent = "Gespeichert";
-        setMessage("Gespeichert. Der Sensor verbindet sich jetzt neu.");
+        setMessage("Gespeichert. Der Sensor verbindet sich jetzt neu.", "ok");
       } catch (err) {
-        state.textContent = "Fehler";
         submit.disabled = false;
-        setMessage("Speichern fehlgeschlagen.", true);
+        submit.classList.remove("loading");
+        setMessage("Speichern fehlgeschlagen.", "error");
       }
     });
 
@@ -496,6 +409,12 @@ class SenteroCaptivePortal : public AsyncWebHandler, public esphome::Component {
       }
     }
     stream->print('"');
+  }
+
+  void handle_index_(AsyncWebServerRequest *request) {
+    auto *response = request->beginResponse(200, ESPHOME_F("text/html"), INDEX_HTML);
+    response->addHeader(ESPHOME_F("cache-control"), ESPHOME_F("public, max-age=0, must-revalidate"));
+    request->send(response);
   }
 
   void handle_config_(AsyncWebServerRequest *request) {
@@ -562,18 +481,12 @@ class SenteroCaptivePortal : public AsyncWebHandler, public esphome::Component {
   }
 
   void handle_logo_(AsyncWebServerRequest *request) {
-    auto *response = request->beginResponse(200, ESPHOME_F("image/jpeg"),
-                                            SENTERO_PORTAL_LOGO_JPG,
-                                            SENTERO_PORTAL_LOGO_JPG_SIZE);
+    auto *response = request->beginResponse(
+        200,
+        ESPHOME_F("image/png"),
+        SENTERO_PORTAL_LOGO_PNG,
+        SENTERO_PORTAL_LOGO_PNG_SIZE);
     response->addHeader(ESPHOME_F("cache-control"), ESPHOME_F("public, max-age=31536000, immutable"));
-    request->send(response);
-  }
-
-  void handle_index_(AsyncWebServerRequest *request) {
-    auto *response = request->beginResponse(200, ESPHOME_F("text/html"),
-                                            reinterpret_cast<const uint8_t *>(INDEX_HTML),
-                                            std::strlen(INDEX_HTML));
-    response->addHeader(ESPHOME_F("cache-control"), ESPHOME_F("public, max-age=0, must-revalidate"));
     request->send(response);
   }
 };
