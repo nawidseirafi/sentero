@@ -197,13 +197,13 @@ http://<sensor-ip>/api/provision
 
 ## 10. MQTT-Topics pruefen
 
-Die echte Device-ID wird aus der MAC-Adresse gebildet. Beispiel:
+Die echte Device-ID ist eine vom Sensor erzeugte UUID. Beispiel:
 
 ```text
-c1001-b16c33e0
+7f1efc3b-8cf8-4f41-9e8f-7ed6a3f0d112
 ```
 
-Nicht auf die Beispiel-ID `c1001-a1b2c3d4` hoeren, sondern auf die echte ID:
+Nicht auf Beispielwerte hoeren, sondern auf die echte UUID des Sensors:
 
 ```bash
 mosquitto_sub -h 192.168.178.143 -p 1883 -u sentero -P 'DEIN_PASSWORT' -t 'sentero/#' -v

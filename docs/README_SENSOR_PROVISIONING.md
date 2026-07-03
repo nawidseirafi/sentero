@@ -161,7 +161,7 @@ Payload:
 {
   "type": "sentero-discovery",
   "protocol": 1,
-  "device_id": "c1001-b16c33e0",
+  "device_id": "7f1efc3b-8cf8-4f41-9e8f-7ed6a3f0d112",
   "model": "C1001",
   "firmware": "1.0.0",
   "sensor_type": "presence_radar",
@@ -175,10 +175,11 @@ Payload:
 }
 ```
 
-Die `device_id` ist MAC-basiert im Format `c1001-<4-mac-bytes>`. Der
-Platzhalter `c1001-a1b2c3d4` wird von der Firmware nicht als echte ID
-uebernommen; wenn er im Provisioning-Request auftaucht, verwendet der Sensor
-seine eigene MAC-basierte ID.
+Die `device_id` ist eine UUIDv4, die der Sensor beim ersten Start erzeugt und
+im NVS als `device_uuid` speichert. Sie bleibt ueber normale Neustarts stabil.
+Ein Factory Reset loescht diese UUID; danach erzeugt der Sensor beim naechsten
+Start eine neue ID. Falls im Provisioning-Request keine `device_id` enthalten
+ist, verwendet der Sensor seine eigene UUID.
 
 Sentero speichert daraus intern:
 

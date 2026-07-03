@@ -1821,7 +1821,7 @@ def mqtt_identity_values(item: dict[str, Any]) -> set[str]:
         values.add(slug_identity(raw))
         if '/' in raw:
             tail = raw.rsplit('/', 1)[-1].strip()
-            if tail:
+            if tail and tail.lower() not in {'state', 'availability', 'status', 'command'}:
                 values.add(tail)
                 values.add(tail.lower())
                 values.add(slug_identity(tail))

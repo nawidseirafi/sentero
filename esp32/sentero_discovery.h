@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_wifi.h"
 #include "mqtt_client.h"
 #include "nvs.h"
@@ -62,18 +63,57 @@ inline void sentero_nvs_put_string(nvs_handle_t handle, const char *key, const c
   nvs_set_str(handle, key, value == nullptr ? "" : value);
 }
 
-inline String sentero_default_device_id() {
+inline String sentero_uuid_from_bytes(const uint8_t bytes[16]) {
+  char uuid[37];
+  snprintf(uuid, sizeof(uuid),
+           "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+           bytes[0], bytes[1], bytes[2], bytes[3],
+           bytes[4], bytes[5],
+           bytes[6], bytes[7],
+           bytes[8], bytes[9],
+           bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
+  return String(uuid);
+}
+
+inline String sentero_mac_fallback_uuid() {
   uint8_t mac[6];
   get_mac_address_raw(mac);
 
-  char device_id[24];
-  snprintf(device_id, sizeof(device_id), "c1001-%02x%02x%02x%02x",
-           mac[2], mac[3], mac[4], mac[5]);
-  return String(device_id);
+  uint8_t bytes[16] = {
+    mac[0], mac[1], mac[2], mac[3],
+    mac[4], mac[5], 0xc1, 0x01,
+    0x50, 0x01, 0xc1, 0x00,
+    0x00, 0x00, mac[4], mac[5],
+  };
+  bytes[6] = (bytes[6] & 0x0F) | 0x50;
+  bytes[8] = (bytes[8] & 0x3F) | 0x80;
+  return sentero_uuid_from_bytes(bytes);
 }
 
-inline bool sentero_is_placeholder_device_id(const String &device_id) {
-  return device_id.length() == 0 || device_id == "c1001-a1b2c3d4";
+inline String sentero_default_device_id() {
+  String stored = sentero_nvs_get_string("device_uuid", "");
+  stored.trim();
+  if (stored.length() == 36) return stored;
+
+  uint8_t bytes[16];
+  esp_fill_random(bytes, sizeof(bytes));
+  bytes[6] = (bytes[6] & 0x0F) | 0x40;
+  bytes[8] = (bytes[8] & 0x3F) | 0x80;
+  String uuid = sentero_uuid_from_bytes(bytes);
+
+  nvs_handle_t handle;
+  if (nvs_open(SENTERO_NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+    sentero_nvs_put_string(handle, "device_uuid", uuid.c_str());
+    nvs_commit(handle);
+    nvs_close(handle);
+    return uuid;
+  }
+
+  return sentero_mac_fallback_uuid();
+}
+
+inline bool sentero_is_missing_device_id(const String &device_id) {
+  return device_id.length() == 0;
 }
 
 class SenteroDiscovery {
@@ -271,7 +311,7 @@ class SenteroProvisioning : public AsyncWebHandler {
     String device_id = device["device_id"] | "";
     if (device_id.length() == 0) device_id = doc["device_id"] | "";
     device_id.trim();
-    if (sentero_is_placeholder_device_id(device_id)) device_id = sentero_default_device_id();
+    if (sentero_is_missing_device_id(device_id)) device_id = sentero_default_device_id();
     const char *friendly_name = device["friendly_name"] | "";
     if (strlen(friendly_name) == 0) friendly_name = device["display_name"] | "";
     if (strlen(friendly_name) == 0) friendly_name = doc["friendly_name"] | "";
