@@ -485,7 +485,7 @@ class SenteroCaptivePortal : public AsyncWebHandler, public esphome::Component {
         200,
         ESPHOME_F("image/png"),
         SENTERO_PORTAL_LOGO_PNG,
-        SENTERO_PORTAL_LOGO_PNG_SIZE);
+        SENTERO_PORTAL_LOGO_PNG_LEN);
     response->addHeader(ESPHOME_F("cache-control"), ESPHOME_F("public, max-age=31536000, immutable"));
     request->send(response);
   }
