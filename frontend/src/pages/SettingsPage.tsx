@@ -6,6 +6,9 @@ import { UpdatePanel } from '../components/UpdatePanel';
 import { useSenteroAuth } from '../auth/SenteroAuthContext';
 import type { SenteroSettingsTab } from '../routes/routes';
 import { senteroRouteToPath } from '../routes/routes';
+import ThumbUpIcon from '@mui/icons-material/ThumbUp';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
+import DirectionsRunIcon from '@mui/icons-material/DirectionsRun';
 
 const roomLabels: Record<string, string> = {
   living_room: 'Wohnzimmer',
@@ -614,7 +617,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                       <strong>{roomLabels[room] || room}</strong>
                       <small>{roomSensors.length} Sensoren verbunden</small>
                     </div>
-                    <button className="sc-room-delete" type="button" onClick={(event) => { event.preventDefault(); void deleteRoom(room); }}><Trash2 size={18} /> Löschen</button>
+                    <button className="sc-room-delete" type="button" onClick={(event) => { event.preventDefault(); void deleteRoom(room); }}><Trash2 size={18} /></button>
                   </summary>
                   <div className="sc-sensor-settings-list">
                     {roomSensors.length === 0 && <p className="sc-muted-note">Für diesen Raum ist noch kein Sensor verbunden.</p>}
@@ -656,9 +659,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                               <span aria-hidden="true" />
                             </button>
                           )}
-                          <button type="button" onClick={() => void renameSensor(sensor)}><Pencil size={18} /> Name</button>
-                          <button type="button" onClick={() => void testSensor(sensor.role)}><Wifi size={18} /> Test</button>
-                          <button type="button" onClick={() => void deleteSensor(sensor)}><Trash2 size={18} /> Löschen</button>
+                          <button type="button" onClick={() => void renameSensor(sensor)}><Pencil size={18} /> </button>
+                          <button type="button" onClick={() => void testSensor(sensor.role)}><Wifi size={18} /> </button>
+                          <button type="button" onClick={() => void deleteSensor(sensor)}><Trash2 size={18} /> </button>
                         </div>
                       </div>
                     ))}
@@ -704,32 +707,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                   <input type="password" value={boxNetworkForm.password} onChange={(event) => setBoxNetworkForm((value) => ({ ...value, password: event.target.value }))} placeholder={boxNetworkStatus?.wifi_configured ? 'Gespeichert' : 'Passwort'} />
                 </label>
               </div>
-              <p className="sc-network-note">Im Development werden diese Daten nur gespeichert. Die Netzwerkverbindung dieses Rechners wird nicht verändert.</p>
+
               <footer className="sc-account-actions">
                 <button className="sc-soft-action primary" type="button" onClick={() => void saveBoxNetwork()}><Save size={18} /> Verbinden</button>
-              </footer>
-            </div>
-
-            <div className="sc-network-card">
-              <div className="sc-network-card-head">
-                <div>
-                  <h3>Sensoren</h3>
-                  <p>Diese Angaben nutzt Sentero, um WLAN-Sensoren automatisch mit Ihrem Zuhause zu verbinden.</p>
-                </div>
-              </div>
-              <div className="sc-form-grid">
-                <label>
-                  WLAN-Name
-                  <input value={networkForm.wifi_ssid} onChange={(event) => setNetworkForm((value) => ({ ...value, wifi_ssid: event.target.value }))} placeholder="Mein WLAN" />
-                </label>
-                <label>
-                  WLAN-Passwort
-                  <input type="password" value={networkForm.wifi_password} onChange={(event) => setNetworkForm((value) => ({ ...value, wifi_password: event.target.value }))} placeholder={networkStatus?.wifi_password_set ? 'Gespeichert' : 'Passwort'} />
-                </label>
-              </div>
-              <footer className="sc-account-actions">
-                <button className="sc-soft-action" type="button" onClick={() => void testNetwork()}><Wifi size={18} /> Testen</button>
-                <button className="sc-soft-action primary" type="button" onClick={() => void saveNetwork()}><Save size={18} /> Speichern</button>
               </footer>
             </div>
           </div>
@@ -788,8 +768,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                     <small>{contact.email || 'Keine E-Mail hinterlegt'}</small>
                     <div className="sc-contact-channel-list">{normalizeChannels(contact.preferred_channels).map((channel) => <span key={channel}>{channelLabel(channel)}</span>)}</div>
                     <footer>
-                      <button type="button" onClick={() => startEditContact(contact)}><Pencil size={18} /> Bearbeiten</button>
-                      <button type="button" onClick={() => void deleteContact(contact.id)}><Trash2 size={18} /> Löschen</button>
+                      <button type="button" onClick={() => startEditContact(contact)}><Pencil size={18} /> </button>
+                      <button type="button" onClick={() => void deleteContact(contact.id)}><Trash2 size={18} /> </button>
                     </footer>
                   </>
                 )}
@@ -1168,9 +1148,9 @@ function DoorContactStatus({ sensor }: { sensor: SenteroSensorRole }) {
 function C1001Telemetry({ sensor }: { sensor: SenteroSensorRole }) {
   return (
     <>
-      <span className={sensor.presence ? 'presence active' : 'presence inactive'}>presence: {formatBoolean(sensor.presence)}</span>
-      <span className={sensor.fall_detected ? 'fall detected' : 'fall clear'}>fall_detected: {formatBoolean(sensor.fall_detected)}</span>
-      <span className="motion">motion: {sensor.motion || 'unbekannt'}</span>
+      <span className={sensor.presence ? 'presence active' : 'presence inactive'}><ThumbUpIcon fontSize="small" /> presence: {formatBoolean(sensor.presence)}</span>
+      <span className={sensor.fall_detected ? 'fall detected' : 'fall clear'}><WarningAmberIcon fontSize="small" /> fall_detected: {formatBoolean(sensor.fall_detected)}</span>
+      <span className="motion"><DirectionsRunIcon fontSize="small" /> motion: {sensor.motion || 'unbekannt'}</span>
     </>
   );
 }

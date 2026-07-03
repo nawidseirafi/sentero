@@ -180,13 +180,13 @@ Danach Firmware neu flashen:
 Nach einem Factory-Reset sollte der Setup-Hotspot erscheinen:
 
 ```text
-C1001 mmWave Setup
+Sentero-mmWave
 ```
 
 Passwort:
 
 ```text
-c1001setup
+senteroSetup
 ```
 
 Der Provisioning-Endpunkt laeuft danach auf dem Sensor:

@@ -42,6 +42,9 @@ npm install
 npm run dev
 ```
 
+Frontend dependencies such as MUI, Emotion and QR code rendering are managed
+through `frontend/package.json`, not `requirements.txt`.
+
 Open `http://localhost:5173`.
 
 ## Docker

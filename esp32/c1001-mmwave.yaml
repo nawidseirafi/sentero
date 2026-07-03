@@ -51,8 +51,8 @@ http_request:
 wifi:
   reboot_timeout: 0s
   ap:
-    ssid: "C1001 mmWave Setup"
-    password: "c1001setup"
+    ssid: "Sentero-mmWave"
+    password: "senteroSetup"
     ap_timeout: 0s
 
 captive_portal:
@@ -244,7 +244,7 @@ number:
           c1001_set_fall_sensitivity(x);
 
 interval:
-  - interval: 1s
+  - interval: 500ms
     then:
       - lambda: |-
           c1001_update(id(c1001_uart), id(c1001_presence), id(c1001_fall),

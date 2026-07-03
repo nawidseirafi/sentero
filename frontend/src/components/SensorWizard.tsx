@@ -1,5 +1,6 @@
-import { Check, Loader2, Radio, Search, ShieldCheck, Wifi } from 'lucide-react';
+import { Check, Loader2, Radio, Search, ShieldCheck } from 'lucide-react';
 import type { SenteroDiscoveredSensor } from '@shared/api/client';
+import { SetupWifiQr } from './SetupWifiQr';
 
 export type SensorBinding = {
   id: string;
@@ -83,7 +84,7 @@ function SensorRow({ sensor, state, devMode, onChange, onSearch, onSkip }: {
   const presence = isPresenceBinding(sensor);
   const label = presence ? 'Präsenzsensor' : 'Türsensor';
   const help = presence
-    ? 'Präsenzsensor einschalten. Sentero verbindet ihn automatisch.'
+    ? 'Erkennt, ob sich eine Person im Raum bewegt oder anwesend ist.'
     : 'Erkennt, ob eine Tür oder ein Fenster geöffnet wurde.';
 
   return (
@@ -93,10 +94,14 @@ function SensorRow({ sensor, state, devMode, onChange, onSearch, onSkip }: {
         <strong>{sensor.name || label}</strong>
         <small>{help}</small>
         {presence && (
-          <div className="sc-sensor-preflight">
-            <Wifi size={17} />
-            <span>Bitte verbinden Sie den Sensor zuerst mit Ihrem Heimnetz. Danach kann Sentero ihn hier finden.</span>
-          </div>
+          sensor.status === 'connected' ? (
+              <span/>
+          ) : (
+            <div className="sc-sensor-preflight">
+              <SetupWifiQr compact details={false} />
+              <span>Setup-Hotspot scannen, Captive Portal öffnen und den Sensor mit Ihrem Heimnetz verbinden. Danach kann Sentero ihn hier finden.</span>
+            </div>
+          )
         )}
         <input
           value={sensor.name}

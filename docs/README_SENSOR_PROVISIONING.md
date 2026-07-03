@@ -8,7 +8,7 @@ implementiert**.
 Bereits vorhanden:
 
 - WLAN-Ersteinrichtung ueber den ESP32-Setup-Hotspot
-  `C1001 mmWave Setup` mit Passwort `c1001setup`
+  `Sentero-mmWave` mit Passwort `senteroSetup`
 - Captive-Portal-UI mit WLAN-Scan und manuellem SSID-Fallback
 - UDP-Discovery im Heimnetz auf Port `37020`
 - HTTP-Provisioning auf dem Sensor:
@@ -38,7 +38,7 @@ die Firmware uebernehmen die komplette Einrichtung.
 Sensor einschalten
         |
         v
-Mit Setup-WLAN "C1001 mmWave Setup" verbinden
+Mit Setup-WLAN "Sentero-mmWave" verbinden
         |
         v
 Captive Portal oeffnen
@@ -85,8 +85,8 @@ Solange der Sensor noch nicht im Heimnetz ist, stellt die ESP32-Firmware einen
 Setup-Hotspot bereit:
 
 ``` text
-SSID:     C1001 mmWave Setup
-Passwort: c1001setup
+SSID:     Sentero-mmWave
+Passwort: senteroSetup
 ```
 
 Das Captive Portal laeuft auf Port `80` und liefert die Sentero-Setup-UI aus.
