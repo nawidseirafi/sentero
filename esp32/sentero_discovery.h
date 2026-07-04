@@ -20,7 +20,7 @@ static constexpr const char *SENTERO_LOG_TAG = "sentero";
 static constexpr const char *SENTERO_MANUFACTURER = "Sentero";
 static constexpr const char *SENTERO_DEVICE_MODEL = "C1001";
 static constexpr const char *SENTERO_SENSOR_TYPE = "presence_radar";
-static constexpr const char *SENTERO_FIRMWARE_VERSION = "1.0.0";
+static constexpr const char *SENTERO_FIRMWARE_VERSION = "1.0.1";
 
 inline bool sentero_nvs_get_bool(const char *key, bool fallback = false) {
   nvs_handle_t handle;
@@ -705,6 +705,8 @@ class SenteroProvisioning : public AsyncWebHandler {
   bool apply_configure_command_(const Config &config, JsonObjectConst root, const char *command) {
     JsonVariantConst settings_value = root["settings"];
     JsonObjectConst settings = settings_value.is<JsonObjectConst>() ? settings_value.as<JsonObjectConst>() : root;
+    JsonVariantConst device_value = root["device"];
+    JsonObjectConst device = device_value.is<JsonObjectConst>() ? device_value.as<JsonObjectConst>() : JsonObjectConst();
 
     bool hp_led = false;
     bool fall_led = false;
@@ -720,6 +722,43 @@ class SenteroProvisioning : public AsyncWebHandler {
     const bool has_unmanned_time = read_number_(settings["unmanned_time"], unmanned_time);
     const bool has_residence_time = read_number_(settings["residence_time"], residence_time);
     const bool has_fall_sensitivity = read_number_(settings["fall_sensitivity"], fall_sensitivity);
+    const bool has_friendly_name =
+        !device["friendly_name"].isNull() || !device["display_name"].isNull() ||
+        !settings["friendly_name"].isNull() || !settings["display_name"].isNull() || !settings["name"].isNull() ||
+        !root["friendly_name"].isNull() || !root["display_name"].isNull() || !root["name"].isNull();
+    const bool has_room_id =
+        !device["room_id"].isNull() || !settings["room_id"].isNull() || !settings["room_hint"].isNull() ||
+        !root["room_id"].isNull() || !root["room_hint"].isNull();
+    String friendly_name;
+    String room_id;
+
+    if (has_friendly_name) {
+      friendly_name = device["friendly_name"] | "";
+      if (friendly_name.length() == 0) friendly_name = device["display_name"] | "";
+      if (friendly_name.length() == 0) friendly_name = settings["friendly_name"] | "";
+      if (friendly_name.length() == 0) friendly_name = settings["display_name"] | "";
+      if (friendly_name.length() == 0) friendly_name = settings["name"] | "";
+      if (friendly_name.length() == 0) friendly_name = root["friendly_name"] | "";
+      if (friendly_name.length() == 0) friendly_name = root["display_name"] | "";
+      if (friendly_name.length() == 0) friendly_name = root["name"] | "";
+      friendly_name.trim();
+      if (friendly_name.length() == 0 || friendly_name.length() > 64) {
+        publish_command_status_(config, command, false, "invalid_friendly_name");
+        return true;
+      }
+    }
+    if (has_room_id) {
+      room_id = device["room_id"] | "";
+      if (room_id.length() == 0) room_id = settings["room_id"] | "";
+      if (room_id.length() == 0) room_id = settings["room_hint"] | "";
+      if (room_id.length() == 0) room_id = root["room_id"] | "";
+      if (room_id.length() == 0) room_id = root["room_hint"] | "";
+      room_id.trim();
+      if (room_id.length() > 64) {
+        publish_command_status_(config, command, false, "invalid_room_id");
+        return true;
+      }
+    }
 
     if (!settings["hp_led"].isNull() && !has_hp_led) {
       publish_command_status_(config, command, false, "invalid_hp_led");
@@ -750,9 +789,20 @@ class SenteroProvisioning : public AsyncWebHandler {
       return true;
     }
     if (!has_hp_led && !has_fall_led && !has_install_height && !has_fall_time &&
-        !has_unmanned_time && !has_residence_time && !has_fall_sensitivity) {
+        !has_unmanned_time && !has_residence_time && !has_fall_sensitivity &&
+        !has_friendly_name && !has_room_id) {
       publish_command_status_(config, command, false, "no_known_settings");
       return true;
+    }
+
+    nvs_handle_t prefs;
+    bool prefs_open = false;
+    if (has_friendly_name || has_room_id) {
+      if (nvs_open(SENTERO_NVS_NAMESPACE, NVS_READWRITE, &prefs) != ESP_OK) {
+        publish_command_status_(config, command, false, "nvs_open_failed");
+        return true;
+      }
+      prefs_open = true;
     }
 
     if (has_hp_led) c1001_set_hp_led(hp_led);
@@ -762,7 +812,26 @@ class SenteroProvisioning : public AsyncWebHandler {
     if (has_unmanned_time) c1001_set_unmanned_time(unmanned_time);
     if (has_residence_time) c1001_set_residence_time(residence_time);
     if (has_fall_sensitivity) c1001_set_fall_sensitivity(fall_sensitivity);
-    publish_command_status_(config, command, true, "settings_applied");
+    if (has_friendly_name) sentero_nvs_put_string(prefs, "friendly", friendly_name.c_str());
+    if (has_room_id) sentero_nvs_put_string(prefs, "room_id", room_id.c_str());
+    if (prefs_open) {
+      esp_err_t commit_result = nvs_commit(prefs);
+      nvs_close(prefs);
+      if (commit_result != ESP_OK) {
+        publish_command_status_(config, command, false, "nvs_commit_failed");
+        return true;
+      }
+    }
+
+    publish_command_status_(config, command, true, "configuration_applied");
+    if (has_friendly_name || has_room_id) {
+      Config updated_config;
+      if (load_config_(updated_config)) {
+        publish_state_(updated_config);
+        last_state_publish_ms_ = millis();
+        last_state_signature_ = state_signature_(c1001_get_snapshot());
+      }
+    }
     return true;
   }
 
@@ -835,6 +904,11 @@ class SenteroProvisioning : public AsyncWebHandler {
 
   void factory_reset_(const Config *config) {
     ESP_LOGW(SENTERO_LOG_TAG, "Factory Reset: Sentero Provisioning-Daten werden geloescht");
+    String preserved_uuid = sentero_nvs_get_string("device_uuid", "");
+    preserved_uuid.trim();
+    if (preserved_uuid.length() != 36 && config != nullptr && config->device_id.length() == 36) {
+      preserved_uuid = config->device_id;
+    }
 
     if (config != nullptr) {
       StaticJsonDocument<160> status;
@@ -850,6 +924,9 @@ class SenteroProvisioning : public AsyncWebHandler {
     nvs_handle_t prefs;
     if (nvs_open(SENTERO_NVS_NAMESPACE, NVS_READWRITE, &prefs) == ESP_OK) {
       nvs_erase_all(prefs);
+      if (preserved_uuid.length() == 36) {
+        sentero_nvs_put_string(prefs, "device_uuid", preserved_uuid.c_str());
+      }
       nvs_commit(prefs);
       nvs_close(prefs);
     }

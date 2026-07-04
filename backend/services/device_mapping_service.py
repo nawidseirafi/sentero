@@ -587,6 +587,21 @@ class DeviceMappingService:
             'message': response.get('message') or ('Kommando ausgeführt' if ok else 'Kommando abgelehnt'),
         }
 
+    def _sync_esp32_role_name(self, role: str, mapped: dict[str, Any], name: str) -> dict[str, Any] | None:
+        source = str(mapped.get('source') or '').strip()
+        if source != 'mqtt':
+            return None
+        device_id = str(mapped.get('device_id') or '').strip()
+        if not device_id:
+            return None
+        return self.send_role_command(role, {
+            'command': 'configure',
+            'friendly_name': name,
+            'device': {
+                'friendly_name': name,
+            },
+        })
+
     def rename_role(self, role: str, name: str) -> dict[str, Any]:
         clean_name = str(name or '').strip()
         if not clean_name:
@@ -609,6 +624,20 @@ class DeviceMappingService:
                 (clean_name, timestamp, role),
             )
             con.commit()
+        device_sync = None
+        try:
+            device_sync = self._sync_esp32_role_name(role, mapped, clean_name)
+        except Exception as exc:
+            device_sync = {'ok': False, 'message': str(exc)}
+            logger.warning(
+                "ESP32 sensor name sync failed role=%s entity=%s name=%s error=%s",
+                role,
+                entity_id,
+                clean_name,
+                exc,
+            )
+        if device_sync is not None:
+            metadata = {**(metadata or {}), 'device_sync': device_sync}
         logger.info(
             "Sentero sensor renamed role=%s entity=%s name=%s metadata=%s",
             role,
