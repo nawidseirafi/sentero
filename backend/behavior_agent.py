@@ -199,13 +199,25 @@ class SenteroBehaviorAgent:
         return [self._row_to_assessment(row) for row in rows]
 
     def timeline_today(self) -> dict[str, Any]:
+        self.record_current_snapshot()
         start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         events = [event for event in self._history(days=1) if self._parse_time(event.get("event_time")) >= start]
+        if events:
+            self._upsert_daily_summary(events, dry_run=False)
         logger.debug("Behavior timeline built", extra={"component": "behavior", "event_count": len(events)})
         return {
             "events": events,
             "assessment": self.latest(),
         }
+
+    def record_current_snapshot(self) -> int:
+        sensor_snapshot = self.mapping.roles(dev=True, include_state=True)
+        try:
+            ha_snapshot = self.mapping.snapshot()
+        except Exception:
+            logger.exception("Behavior live snapshot unavailable", extra={"component": "behavior"})
+            ha_snapshot = []
+        return self._record_snapshot(sensor_snapshot, ha_snapshot)
 
     def _profile(self) -> dict[str, Any]:
         with self.mapping.connect() as con:
@@ -220,7 +232,7 @@ class SenteroBehaviorAgent:
             rows = con.execute("select * from trusted_contacts where active = 1 order by id").fetchall()
         return [dict(row) for row in rows]
 
-    def _record_snapshot(self, roles: list[dict[str, Any]], ha_snapshot: list[dict[str, Any]] | None = None) -> None:
+    def _record_snapshot(self, roles: list[dict[str, Any]], ha_snapshot: list[dict[str, Any]] | None = None) -> int:
         timestamp = now()
         extra_events = self._fp300_snapshot_events(roles, ha_snapshot or [], timestamp)
         written = 0
@@ -229,15 +241,20 @@ class SenteroBehaviorAgent:
                 state = role.get("state")
                 if state in (None, "", "unknown", "unavailable"):
                     continue
+                event_time = role.get("last_changed") or role.get("last_updated") or timestamp
+                role_name = role.get("role")
+                entity_id = role.get("entity_id")
+                if self._event_already_recorded(con, event_time, role_name, entity_id, state):
+                    continue
                 con.execute(
                     """insert into sentero_sensor_events
                        (event_time, role, room, entity_id, state, device_class, source, created_at)
                        values (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        role.get("last_changed") or role.get("last_updated") or timestamp,
-                        role.get("role"),
+                        event_time,
+                        role_name,
                         role.get("room"),
-                        role.get("entity_id"),
+                        entity_id,
                         state,
                         role.get("device_class"),
                         role.get("source") or "snapshot",
@@ -249,13 +266,13 @@ class SenteroBehaviorAgent:
                        (timestamp, sensor_id, sensor_type, room, event_type, metadata)
                        values (?, ?, ?, ?, ?, ?)""",
                     (
-                        role.get("last_changed") or role.get("last_updated") or timestamp,
-                        role.get("entity_id") or role.get("role"),
+                        event_time,
+                        entity_id or role_name,
                         role.get("device_class") or role.get("type") or role.get("domain"),
                         role.get("room"),
                         self._event_type(role),
                         json.dumps({
-                            "role": role.get("role"),
+                            "role": role_name,
                             "state": state,
                             "source": role.get("source") or "snapshot",
                         }, ensure_ascii=False),
@@ -267,6 +284,19 @@ class SenteroBehaviorAgent:
             "Behavior snapshot recorded",
             extra={"component": "behavior", "role_count": len(roles), "extra_event_count": len(extra_events), "written_events": written},
         )
+        return written
+
+    def _event_already_recorded(self, con: Any, event_time: Any, role: Any, entity_id: Any, state: Any) -> bool:
+        row = con.execute(
+            """select id from sentero_sensor_events
+               where event_time = ?
+                 and coalesce(role, '') = coalesce(?, '')
+                 and coalesce(entity_id, '') = coalesce(?, '')
+                 and state = ?
+               limit 1""",
+            (event_time, role, entity_id, state),
+        ).fetchone()
+        return row is not None
 
     def _history(self, days: int) -> list[dict[str, Any]]:
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
@@ -650,7 +680,10 @@ class SenteroBehaviorAgent:
         return assessment
 
     def _build_daily_summary(self, day: date, events: list[dict[str, Any]]) -> dict[str, Any]:
-        parsed = sorted((self._parse_time(event.get("event_time")), event) for event in events)
+        parsed = sorted(
+            ((self._parse_time(event.get("event_time")), event) for event in events),
+            key=lambda item: item[0],
+        )
         activity_times = [event_time for event_time, event in parsed if self._is_activity_event(event)]
         room_usage = Counter(str(event.get("room") or "unknown") for _, event in parsed if self._is_activity_event(event))
         first = activity_times[0] if activity_times else None
