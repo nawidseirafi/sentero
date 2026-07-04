@@ -2,6 +2,7 @@ sentero:
   enabled: true
   behavior:
     learning_days: 14
+    min_usable_days: 7
 
 app:
   dev_mode: false

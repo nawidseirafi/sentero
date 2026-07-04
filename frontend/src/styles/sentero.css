@@ -1292,12 +1292,12 @@ button:disabled {
   border: 1px solid #cde6dc;
   border-radius: 22px;
   display: grid;
-  gap: 14px;
+  gap: 18px;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  padding: 18px;
+  padding: 20px;
 }
 
-.sc-zigbee-intro > span {
+.sc-zigbee-intro-icon {
   align-items: center;
   background: white;
   border-radius: 18px;
@@ -1308,21 +1308,82 @@ button:disabled {
   width: 52px;
 }
 
-.sc-zigbee-intro h3,
-.sc-zigbee-intro p {
+.sc-zigbee-intro-copy {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sc-zigbee-intro-title {
+  display: grid;
+  gap: 4px;
+}
+
+.sc-zigbee-intro-title h3,
+.sc-zigbee-intro-title p {
   margin: 0;
 }
 
-.sc-zigbee-intro p {
-  color: var(--sc-muted);
-  font-size: 1rem;
-  line-height: 1.45;
+.sc-zigbee-intro-title h3 {
+  font-size: clamp(1.35rem, 2vw, 1.75rem);
+  line-height: 1.1;
 }
 
-.sc-zigbee-intro strong {
+.sc-zigbee-intro-title p {
+  color: var(--sc-muted);
+  font-size: 1rem;
+  line-height: 1.35;
+}
+
+.sc-zigbee-intro-notes {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sc-zigbee-intro-notes span {
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(205, 230, 220, 0.9);
+  border-radius: 14px;
+  color: #416b5b;
+  font-size: 0.94rem;
+  font-weight: 750;
+  line-height: 1.35;
+  padding: 10px 12px;
+}
+
+.sc-zigbee-intro-notes strong {
   color: var(--sc-green);
-  font-size: 1.2rem;
-  white-space: nowrap;
+  font-size: inherit;
+}
+
+.sc-zigbee-progress {
+  align-items: center;
+  background: white;
+  border: 1px solid #d7ebe2;
+  border-radius: 18px;
+  color: var(--sc-muted);
+  display: grid;
+  justify-items: center;
+  min-width: 150px;
+  padding: 14px 16px;
+  text-align: center;
+}
+
+.sc-zigbee-progress strong {
+  color: var(--sc-green);
+  font-size: clamp(1.65rem, 2.8vw, 2.3rem);
+  line-height: 1;
+}
+
+.sc-zigbee-progress span {
+  font-size: 0.88rem;
+  font-weight: 850;
+  line-height: 1.2;
+}
+
+.sc-zigbee-progress.complete {
+  border-color: #91ccb5;
 }
 
 .sc-sensor-room h3 {
@@ -3655,6 +3716,18 @@ button:disabled {
   .sc-sensor-row {
     grid-template-columns: 1fr;
   }
+
+  .sc-zigbee-intro {
+    align-items: start;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .sc-zigbee-progress {
+    grid-column: 1 / -1;
+    justify-items: start;
+    min-width: 0;
+    width: 100%;
+  }
 }
 
 @media (max-width: 680px) {
@@ -3729,6 +3802,25 @@ button:disabled {
 
   .sc-door-contact-status {
     justify-self: start;
+  }
+
+  .sc-zigbee-intro {
+    gap: 12px;
+    grid-template-columns: 1fr;
+    padding: 14px;
+  }
+
+  .sc-zigbee-intro-icon {
+    height: 44px;
+    width: 44px;
+  }
+
+  .sc-zigbee-intro-notes {
+    grid-template-columns: 1fr;
+  }
+
+  .sc-zigbee-progress {
+    padding: 12px;
   }
 
   .sc-sensor-preflight {

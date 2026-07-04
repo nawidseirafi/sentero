@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import os
 import time
 from contextlib import asynccontextmanager
+from contextlib import suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +20,28 @@ from backend.services.container import get_services
 
 configure_logging()
 logger = get_logger(__name__)
+
+
+def behavior_snapshot_interval() -> float:
+    try:
+        value = float(os.getenv("SENTERO_BEHAVIOR_SNAPSHOT_INTERVAL", "30"))
+    except (TypeError, ValueError):
+        value = 30.0
+    return max(10.0, value)
+
+
+async def behavior_snapshot_loop() -> None:
+    interval = behavior_snapshot_interval()
+    await asyncio.sleep(2)
+    while True:
+        try:
+            written = await asyncio.to_thread(get_services().sentero.record_behavior_snapshot)
+            logger.debug("Behavior snapshot refresh completed", extra={"component": "behavior", "written_events": written, "interval_seconds": interval})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Behavior snapshot refresh failed", extra={"component": "behavior"})
+        await asyncio.sleep(interval)
 
 
 class SPAStaticFiles(StaticFiles):
@@ -39,9 +64,13 @@ class SPAStaticFiles(StaticFiles):
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     logger.info("Application started", extra={"component": "app"})
+    behavior_task = asyncio.create_task(behavior_snapshot_loop())
     try:
         yield
     finally:
+        behavior_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await behavior_task
         logger.info("Application stopped", extra={"component": "app"})
 
 

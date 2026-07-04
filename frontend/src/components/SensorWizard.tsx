@@ -37,20 +37,27 @@ export function SensorWizard({ sensors, discovery, devMode, connected, total, ro
     acc[sensor.roomId] = [...(acc[sensor.roomId] || []), sensor];
     return acc;
   }, {});
+  const allConnected = total > 0 && connected >= total;
+  const progressLabel = total === 1 ? 'Sensor verbunden' : 'Sensoren verbunden';
 
   return (
     <section className="sc-sensor-step">
       <div className="sc-zigbee-intro">
-        <span><Radio size={24} /></span>
-        <div>
-          <h3>Sensor verbinden</h3>
-         <p>
-           Klicken Sie auf <strong>„Sensor suchen“</strong>.<br/>
-           <b>Präsenzsensoren</b> müssen zunächst mit Ihrem Heim-WLAN verbunden werden. Danach erkennt Sentero sie automatisch.<br/>
-           <b>Türsensoren</b> werden während der Suche hinzugefügt. Halten Sie dazu die Pairing-Taste 3–5 Sekunden gedrückt.
-         </p>
+        <span className="sc-zigbee-intro-icon"><Radio size={24} /></span>
+        <div className="sc-zigbee-intro-copy">
+          <div className="sc-zigbee-intro-title">
+            <h3>Sensoren verbinden</h3>
+            <p>Starten Sie die Suche und verbinden Sie jeden Sensor im passenden Raum.</p>
+          </div>
+          <div className="sc-zigbee-intro-notes">
+            <span><strong>Präsenzsensoren</strong> vorher per Setup-Hotspot ins Heim-WLAN bringen.</span>
+            <span><strong>Türsensoren</strong> während der Suche 3-5 Sekunden in den Pairing-Modus setzen.</span>
+          </div>
         </div>
-        <strong>{connected}/{total} Sensor verbunden</strong>
+        <div className={`sc-zigbee-progress ${allConnected ? 'complete' : ''}`}>
+          <strong>{connected}/{total}</strong>
+          <span>{progressLabel}</span>
+        </div>
       </div>
 
       {Object.entries(grouped).map(([roomId, items]) => (

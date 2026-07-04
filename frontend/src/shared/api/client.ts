@@ -38,6 +38,11 @@ export type SenteroBehaviorLearning = {
   day: number;
   days: number;
   remaining_days: number;
+  usable_days?: number;
+  required_usable_days?: number;
+  remaining_usable_days?: number;
+  calendar_complete?: boolean;
+  data_complete?: boolean;
 };
 
 export type SenteroSensorRole = {
@@ -433,7 +438,7 @@ export const api = {
     request<{ ok: boolean }>('/api/sentero/auth/reset-password', { method: 'POST', body: JSON.stringify(payload) }),
   senteroSetupStatus: () => request<SenteroSetupStatus>('/api/sentero/setup/status'),
   senteroBehaviorLatest: () => request<{ assessment: SenteroBehaviorAssessment | null; learning?: SenteroBehaviorLearning }>('/api/sentero/behavior/latest'),
-  senteroBehaviorTimeline: () => request<{ events: Array<{ event_time: string; room?: string | null; role?: string | null; state?: string | null }>; assessment: SenteroBehaviorAssessment | null }>('/api/sentero/behavior/timeline'),
+  senteroBehaviorTimeline: (live = false) => request<{ events: Array<{ event_time: string; room?: string | null; role?: string | null; state?: string | null }>; assessment: SenteroBehaviorAssessment | null }>(`/api/sentero/behavior/timeline${live ? '?live=true' : ''}`),
   startSenteroSetup: () => request<SenteroSetupStatus>('/api/sentero/setup/start', { method: 'POST' }),
   saveSenteroProfile: (payload: { name?: string; birth_year?: number | null; age?: number | null; notes?: string }) =>
     request<SenteroSetupStatus>('/api/sentero/setup/profile', { method: 'POST', body: JSON.stringify(payload) }),

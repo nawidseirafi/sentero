@@ -300,8 +300,8 @@ def sentero_behavior_history(limit: int = Query(20, ge=1, le=100)):
 
 
 @router.get("/behavior/timeline", tags=[TAG_BEHAVIOR])
-def sentero_behavior_timeline():
-    return get_services().sentero.behavior_timeline_today()
+def sentero_behavior_timeline(live: bool = Query(False)):
+    return get_services().sentero.behavior_timeline_today(live_snapshot=live)
 
 
 @router.get("/devices", tags=[TAG_DEVICES])

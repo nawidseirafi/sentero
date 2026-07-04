@@ -198,8 +198,9 @@ class SenteroBehaviorAgent:
             rows = con.execute("select * from behavior_assessments order by assessment_time desc, id desc limit ?", (limit,)).fetchall()
         return [self._row_to_assessment(row) for row in rows]
 
-    def timeline_today(self) -> dict[str, Any]:
-        self.record_current_snapshot()
+    def timeline_today(self, live_snapshot: bool = False) -> dict[str, Any]:
+        if live_snapshot:
+            self.record_current_snapshot()
         start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         events = [event for event in self._history(days=1) if self._parse_time(event.get("event_time")) >= start]
         if events:
@@ -520,6 +521,16 @@ class SenteroBehaviorAgent:
             value = 14
         return max(7, min(value, 30))
 
+    def _learning_min_usable_days(self, learning_days: int) -> int:
+        config = load_agent_section("sentero")
+        behavior = config.get("behavior") if isinstance(config.get("behavior"), dict) else {}
+        raw = behavior.get("min_usable_days", config.get("min_usable_days", 7))
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 7
+        return max(1, min(value, learning_days))
+
     def _behavior_profile_row(self) -> dict[str, Any]:
         self.ensure_schema()
         with self.mapping.connect() as con:
@@ -573,19 +584,26 @@ class SenteroBehaviorAgent:
     def _update_behavior_profile(self, dry_run: bool = False) -> dict[str, Any]:
         row = self._behavior_profile_row()
         learning_days = self._learning_days()
+        required_usable_days = self._learning_min_usable_days(learning_days)
         started = self._parse_time(row.get("learning_started_at"))
         learning_day = max(1, min(learning_days, (datetime.now(timezone.utc).date() - started.date()).days + 1))
         with self.mapping.connect() as con:
             rows = con.execute("select * from behavior_daily_summary order by date asc").fetchall()
-        summaries = [self._summary_row_to_dict(item) for item in rows]
-        completed = bool(row.get("learning_completed")) or learning_day >= learning_days
+        summaries = [
+            item for item in (self._summary_row_to_dict(row) for row in rows)
+            if self._summary_date(item) >= started.date()
+        ]
         usable = [item for item in summaries if item.get("active_minutes") or item.get("first_activity")]
+        usable_days = len(usable)
+        calendar_complete = learning_day >= learning_days
+        data_complete = usable_days >= required_usable_days
+        completed = calendar_complete and data_complete
         average_wakeup = self._average_time([item.get("wakeup_time") for item in usable])
         average_sleep = self._average_time([item.get("last_activity") for item in usable])
         average_active = round(sum(float(item.get("active_minutes") or 0) for item in usable) / len(usable), 2) if usable else 0
         room_usage = self._average_room_usage(usable)
         door_usage = self._normal_door_usage(usable)
-        completed_at = row.get("learning_completed_at") or (now() if completed else None)
+        completed_at = row.get("learning_completed_at") if completed and row.get("learning_completed_at") else (now() if completed else None)
         if not dry_run:
             with self.mapping.connect() as con:
                 con.execute(
@@ -622,9 +640,21 @@ class SenteroBehaviorAgent:
                 "completed": completed,
                 "day": learning_day,
                 "days": learning_days,
+                "usable_days": usable_days,
+                "required_usable_days": required_usable_days,
+                "calendar_complete": calendar_complete,
+                "data_complete": data_complete,
                 "remaining_days": max(0, learning_days - learning_day),
+                "remaining_usable_days": max(0, required_usable_days - usable_days),
             },
         }
+
+    def _summary_date(self, summary: dict[str, Any]) -> date:
+        value = str(summary.get("date") or "")
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return date.min
 
     def _behavior_deviations(self, summary: dict[str, Any], profile: dict[str, Any], roles: list[dict[str, Any]]) -> dict[str, Any]:
         learning = profile.get("learning") or {}

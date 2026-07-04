@@ -17,15 +17,14 @@ export function DashboardPage() {
     let active = true;
     async function load() {
       try {
-        const [next, liveRoles, latestBehavior, timeline] = await Promise.all([
+        const [next, latestBehavior, timeline] = await Promise.all([
           api.senteroSetupStatus(),
-          api.senteroSensorRoles(true),
           api.senteroBehaviorLatest().catch(() => ({ assessment: null, learning: undefined })),
           api.senteroBehaviorTimeline().catch(() => ({ events: [], assessment: null })),
         ]);
         if (active) {
           setStatus(next);
-          setRoles(liveRoles.sensor_roles || next.sensor_roles || []);
+          setRoles(next.sensor_roles || []);
           setBehavior(latestBehavior.assessment);
           setLearning(latestBehavior.learning || null);
           setTimelineEvents(timeline.events || []);
@@ -45,22 +44,17 @@ export function DashboardPage() {
 
   const configuredRoles = roles.filter((role) => role.configured);
   const hasSensors = configuredRoles.length > 0;
-  const currentPresence = useMemo(() => activePresenceRole(roles), [roles]);
-  const latest = useMemo(() => latestActivePresenceRole(roles), [roles]);
   const latestTimeline = useMemo(() => latestActivityEvent(timelineEvents), [timelineEvents]);
+  const currentPresence = useMemo(() => activePresenceEvent(timelineEvents), [timelineEvents]);
   const personName = status?.profile?.name?.trim() || 'Person';
   const activitySlots = useMemo(() => activitySlotsFromTimeline(timelineEvents, roles), [timelineEvents, roles]);
   const hasActivity = activitySlots.some((slot) => slot.active);
   const firstActivity = firstActivityEvent(timelineEvents, roles);
-  const fallbackTime = latest ? latest.last_changed || latest.last_updated || latest.updated_at : null;
-  const latestTimelineTime = timestamp(latestTimeline?.event_time);
-  const latestRoleTime = timestamp(fallbackTime);
-  const useTimeline = latestTimelineTime >= latestRoleTime && latestTimelineTime > 0;
-  const lastEventTime = useTimeline ? latestTimeline?.event_time : fallbackTime;
-  const lastSeen = lastEventTime ? movementLabel(lastEventTime, useTimeline ? latestTimeline?.room : latest?.room) : 'Noch keine Bewegung erkannt';
+  const lastEventTime = latestTimeline?.event_time;
+  const lastSeen = lastEventTime ? movementLabel(lastEventTime, latestTimeline?.room) : 'Noch keine Bewegung erkannt';
   const morning = firstActivity ? formatTime(new Date(timestamp(firstActivity.time))) : '';
   const currentRoomValue = currentPresence ? roomLocationLabel(currentPresence.room) : 'Nicht im Haus';
-  const dashboardState = getDashboardState({ error, hasSensors, latest: Boolean(latestTimeline || latest), currentPresence: Boolean(currentPresence), behavior });
+  const dashboardState = getDashboardState({ error, hasSensors, latest: Boolean(latestTimeline), currentPresence: Boolean(currentPresence), behavior });
   const currentLocation = currentPresence ? roomLocationLabel(currentPresence.room) : 'Nicht im Haus';
 
   return (
@@ -116,10 +110,12 @@ function BehaviorOverviewCard({
   const summary = !hasSensors
     ? 'Verbinden Sie zuerst Sensoren, damit Sentero den Alltag kennenlernen kann.'
     : behavior?.summary || 'Sentero baut ein persönliches Normalverhalten auf.';
-  const learningProgress = learning ? `Tag ${learning.day} von ${learning.days}` : 'Lernphase';
+  const learningProgress = learning ? learningProgressLabel(learning) : 'Lernphase';
   const learningHint = learning?.completed
     ? 'Sentero kennt den gewohnten Tagesablauf.'
-    : 'Sentero lernt aktuell den gewohnten Tagesablauf kennen.';
+    : learning?.remaining_usable_days
+      ? `Sentero braucht noch ${learning.remaining_usable_days} verwertbare ${learning.remaining_usable_days === 1 ? 'Tag' : 'Tage'}.`
+      : 'Sentero lernt aktuell den gewohnten Tagesablauf kennen.';
 
   return (
     <article className={`sc-behavior-overview-card ${meta.tone}`} aria-label="Verhaltensanalyse und Tagesverlauf">
@@ -142,6 +138,15 @@ function BehaviorOverviewCard({
       </aside>
     </article>
   );
+}
+
+function learningProgressLabel(learning: SenteroBehaviorLearning) {
+  const usable = learning.usable_days;
+  const required = learning.required_usable_days;
+  if (usable != null && required != null && !learning.completed) {
+    return `${usable} von ${required} Lerntagen`;
+  }
+  return `Tag ${learning.day} von ${learning.days}`;
 }
 
 function TimelineStrip({ activitySlots, hasActivity }: { activitySlots: Array<{ hour: number; label: string; active: boolean }>; hasActivity: boolean }) {
@@ -221,20 +226,28 @@ function getDashboardState({ error, hasSensors, latest, currentPresence, behavio
   };
 }
 
-function activePresenceRole(roles: SenteroSensorRole[]) {
-  return roles
-    .filter((role) => role.configured && role.reachable !== false && isPresenceRole(role) && isRoleActive(role))
-    .sort((a, b) => timestamp(b.last_changed || b.last_updated || b.updated_at) - timestamp(a.last_changed || a.last_updated || a.updated_at))[0];
-}
-
-function latestActivePresenceRole(roles: SenteroSensorRole[]) {
-  return roles
-    .filter((role) => role.configured && role.reachable !== false && isPresenceRole(role) && isRoleActive(role))
-    .sort((a, b) => timestamp(b.last_changed || b.last_updated || b.updated_at) - timestamp(a.last_changed || a.last_updated || a.updated_at))[0];
-}
-
 function isPresenceRole(role: SenteroSensorRole) {
   return role.role.endsWith('presence') || ['motion', 'occupancy', 'presence'].includes(String(role.device_class || ''));
+}
+
+function activePresenceEvent(events: BehaviorEvent[]) {
+  const latestByRole = new Map<string, BehaviorEvent>();
+  for (const event of events) {
+    const role = String(event.role || '').trim();
+    if (!isPresenceEventRole(role)) continue;
+    const value = timestamp(event.event_time);
+    if (!value) continue;
+    const current = latestByRole.get(role);
+    if (!current || value > timestamp(current.event_time)) latestByRole.set(role, event);
+  }
+  return Array.from(latestByRole.values())
+    .filter((event) => isActivityEvent(event))
+    .sort((a, b) => timestamp(b.event_time) - timestamp(a.event_time))[0];
+}
+
+function isPresenceEventRole(role: string) {
+  const value = role.toLowerCase();
+  return value.endsWith('_presence') || value.endsWith('_motion') || value.endsWith('presence') || value.endsWith('motion');
 }
 
 function firstActivityEvent(events: BehaviorEvent[], roles: SenteroSensorRole[]) {

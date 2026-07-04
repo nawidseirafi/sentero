@@ -244,7 +244,7 @@ number:
           c1001_set_fall_sensitivity(x);
 
 interval:
-  - interval: 500ms
+  - interval: 2s
     then:
       - lambda: |-
           c1001_update(id(c1001_uart), id(c1001_presence), id(c1001_fall),
