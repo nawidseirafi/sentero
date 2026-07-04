@@ -584,6 +584,9 @@ class DeviceMappingService:
             'device_id': device_id,
             'topic': command_topic,
             'response': response,
+            'hp_led': response.get('hp_led'),
+            'fall_led': response.get('fall_led'),
+            'led_status': response.get('led_status') if isinstance(response.get('led_status'), dict) else None,
             'message': response.get('message') or ('Kommando ausgeführt' if ok else 'Kommando abgelehnt'),
         }
 
@@ -856,6 +859,9 @@ class DeviceMappingService:
                 'presence': c1001_telemetry.get('presence'),
                 'fall_detected': c1001_telemetry.get('fall_detected'),
                 'motion': c1001_telemetry.get('motion'),
+                'hp_led': c1001_telemetry.get('hp_led'),
+                'fall_led': c1001_telemetry.get('fall_led'),
+                'led_status': c1001_telemetry.get('led_status'),
             })
         return result
 
@@ -1757,7 +1763,7 @@ def power_source_from_state(state: dict[str, Any] | None) -> str | None:
 
 def c1001_telemetry_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
     if not state:
-        return {'presence': None, 'fall_detected': None, 'motion': None}
+        return {'presence': None, 'fall_detected': None, 'motion': None, 'hp_led': None, 'fall_led': None, 'led_status': None}
     attrs = state.get('attributes') if isinstance(state.get('attributes'), dict) else {}
     presence = parse_bool_value(first_present(state, attrs, 'presence'))
     if presence is None and str(state.get('payload_key') or '').strip().lower() == 'presence':
@@ -1766,7 +1772,24 @@ def c1001_telemetry_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
     motion = first_present(state, attrs, 'motion')
     if motion is not None:
         motion = str(motion)
-    return {'presence': presence, 'fall_detected': fall_detected, 'motion': motion}
+    hp_led = parse_bool_value(first_present(state, attrs, 'hp_led'))
+    fall_led = parse_bool_value(first_present(state, attrs, 'fall_led'))
+    raw_led_status = first_present(state, attrs, 'led_status')
+    led_status = raw_led_status if isinstance(raw_led_status, dict) else None
+    if led_status:
+        if hp_led is None:
+            hp_led = parse_bool_value(led_status.get('hp_led'))
+        if fall_led is None:
+            fall_led = parse_bool_value(led_status.get('fall_led'))
+    if hp_led is not None or fall_led is not None:
+        led_status = {
+            **(led_status or {}),
+            'hp_led': hp_led,
+            'fall_led': fall_led,
+            'all_on': bool(hp_led and fall_led),
+            'any_on': bool(hp_led or fall_led),
+        }
+    return {'presence': presence, 'fall_detected': fall_detected, 'motion': motion, 'hp_led': hp_led, 'fall_led': fall_led, 'led_status': led_status}
 
 
 def first_present(item: dict[str, Any], attrs: dict[str, Any], key: str) -> Any:
@@ -2137,6 +2160,9 @@ def public_role(data: dict[str, Any]) -> dict[str, Any]:
         'presence': data.get('presence'),
         'fall_detected': data.get('fall_detected'),
         'motion': data.get('motion'),
+        'hp_led': data.get('hp_led'),
+        'fall_led': data.get('fall_led'),
+        'led_status': data.get('led_status'),
         'device_class': data.get('device_class'),
         'domain': data.get('domain'),
         'source': data.get('source'),

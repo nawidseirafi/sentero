@@ -77,7 +77,10 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       loading = true;
       try {
         const nextSensors = await api.senteroSensorRoles(true);
-        if (active) setSensors(nextSensors.sensor_roles);
+        if (active) {
+          setSensors(nextSensors.sensor_roles);
+          hydrateLedStates(nextSensors.sensor_roles);
+        }
       } catch {
         // Keep the last known sensor state visible during transient refresh failures.
       } finally {
@@ -108,6 +111,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       ]);
       setStatus(nextStatus);
       setSensors(nextSensors.sensor_roles);
+      hydrateLedStates(nextSensors.sensor_roles);
       setChannels(nextChannels.channels);
       setNetworkStatus(nextNetwork);
       setNetworkForm({
@@ -137,6 +141,17 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Einstellungen konnten nicht geladen werden.');
     }
+  }
+
+  function hydrateLedStates(sensorRoles: SenteroSensorRole[]) {
+    setLedStates((current) => {
+      const next = { ...current };
+      for (const sensor of sensorRoles) {
+        const value = ledEnabledFromSensor(sensor);
+        if (value != null) next[sensor.role] = value;
+      }
+      return next;
+    });
   }
 
   const rooms = useMemo(() => {
@@ -505,7 +520,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   }
 
   async function toggleSensorLeds(sensor: SenteroSensorRole) {
-    const enabled = !Boolean(ledStates[sensor.role]);
+    const currentEnabled = ledEnabled(sensor, ledStates);
+    const enabled = !currentEnabled;
     setLedBusyRole(sensor.role);
     try {
       const result = await api.commandSenteroSensorRole(sensor.role, {
@@ -519,9 +535,11 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         setError(result.message || 'LEDs konnten nicht geschaltet werden.');
         return;
       }
-      setLedStates((current) => ({ ...current, [sensor.role]: enabled }));
+      const confirmed = ledEnabledFromCommandResult(result);
+      setLedStates((current) => ({ ...current, [sensor.role]: confirmed ?? enabled }));
       toast(enabled ? 'LEDs eingeschaltet' : 'LEDs ausgeschaltet');
       setError('');
+      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'LEDs konnten nicht geschaltet werden.');
     } finally {
@@ -648,13 +666,13 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                         <div className="sc-sensor-settings-actions">
                           {isEsp32PresenceSensor(sensor) && (
                             <button
-                              className={`led-dot-btn ${ledStates[sensor.role] ? 'led-on' : 'led-off'}`}
+                              className={`led-dot-btn ${ledEnabled(sensor, ledStates) ? 'led-on' : 'led-off'}`}
                               type="button"
                               onClick={() => void toggleSensorLeds(sensor)}
                               disabled={ledBusyRole === sensor.role || sensor.reachable === false}
-                              title={ledStates[sensor.role] ? 'LEDs ausschalten' : 'LEDs einschalten'}
-                              aria-label={ledStates[sensor.role] ? 'LEDs ausschalten' : 'LEDs einschalten'}
-                              aria-pressed={Boolean(ledStates[sensor.role])}
+                              title={ledEnabled(sensor, ledStates) ? 'LEDs ausschalten' : 'LEDs einschalten'}
+                              aria-label={ledEnabled(sensor, ledStates) ? 'LEDs ausschalten' : 'LEDs einschalten'}
+                              aria-pressed={ledEnabled(sensor, ledStates)}
                             >
                               <span aria-hidden="true" />
                             </button>
@@ -1203,6 +1221,31 @@ function sensorPowerLabel(sensor: SenteroSensorRole) {
 function formatBoolean(value?: boolean | null) {
   if (value == null) return 'unbekannt';
   return value ? 'true' : 'false';
+}
+
+function ledEnabled(sensor: SenteroSensorRole, localStates: Record<string, boolean>) {
+  return localStates[sensor.role] ?? ledEnabledFromSensor(sensor) ?? false;
+}
+
+function ledEnabledFromSensor(sensor: SenteroSensorRole) {
+  if (sensor.led_status?.all_on != null) return Boolean(sensor.led_status.all_on);
+  if (sensor.hp_led != null && sensor.fall_led != null) return Boolean(sensor.hp_led && sensor.fall_led);
+  if (sensor.led_status?.any_on != null) return Boolean(sensor.led_status.any_on);
+  if (sensor.hp_led != null) return Boolean(sensor.hp_led);
+  if (sensor.fall_led != null) return Boolean(sensor.fall_led);
+  return null;
+}
+
+function ledEnabledFromCommandResult(result: { hp_led?: boolean | null; fall_led?: boolean | null; led_status?: SenteroSensorRole['led_status']; response?: Record<string, unknown> }) {
+  if (result.led_status?.all_on != null) return Boolean(result.led_status.all_on);
+  if (result.hp_led != null && result.fall_led != null) return Boolean(result.hp_led && result.fall_led);
+  const response = result.response || {};
+  const responseLedStatus = response.led_status && typeof response.led_status === 'object' ? response.led_status as { all_on?: unknown; any_on?: unknown } : null;
+  if (responseLedStatus?.all_on != null) return Boolean(responseLedStatus.all_on);
+  const hpLed = typeof response.hp_led === 'boolean' ? response.hp_led : null;
+  const fallLed = typeof response.fall_led === 'boolean' ? response.fall_led : null;
+  if (hpLed != null && fallLed != null) return hpLed && fallLed;
+  return null;
 }
 
 function normalizeEmail(value: string) {

@@ -535,7 +535,7 @@ class SenteroProvisioning : public AsyncWebHandler {
   void publish_state_(const Config &config) {
     const C1001Snapshot sensor = c1001_get_snapshot();
 
-    StaticJsonDocument<1536> doc;
+    StaticJsonDocument<1792> doc;
     const String display_name = config.friendly_name.length() > 0
         ? config.friendly_name
         : String("C1001 Praesenz");
@@ -562,6 +562,13 @@ class SenteroProvisioning : public AsyncWebHandler {
     doc["last_sensor_update_ms"] = sensor.last_update_ms;
     doc["power_source"] = "usb";
     doc["signal_quality"] = signal_quality_();
+    doc["hp_led"] = sensor.hp_led;
+    doc["fall_led"] = sensor.fall_led;
+    JsonObject led_status = doc.createNestedObject("led_status");
+    led_status["hp_led"] = sensor.hp_led;
+    led_status["fall_led"] = sensor.fall_led;
+    led_status["all_on"] = sensor.hp_led && sensor.fall_led;
+    led_status["any_on"] = sensor.hp_led || sensor.fall_led;
     doc["command_topic"] = topic_(config, "command");
     JsonArray writable_settings = doc.createNestedArray("writable_settings");
     writable_settings.add("hp_led");
@@ -584,14 +591,16 @@ class SenteroProvisioning : public AsyncWebHandler {
 
   String state_signature_(const C1001Snapshot &sensor) {
     char signature[180];
-    snprintf(signature, sizeof(signature), "%u|%u|%s|%u|%u|%u|%s",
+    snprintf(signature, sizeof(signature), "%u|%u|%s|%u|%u|%u|%s|%u|%u",
              sensor.ready ? 1 : 0,
              sensor.presence ? 1 : 0,
              sensor.motion == nullptr ? "" : sensor.motion,
              sensor.moving_range,
              sensor.work_mode,
              sensor.fall_detected ? 1 : 0,
-             sensor.status == nullptr ? "" : sensor.status);
+             sensor.status == nullptr ? "" : sensor.status,
+             sensor.hp_led ? 1 : 0,
+             sensor.fall_led ? 1 : 0);
     return String(signature);
   }
 
@@ -611,12 +620,20 @@ class SenteroProvisioning : public AsyncWebHandler {
   }
 
   void publish_command_status_(const Config &config, const char *command, bool ok, const char *message) {
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<384> doc;
+    const C1001Snapshot sensor = c1001_get_snapshot();
     doc["device_id"] = config.device_id;
     doc["status"] = ok ? "command_accepted" : "command_rejected";
     doc["command"] = command == nullptr ? "" : command;
     doc["ok"] = ok;
     doc["message"] = message == nullptr ? "" : message;
+    doc["hp_led"] = sensor.hp_led;
+    doc["fall_led"] = sensor.fall_led;
+    JsonObject led_status = doc.createNestedObject("led_status");
+    led_status["hp_led"] = sensor.hp_led;
+    led_status["fall_led"] = sensor.fall_led;
+    led_status["all_on"] = sensor.hp_led && sensor.fall_led;
+    led_status["any_on"] = sensor.hp_led || sensor.fall_led;
 
     String payload;
     serializeJson(doc, payload);
@@ -681,6 +698,9 @@ class SenteroProvisioning : public AsyncWebHandler {
 
     setter(enabled);
     publish_command_status_(config, command, true, enabled ? "enabled" : "disabled");
+    publish_state_(config);
+    last_state_publish_ms_ = millis();
+    last_state_signature_ = state_signature_(c1001_get_snapshot());
     return true;
   }
 
@@ -824,7 +844,7 @@ class SenteroProvisioning : public AsyncWebHandler {
     }
 
     publish_command_status_(config, command, true, "configuration_applied");
-    if (has_friendly_name || has_room_id) {
+    if (has_hp_led || has_fall_led || has_friendly_name || has_room_id) {
       Config updated_config;
       if (load_config_(updated_config)) {
         publish_state_(updated_config);

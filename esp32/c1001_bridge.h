@@ -6,6 +6,8 @@ struct C1001Snapshot {
   bool ready{false};
   bool presence{false};
   bool fall_detected{false};
+  bool hp_led{true};
+  bool fall_led{true};
   const char *motion{"Nicht bereit"};
   const char *status{"Startet"};
   uint16_t moving_range{0};
@@ -58,12 +60,18 @@ class C1001Bridge {
     poll_next_value_();
   }
 
-  void set_fall_led(bool enabled) {
-    set_u8_(0x01, 0x04, enabled ? 1 : 0, "FALL LED gesetzt");
+  bool set_fall_led(bool enabled) {
+    if (!set_u8_(0x01, 0x04, enabled ? 1 : 0, "FALL LED gesetzt")) return false;
+    snapshot_.fall_led = enabled;
+    snapshot_.last_update_ms = millis();
+    return true;
   }
 
-  void set_hp_led(bool enabled) {
-    set_u8_(0x01, 0x03, enabled ? 1 : 0, "HP LED gesetzt");
+  bool set_hp_led(bool enabled) {
+    if (!set_u8_(0x01, 0x03, enabled ? 1 : 0, "HP LED gesetzt")) return false;
+    snapshot_.hp_led = enabled;
+    snapshot_.last_update_ms = millis();
+    return true;
   }
 
   void set_install_height(uint16_t centimeters) {
@@ -227,19 +235,21 @@ class C1001Bridge {
     publish_status_(ok ? "OK" : "Lesefehler");
   }
 
-  void set_u8_(uint8_t control, uint8_t command, uint8_t value, const char *status_text) {
-    set_payload_(control, command, &value, 1, status_text);
+  bool set_u8_(uint8_t control, uint8_t command, uint8_t value, const char *status_text) {
+    return set_payload_(control, command, &value, 1, status_text);
   }
 
-  void set_payload_(uint8_t control, uint8_t command, const uint8_t *payload,
+  bool set_payload_(uint8_t control, uint8_t command, const uint8_t *payload,
                     uint16_t payload_len, const char *status_text) {
-    if (uart_ == nullptr) return;
+    if (uart_ == nullptr) return false;
 
     std::vector<uint8_t> ignored;
     if (send_command_(control, command, payload, payload_len, ignored, 700)) {
       publish_status_(status_text);
+      return true;
     } else {
       publish_status_("Einstellung fehlgeschlagen");
+      return false;
     }
   }
 

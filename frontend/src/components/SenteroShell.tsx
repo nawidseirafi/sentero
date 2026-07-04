@@ -84,13 +84,13 @@ function SenteroShell({ route, onNavigate, onLogout, children }: Props) {
           return (
             <button key={item.route} className={route.name === item.route ? 'active' : ''} type="button" onClick={() => onNavigate(item.route)}>
               <Icon size={22} aria-hidden="true" />
-              <span>{item.label}</span>
+
             </button>
           );
         })}
         <button className="sc-mobile-logout" type="button" onClick={onLogout}>
           <LogOut size={22} aria-hidden="true" />
-          <span>Abmelden</span>
+
         </button>
       </nav>
     </main>
