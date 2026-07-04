@@ -562,8 +562,6 @@ class SenteroProvisioning : public AsyncWebHandler {
     doc["last_sensor_update_ms"] = sensor.last_update_ms;
     doc["power_source"] = "usb";
     doc["signal_quality"] = signal_quality_();
-    doc["hp_led"] = sensor.hp_led;
-    doc["fall_led"] = sensor.fall_led;
     JsonObject led_status = doc.createNestedObject("led_status");
     led_status["hp_led"] = sensor.hp_led;
     led_status["fall_led"] = sensor.fall_led;
@@ -627,8 +625,6 @@ class SenteroProvisioning : public AsyncWebHandler {
     doc["command"] = command == nullptr ? "" : command;
     doc["ok"] = ok;
     doc["message"] = message == nullptr ? "" : message;
-    doc["hp_led"] = sensor.hp_led;
-    doc["fall_led"] = sensor.fall_led;
     JsonObject led_status = doc.createNestedObject("led_status");
     led_status["hp_led"] = sensor.hp_led;
     led_status["fall_led"] = sensor.fall_led;
