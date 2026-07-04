@@ -563,10 +563,14 @@ class SenteroProvisioning : public AsyncWebHandler {
     doc["power_source"] = "usb";
     doc["signal_quality"] = signal_quality_();
     JsonObject led_status = doc.createNestedObject("led_status");
-    led_status["hp_led"] = sensor.hp_led;
-    led_status["fall_led"] = sensor.fall_led;
-    led_status["all_on"] = sensor.hp_led && sensor.fall_led;
-    led_status["any_on"] = sensor.hp_led || sensor.fall_led;
+    if (sensor.hp_led_known) led_status["hp_led"] = sensor.hp_led;
+    else led_status["hp_led"] = nullptr;
+    if (sensor.fall_led_known) led_status["fall_led"] = sensor.fall_led;
+    else led_status["fall_led"] = nullptr;
+    if (sensor.hp_led_known && sensor.fall_led_known) led_status["all_on"] = sensor.hp_led && sensor.fall_led;
+    else led_status["all_on"] = nullptr;
+    if (sensor.hp_led_known || sensor.fall_led_known) led_status["any_on"] = (sensor.hp_led_known && sensor.hp_led) || (sensor.fall_led_known && sensor.fall_led);
+    else led_status["any_on"] = nullptr;
     doc["command_topic"] = topic_(config, "command");
     JsonArray writable_settings = doc.createNestedArray("writable_settings");
     writable_settings.add("hp_led");
@@ -597,8 +601,8 @@ class SenteroProvisioning : public AsyncWebHandler {
              sensor.work_mode,
              sensor.fall_detected ? 1 : 0,
              sensor.status == nullptr ? "" : sensor.status,
-             sensor.hp_led ? 1 : 0,
-             sensor.fall_led ? 1 : 0);
+             sensor.hp_led_known ? (sensor.hp_led ? 1 : 0) : 2,
+             sensor.fall_led_known ? (sensor.fall_led ? 1 : 0) : 2);
     return String(signature);
   }
 
@@ -626,10 +630,14 @@ class SenteroProvisioning : public AsyncWebHandler {
     doc["ok"] = ok;
     doc["message"] = message == nullptr ? "" : message;
     JsonObject led_status = doc.createNestedObject("led_status");
-    led_status["hp_led"] = sensor.hp_led;
-    led_status["fall_led"] = sensor.fall_led;
-    led_status["all_on"] = sensor.hp_led && sensor.fall_led;
-    led_status["any_on"] = sensor.hp_led || sensor.fall_led;
+    if (sensor.hp_led_known) led_status["hp_led"] = sensor.hp_led;
+    else led_status["hp_led"] = nullptr;
+    if (sensor.fall_led_known) led_status["fall_led"] = sensor.fall_led;
+    else led_status["fall_led"] = nullptr;
+    if (sensor.hp_led_known && sensor.fall_led_known) led_status["all_on"] = sensor.hp_led && sensor.fall_led;
+    else led_status["all_on"] = nullptr;
+    if (sensor.hp_led_known || sensor.fall_led_known) led_status["any_on"] = (sensor.hp_led_known && sensor.hp_led) || (sensor.fall_led_known && sensor.fall_led);
+    else led_status["any_on"] = nullptr;
 
     String payload;
     serializeJson(doc, payload);
@@ -685,14 +693,17 @@ class SenteroProvisioning : public AsyncWebHandler {
   }
 
   bool apply_bool_command_(const Config &config, JsonObjectConst root, const char *command,
-                           void (*setter)(bool)) {
+                           bool (*setter)(bool)) {
     bool enabled = false;
     if (!bool_arg_(root, enabled)) {
       publish_command_status_(config, command, false, "missing_or_invalid_boolean");
       return true;
     }
 
-    setter(enabled);
+    if (!setter(enabled)) {
+      publish_command_status_(config, command, false, "sensor_command_failed");
+      return true;
+    }
     publish_command_status_(config, command, true, enabled ? "enabled" : "disabled");
     publish_state_(config);
     last_state_publish_ms_ = millis();
@@ -821,8 +832,14 @@ class SenteroProvisioning : public AsyncWebHandler {
       prefs_open = true;
     }
 
-    if (has_hp_led) c1001_set_hp_led(hp_led);
-    if (has_fall_led) c1001_set_fall_led(fall_led);
+    if (has_hp_led && !c1001_set_hp_led(hp_led)) {
+      publish_command_status_(config, command, false, "hp_led_command_failed");
+      return true;
+    }
+    if (has_fall_led && !c1001_set_fall_led(fall_led)) {
+      publish_command_status_(config, command, false, "fall_led_command_failed");
+      return true;
+    }
     if (has_install_height) c1001_set_install_height(install_height);
     if (has_fall_time) c1001_set_fall_time(fall_time);
     if (has_unmanned_time) c1001_set_unmanned_time(unmanned_time);

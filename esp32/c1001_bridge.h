@@ -6,8 +6,10 @@ struct C1001Snapshot {
   bool ready{false};
   bool presence{false};
   bool fall_detected{false};
-  bool hp_led{true};
-  bool fall_led{true};
+  bool hp_led{false};
+  bool fall_led{false};
+  bool hp_led_known{false};
+  bool fall_led_known{false};
   const char *motion{"Nicht bereit"};
   const char *status{"Startet"};
   uint16_t moving_range{0};
@@ -63,6 +65,7 @@ class C1001Bridge {
   bool set_fall_led(bool enabled) {
     if (!set_u8_(0x01, 0x04, enabled ? 1 : 0, "FALL LED gesetzt")) return false;
     snapshot_.fall_led = enabled;
+    snapshot_.fall_led_known = true;
     snapshot_.last_update_ms = millis();
     return true;
   }
@@ -70,6 +73,7 @@ class C1001Bridge {
   bool set_hp_led(bool enabled) {
     if (!set_u8_(0x01, 0x03, enabled ? 1 : 0, "HP LED gesetzt")) return false;
     snapshot_.hp_led = enabled;
+    snapshot_.hp_led_known = true;
     snapshot_.last_update_ms = millis();
     return true;
   }
@@ -483,12 +487,12 @@ inline void c1001_update(esphome::uart::UARTComponent *uart,
                       moving_range, work_mode, attempts);
 }
 
-inline void c1001_set_fall_led(bool enabled) {
-  c1001_bridge.set_fall_led(enabled);
+inline bool c1001_set_fall_led(bool enabled) {
+  return c1001_bridge.set_fall_led(enabled);
 }
 
-inline void c1001_set_hp_led(bool enabled) {
-  c1001_bridge.set_hp_led(enabled);
+inline bool c1001_set_hp_led(bool enabled) {
+  return c1001_bridge.set_hp_led(enabled);
 }
 
 inline void c1001_set_install_height(float centimeters) {
