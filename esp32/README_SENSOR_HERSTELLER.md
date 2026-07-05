@@ -44,6 +44,7 @@ door_contact
 -   WLAN
 -   MQTT
 -   C1001
+-   MR60BDA2
 
 **Typ**
 

@@ -303,7 +303,7 @@ class SenteroCaptivePortal : public AsyncWebHandler, public esphome::Component {
         const response = await fetch("/config.json", { cache: "no-store" });
         if (!response.ok) throw new Error("scan_failed");
         const data = await response.json();
-        $("deviceName").textContent = data.name || "MR60BHA2 mmWave";
+        $("deviceName").textContent = data.name || "MR60BDA2 mmWave";
         $("deviceMac").textContent = data.mac || "";
 
         const aps = (data.aps || [])

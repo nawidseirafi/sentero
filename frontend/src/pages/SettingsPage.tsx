@@ -525,6 +525,10 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   }
 
   async function toggleSensorLeds(sensor: SenteroSensorRole) {
+    if (!sensorSupportsLedControl(sensor)) {
+      setError('Dieser Sensor unterstützt keine LED-Steuerung.');
+      return;
+    }
     const currentEnabled = ledEnabled(sensor, ledStates);
     const enabled = !currentEnabled;
     setLedBusyRole(sensor.role);
@@ -669,7 +673,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                           </div>
                         </div>
                         <div className="sc-sensor-settings-actions">
-                          {isEsp32PresenceSensor(sensor) && (
+                          {isEsp32PresenceSensor(sensor) && sensorSupportsLedControl(sensor) && (
                             <button
                               className={`led-dot-btn ${ledEnabled(sensor, ledStates) ? 'led-on' : 'led-off'}`}
                               type="button"
@@ -1229,6 +1233,11 @@ function isEsp32PresenceSensor(sensor: SenteroSensorRole) {
     String(sensor.device_class || '').toLowerCase() === 'presence' ||
     String(sensor.source_ref || '').includes('/state')
   );
+}
+
+function sensorSupportsLedControl(sensor: SenteroSensorRole) {
+  const settings = Array.isArray(sensor.writable_settings) ? sensor.writable_settings.map((item) => String(item)) : [];
+  return settings.includes('hp_led') || settings.includes('fall_led') || sensor.hp_led != null || sensor.fall_led != null || sensor.led_status?.hp_led != null || sensor.led_status?.fall_led != null;
 }
 
 function isDoorContactSensor(sensor: SenteroSensorRole) {

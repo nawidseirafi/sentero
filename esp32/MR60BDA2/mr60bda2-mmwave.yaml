@@ -1,15 +1,15 @@
 substitutions:
-  firmware_manifest_url: "https://sentero.github.io/mr60bha2-mmwave/manifest.json"
+  firmware_manifest_url: "https://sentero.github.io/mr60bda2-mmwave/manifest.json"
 
 esphome:
-  name: mr60bha2-mmwave
-  friendly_name: mr60bha2-mmwave
+  name: mr60bda2-mmwave
+  friendly_name: mr60bda2-mmwave
   name_add_mac_suffix: true
   project:
-    name: "sentero.mr60bha2_mmwave"
+    name: "sentero.mr60bda2_mmwave"
     version: "1.0.0"
   includes:
-    - mr60bha2_bridge.h
+    - mr60bda2_bridge.h
     - sentero_discovery.h
     - sentero_captive_portal.h
     - sentero_portal_logo.h
@@ -21,7 +21,7 @@ esphome:
       - lambda: |-
           sentero_captive_portal_setup();
 
-# Das MR60BHA2-Kit kommt mit XIAO ESP32C6, nicht mehr ESP32-C3 wie beim
+# Das MR60BDA2-Kit kommt mit XIAO ESP32C6, nicht mehr ESP32-C3 wie beim
 # C1001-Aufbau. framework: esp-idf ist erforderlich, u.a. weil
 # sentero_discovery.h direkt gegen esp_http_server/httpd_req_t programmiert
 # (AsyncWebHandler-Bridge fuer web_server_base) - das gibt es nur im
@@ -63,29 +63,20 @@ wifi:
 
 captive_portal:
 
-# Wichtig: parity NONE und stop_bits 1 sind fuer seeed_mr60bha2 Pflicht.
+# Wichtig: parity NONE und stop_bits 1 passen zum MR60BDA2-UART.
 # Pin-Belegung ggf. an deine tatsaechliche XIAO-ESP32C6<->Radar-Verkabelung
 # anpassen, falls das Kit sie nicht schon werksseitig fest verdrahtet hat.
 uart:
-  id: mr60bha2_uart
+  id: mr60bda2_uart
   tx_pin: GPIO16
   rx_pin: GPIO17
   baud_rate: 115200
   parity: NONE
   stop_bits: 1
 
-seeed_mr60bha2:
-  id: mr60bha2_radar
-  uart_id: mr60bha2_uart
-
 binary_sensor:
-  - platform: seeed_mr60bha2
-    has_target:
-      name: "MR60BHA2 Präsenz"
-      id: mr60bha2_presence
-
   - platform: gpio
-    id: mr60bha2_factory_reset_gpio
+    id: mr60bda2_factory_reset_gpio
     pin:
       number: GPIO9
       mode: INPUT_PULLUP
@@ -102,7 +93,7 @@ binary_sensor:
         - delay: 5s
         - if:
             condition:
-              binary_sensor.is_on: mr60bha2_factory_reset_gpio
+              binary_sensor.is_on: mr60bda2_factory_reset_gpio
             then:
               - logger.log:
                   level: WARN
@@ -110,37 +101,19 @@ binary_sensor:
               - lambda: |-
                   sentero_factory_reset();
               - delay: 200ms
-              - button.press: mr60bha2_factory_reset
+              - button.press: mr60bda2_factory_reset
 
 button:
   - platform: factory_reset
-    name: "MR60BHA2 Werkseinstellungen"
-    id: mr60bha2_factory_reset
+    name: "MR60BDA2 Werkseinstellungen"
+    id: mr60bda2_factory_reset
     entity_category: config
-
-sensor:
-  - platform: seeed_mr60bha2
-    breath_rate:
-      name: "MR60BHA2 Atemfrequenz"
-      id: mr60bha2_breath_rate
-    heart_rate:
-      name: "MR60BHA2 Herzfrequenz"
-      id: mr60bha2_heart_rate
-    distance:
-      name: "MR60BHA2 Distanz"
-      id: mr60bha2_distance
-    num_targets:
-      name: "MR60BHA2 Zielanzahl"
-      id: mr60bha2_num_targets
-      entity_category: diagnostic
 
 interval:
   - interval: 2s
     then:
       - lambda: |-
-          mr60bha2_update(id(mr60bha2_presence), id(mr60bha2_breath_rate),
-                          id(mr60bha2_heart_rate), id(mr60bha2_distance),
-                          id(mr60bha2_num_targets));
+          mr60bda2_update(id(mr60bda2_uart));
 
   - interval: 2s
     then:

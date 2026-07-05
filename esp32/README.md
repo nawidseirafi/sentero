@@ -1,7 +1,7 @@
-# C1001 ESP32 Firmware bauen und flashen
+# ESP32 Firmware bauen und flashen
 
 Diese Anleitung beschreibt den manuellen Build- und Flash-Vorgang fuer den
-Sentero C1001 mmWave Sensor mit ESPHome.
+Sentero mmWave Sensor mit ESPHome.
 
 ## Voraussetzungen
 
@@ -11,19 +11,19 @@ Sentero C1001 mmWave Sensor mit ESPHome.
 - Projekt liegt unter:
 
 ```bash
-/Users/nawid/Projects/sentero/esp32
+/Users/nawid/Projects/sentero/esp32/xxx
 ```
 
 Die Firmware-Datei ist:
 
 ```bash
-c1001-mmwave.yaml
+xxx-mmwave.yaml
 ```
 
 ## 1. In den ESP32-Ordner wechseln
 
 ```bash
-cd /Users/nawid/Projects/sentero/esp32
+cd /Users/nawid/Projects/sentero/esp32/xxx
 ```
 
 ## 2. ESPHome pruefen
@@ -83,7 +83,7 @@ sondern im Bootloader-Modus.
 ## 4. Firmware bauen
 
 ```bash
-/opt/homebrew/bin/esphome compile c1001-mmwave.yaml
+/opt/homebrew/bin/esphome compile xxx-mmwave.yaml
 ```
 
 Ein erfolgreicher Build endet ungefaehr so:
@@ -95,8 +95,8 @@ Successfully compiled program.
 Die erzeugte Firmware liegt danach unter:
 
 ```bash
-.esphome/build/c1001-mmwave/.pioenvs/c1001-mmwave/firmware.bin
-.esphome/build/c1001-mmwave/.pioenvs/c1001-mmwave/firmware.factory.bin
+.esphome/build/xxx-mmwave/.pioenvs/xxx-mmwave/firmware.bin
+.esphome/build/xxx-mmwave/.pioenvs/xxx-mmwave/firmware.factory.bin
 ```
 
 ## 5. Firmware flashen
@@ -104,7 +104,7 @@ Die erzeugte Firmware liegt danach unter:
 Port ggf. anpassen:
 
 ```bash
-/opt/homebrew/bin/esphome run c1001-mmwave.yaml --device /dev/cu.usbmodem101
+/opt/homebrew/bin/esphome run xxx-mmwave.yaml --device /dev/cu.usbmodem101
 ```
 
 Der Befehl baut bei Bedarf neu, flasht die Firmware und oeffnet danach die Logs.
@@ -112,13 +112,13 @@ Der Befehl baut bei Bedarf neu, flasht die Firmware und oeffnet danach die Logs.
 Wenn du nur flashen und keine Logs offen halten willst:
 
 ```bash
-/opt/homebrew/bin/esphome run c1001-mmwave.yaml --device /dev/cu.usbmodem11401 --no-logs
+/opt/homebrew/bin/esphome run xxx-mmwave.yaml --device /dev/cu.usbmodem11401 --no-logs
 ```
 
 ## 6. Logs manuell ansehen
 
 ```bash
-/opt/homebrew/bin/esphome logs c1001-mmwave.yaml --device /dev/cu.usbmodem11401 --no-states
+/opt/homebrew/bin/esphome logs xxx-mmwave.yaml --device /dev/cu.usbmodem11401 --no-states
 ```
 
 Beim normalen Start sollten ESPHome-Logs erscheinen. Nach einem Provisioning
@@ -157,7 +157,7 @@ Wenn kein `/dev/cu.usbmodem...` sichtbar ist:
 Wenn der Port sichtbar ist, direkt neu flashen:
 
 ```bash
-/opt/homebrew/bin/esphome run c1001-mmwave.yaml --device /dev/cu.usbmodem11401
+/opt/homebrew/bin/esphome run xxx-mmwave.yaml --device /dev/cu.usbmodem11401
 ```
 
 ## 8. Optional: Flash komplett loeschen
@@ -172,7 +172,7 @@ gehen gespeicherte WLAN-, ESPHome- und Sentero-Provisioning-Daten verloren.
 Danach Firmware neu flashen:
 
 ```bash
-/opt/homebrew/bin/esphome run c1001-mmwave.yaml --device /dev/cu.usbmodem11401
+/opt/homebrew/bin/esphome run xxx-mmwave.yaml --device /dev/cu.usbmodem11401
 ```
 
 ## 9. Setup-Hotspot nach Reset

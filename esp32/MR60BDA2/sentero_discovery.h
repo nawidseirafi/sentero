@@ -1,6 +1,6 @@
 #pragma once
 
-#include "mr60bha2_bridge.h"
+#include "mr60bda2_bridge.h"
 #include "esphome.h"
 #include "esphome/components/wifi/wifi_component.h"
 #include "esphome/components/web_server_base/web_server_base.h"
@@ -18,8 +18,8 @@
 static constexpr const char *SENTERO_NVS_NAMESPACE = "sentero";
 static constexpr const char *SENTERO_LOG_TAG = "sentero";
 static constexpr const char *SENTERO_MANUFACTURER = "Sentero";
-static constexpr const char *SENTERO_DEVICE_MODEL = "MR60BHA2";
-static constexpr const char *SENTERO_SENSOR_TYPE = "vitals_radar";
+static constexpr const char *SENTERO_DEVICE_MODEL = "MR60BDA2";
+static constexpr const char *SENTERO_SENSOR_TYPE = "presence_radar";
 static constexpr const char *SENTERO_FIRMWARE_VERSION = "1.0.1";
 
 // ---------------------------------------------------------------------------
@@ -201,9 +201,8 @@ class SenteroDiscovery {
              "\"http_port\":80,"
              "\"capabilities\":["
              "\"presence\","
-             "\"breath_rate\","
-             "\"heart_rate\","
-             "\"distance\","
+             "\"motion\","
+             "\"fall_detection\","
              "\"signal_quality\"]}",
              device_id.c_str(), SENTERO_DEVICE_MODEL, SENTERO_FIRMWARE_VERSION,
              SENTERO_SENSOR_TYPE);
@@ -457,7 +456,7 @@ class SenteroProvisioning : public AsyncWebHandler {
       last_availability_publish_ms_ = now;
     }
 
-    const MR60BHA2Snapshot sensor = mr60bha2_get_snapshot();
+    const MR60BDA2Snapshot sensor = mr60bda2_get_snapshot();
     const std::string signature = state_signature_(sensor);
     const bool sensor_changed = signature != last_state_signature_;
     if ((sensor_changed && now - last_state_publish_ms_ >= STATE_CHANGE_MIN_INTERVAL_MS) ||
@@ -522,7 +521,7 @@ class SenteroProvisioning : public AsyncWebHandler {
         last_availability_publish_ms_ = millis();
         publish_state_(config);
         last_state_publish_ms_ = millis();
-        last_state_signature_ = state_signature_(mr60bha2_get_snapshot());
+        last_state_signature_ = state_signature_(mr60bda2_get_snapshot());
       }
     } else if (event_id == MQTT_EVENT_DISCONNECTED) {
       ESP_LOGW(SENTERO_LOG_TAG, "MQTT getrennt");
@@ -575,12 +574,12 @@ class SenteroProvisioning : public AsyncWebHandler {
   }
 
   void publish_state_(const Config &config) {
-    const MR60BHA2Snapshot sensor = mr60bha2_get_snapshot();
+    const MR60BDA2Snapshot sensor = mr60bda2_get_snapshot();
 
     StaticJsonDocument<1536> doc;
     const std::string display_name = config.friendly_name.length() > 0
         ? config.friendly_name
-        : std::string("MR60BHA2 Vitalwerte");
+        : std::string("MR60BDA2 Praesenz");
     doc["device_id"] = config.device_id;
     doc["name"] = display_name;
     doc["type"] = SENTERO_SENSOR_TYPE;
@@ -590,22 +589,24 @@ class SenteroProvisioning : public AsyncWebHandler {
     doc["status"] = "online";
     JsonArray capabilities = doc.createNestedArray("capabilities");
     capabilities.add("presence");
-    capabilities.add("breath_rate");
-    capabilities.add("heart_rate");
-    capabilities.add("distance");
+    capabilities.add("motion");
+    capabilities.add("fall_detection");
     capabilities.add("signal_quality");
     doc["presence"] = sensor.presence;
-    doc["breath_rate"] = sensor.breath_rate;
-    doc["heart_rate"] = sensor.heart_rate;
-    doc["distance"] = sensor.distance;
-    doc["num_targets"] = sensor.num_targets;
+    doc["motion"] = sensor.motion;
+    doc["fall_detected"] = sensor.fall_detected;
     doc["sensor_ready"] = sensor.ready;
+    doc["sensor_status"] = sensor.ready ? "OK" : "Warte auf Sensordaten";
+    doc["setup_attempts"] = 1;
+    doc["read_errors"] = 0;
     doc["last_sensor_update_ms"] = sensor.last_update_ms;
     doc["last_value_change_ms"] = sensor.last_value_change_ms;
+    doc["last_frame_ms"] = sensor.last_frame_ms;
+    if (sensor.last_frame.length() > 0) doc["last_frame"] = sensor.last_frame;
     doc["power_source"] = "usb";
     doc["signal_quality"] = signal_quality_();
     doc["command_topic"] = topic_(config, "command");
-    // MR60BHA2 hat (im Gegensatz zum C1001) keine per-MQTT konfigurierbaren
+    // MR60BDA2 hat (im Gegensatz zum C1001) keine per-MQTT konfigurierbaren
     // Sensor-Parameter (keine LEDs, keine Install Height etc.) -> bewusst leer.
     doc.createNestedArray("writable_settings");
     if (config.friendly_name.length() > 0) doc["friendly_name"] = config.friendly_name;
@@ -619,16 +620,15 @@ class SenteroProvisioning : public AsyncWebHandler {
     publish_(topic_(config, "state"), payload, true);
   }
 
-  std::string state_signature_(const MR60BHA2Snapshot &sensor) {
+  std::string state_signature_(const MR60BDA2Snapshot &sensor) {
     char signature[96];
-    snprintf(signature, sizeof(signature), "%u|%u|%.1f|%.1f|%.2f|%u|%u",
+    snprintf(signature, sizeof(signature), "%u|%u|%u|%s|%u|%u",
              sensor.ready ? 1 : 0,
              sensor.presence ? 1 : 0,
-             sensor.breath_rate,
-             sensor.heart_rate,
-             sensor.distance,
-             sensor.num_targets,
-             sensor.last_value_change_ms);
+             sensor.fall_detected ? 1 : 0,
+             sensor.motion,
+             sensor.last_value_change_ms,
+             sensor.last_frame_ms);
     return std::string(signature);
   }
 
@@ -660,7 +660,7 @@ class SenteroProvisioning : public AsyncWebHandler {
     publish_(topic_(config, "status"), payload, false);
   }
 
-  // MR60BHA2 hat keine per-Software steuerbaren Sensor-Parameter, daher
+  // MR60BDA2 hat keine per-Software steuerbaren Sensor-Parameter, daher
   // reduziert sich "configure" hier auf Geraete-Metadaten (friendly_name,
   // room_id). Fuer C1001 gab es hier zusaetzlich hp_led/fall_led/install
   // height/fall time/unmanned time/residence time/fall sensitivity.
@@ -733,7 +733,7 @@ class SenteroProvisioning : public AsyncWebHandler {
     if (load_config_(updated_config)) {
       publish_state_(updated_config);
       last_state_publish_ms_ = millis();
-      last_state_signature_ = state_signature_(mr60bha2_get_snapshot());
+      last_state_signature_ = state_signature_(mr60bda2_get_snapshot());
     }
     return true;
   }
@@ -764,7 +764,7 @@ class SenteroProvisioning : public AsyncWebHandler {
       factory_reset_(&config);
       return;
     }
-    // Hinweis: MR60BHA2 hat (anders als C1001) keine per-Software steuerbaren
+    // Hinweis: MR60BDA2 hat (anders als C1001) keine per-Software steuerbaren
     // Sensor-Parameter (kein Reset-Kommando, keine LEDs, keine Install
     // Height etc.) -> diese Commands entfallen ersatzlos. Uebrig bleibt nur
     // die Geraete-Konfiguration (friendly_name/room_id).
