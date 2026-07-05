@@ -2,55 +2,50 @@
 
 ## Implementierungsstatus
 
-Stand: **ESP32/C1001-Firmware und Sentero-Backend sind produktiv testbar
-implementiert**.
+Stand: C1001 und MR60BDA2 nutzen denselben Sentero-Provisioning- und MQTT-Vertrag.
 
-Bereits vorhanden:
+Vorhanden:
 
-- WLAN-Ersteinrichtung ueber den ESP32-Setup-Hotspot
-  `Sentero-mmWave` mit Passwort `senteroSetup`
-- Captive-Portal-UI mit WLAN-Scan und manuellem SSID-Fallback
+- Setup-Hotspot `Sentero-mmWave` mit Passwort `senteroSetup`
+- Captive-Portal-UI mit WLAN-Scan, QR-Flow im Wizard und manuellem SSID-Fallback
 - UDP-Discovery im Heimnetz auf Port `37020`
-- HTTP-Provisioning auf dem Sensor:
-  `POST http://<sensor-ip>/api/provision`
+- HTTP-Provisioning auf dem Sensor: `POST /api/provision`
 - Speicherung von WLAN-, MQTT-, Device-, Raum- und Token-Metadaten im NVS
+- stabile UUID im NVS-Schluessel `device_uuid`
 - MQTT-Availability, MQTT-State und MQTT-Last-Will
-- Runtime-Kommandos per MQTT, inklusive Factory Reset und C1001-Einstellungen
-- Sentero-Backend-Endpunkte fuer Discovery, Start und Status
-- Produktorientierter Wizard-Flow fuer Praesenzsensoren
+- Runtime-Kommandos per MQTT: `configure`, `factory_reset`; beim C1001 zusaetzlich LEDs und Sensorparameter
+- Sentero-Backend-Endpunkte fuer Discovery, Provisioning und Sensorrollen
+- produktorientierter Wizard-Flow fuer Praesenzsensoren
 
-Die ArduinoJson-Meldungen beim Build sind aktuell Deprecation-Warnungen, keine
-Compile-Fehler.
+Modellstatus:
 
-------------------------------------------------------------------------
+| Modell | Stand |
+| --- | --- |
+| `C1001` | produktiv testbar, inklusive C1001-UART, Diagnose, LEDs und Parametern |
+| `MR60BDA2` | Provisioning/MQTT kompatibel; UART-Rohframes vorhanden, finales Presence/Motion/Fall-Mapping noch offen |
+
+ArduinoJson-Meldungen beim Build sind aktuell Deprecation-Warnungen, keine Compile-Fehler.
 
 ## Ziel
 
-Ein Benutzer soll einen neuen Sensor hinzufuegen koennen, ohne MQTT,
-WLAN-Konfiguration oder technische Details kennen zu muessen. Der Wizard und
-die Firmware uebernehmen die komplette Einrichtung.
-
-------------------------------------------------------------------------
+Ein Benutzer soll einen neuen Sensor hinzufuegen koennen, ohne MQTT, WLAN-Konfiguration oder technische Details kennen zu muessen. Wizard und Firmware uebernehmen die komplette Einrichtung.
 
 ## Gesamtablauf
 
-``` text
+```text
 Sensor einschalten
         |
         v
-Mit Setup-WLAN "Sentero-mmWave" verbinden
+Setup-WLAN "Sentero-mmWave" per QR-Code oder manuell verbinden
         |
         v
 Captive Portal oeffnen
         |
         v
-WLAN-SSID und WLAN-Passwort speichern
+Sensor mit Heim-WLAN verbinden
         |
         v
-Sensor verbindet sich mit dem Heim-WLAN
-        |
-        v
-Sensor sendet UDP-Broadcasts
+Sensor sendet UDP-Discovery im Heimnetz
         |
         v
 Sentero Backend findet Sensor
@@ -71,115 +66,90 @@ Sensor startet neu
 Sensor verbindet sich mit MQTT
         |
         v
-Availability + State werden veroeffentlicht
+Availability + State werden retained veroeffentlicht
         |
         v
-Wizard zeigt "Sensor erfolgreich eingerichtet"
+Wizard zeigt Sensor erfolgreich eingerichtet
 ```
-
-------------------------------------------------------------------------
 
 ## WLAN-Setup im Captive Portal
 
-Solange der Sensor noch nicht im Heimnetz ist, stellt die ESP32-Firmware einen
-Setup-Hotspot bereit:
+Solange der Sensor noch nicht im Heimnetz ist, stellt die Firmware einen Setup-Hotspot bereit:
 
-``` text
+```text
 SSID:     Sentero-mmWave
 Passwort: senteroSetup
 ```
 
-Das Captive Portal laeuft auf Port `80` und liefert die Sentero-Setup-UI aus.
+Das Captive Portal laeuft auf Port `80`.
 
 ### Captive-Portal-Endpunkte
 
-``` text
+```text
 GET /                  HTML-Setup-UI
 GET /config.json       Device-Metadaten und WLAN-Scan-Ergebnisse
-GET /scan.json         startet einen neuen WLAN-Scan
+GET /scan.json         startet neuen WLAN-Scan
 GET /wifisave          speichert SSID/Passwort
 GET /sentero-logo.png  Logo fuer die Setup-UI
 GET /favicon.ico       204 No Content
 ```
 
-`GET /config.json` liefert:
+`GET /config.json`:
 
-``` json
+```json
 {
   "mac": "aa:bb:cc:dd:ee:ff",
   "name": "c1001-mmwave-abcdef",
   "aps": [
-    {
-      "ssid": "MeinWLAN",
-      "rssi": -52,
-      "lock": 1
-    }
+    {"ssid": "MeinWLAN", "rssi": -52, "lock": 1}
   ]
 }
 ```
 
-`GET /scan.json` antwortet bei Erfolg:
+`GET /scan.json`:
 
-``` json
+```json
 {
   "ok": true,
   "status": "scan_started"
 }
 ```
 
-`GET /wifisave?ssid=<ssid>&psk=<passwort>` speichert die WLAN-Daten in der
-ESPHome-WLAN-Konfiguration und antwortet:
+`GET /wifisave?ssid=<ssid>&psk=<passwort>` speichert die WLAN-Daten und antwortet:
 
-``` text
+```text
 Saved. Connecting...
 ```
 
-Das WLAN-Passwort wird in Logs als Secret behandelt.
-
-------------------------------------------------------------------------
+WLAN-Passwoerter werden als Secret behandelt und nicht geloggt.
 
 ## UDP-Discovery
 
-Sobald der Sensor im Heimnetz verbunden und noch nicht provisioniert ist,
-sendet er alle 2 Sekunden einen UDP-Broadcast.
+Sobald der Sensor im Heimnetz verbunden und noch nicht provisioniert ist, sendet er alle 2 Sekunden einen UDP-Broadcast.
 
-Port:
-
-``` text
-37020
-```
-
-Ziel:
-
-``` text
-255.255.255.255:37020
+```text
+Port: 37020
+Ziel: 255.255.255.255:37020
 ```
 
 Payload:
 
-``` json
+```json
 {
   "type": "sentero-discovery",
   "protocol": 1,
-  "device_id": "7f1efc3b-8cf8-4f41-9e8f-7ed6a3f0d112",
+  "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
   "model": "C1001",
-  "firmware": "1.0.0",
+  "firmware": "1.0.1",
   "sensor_type": "presence_radar",
   "http_port": 80,
-  "capabilities": [
-    "presence",
-    "motion",
-    "fall_detection",
-    "signal_quality"
-  ]
+  "capabilities": ["presence", "motion", "fall_detection", "signal_quality"]
 }
 ```
 
-Die `device_id` ist eine UUIDv4, die der Sensor beim ersten Start erzeugt und
-im NVS als `device_uuid` speichert. Sie bleibt ueber normale Neustarts stabil.
-Ein Factory Reset loescht diese UUID; danach erzeugt der Sensor beim naechsten
-Start eine neue ID. Falls im Provisioning-Request keine `device_id` enthalten
-ist, verwendet der Sensor seine eigene UUID.
+`model` ist je Firmware `C1001` oder `MR60BDA2`. Beide Modelle verwenden dieselben Capabilities fuer Sentero.
+
+Die `device_id` ist eine UUID, die der Sensor beim ersten Start erzeugt und im NVS als `device_uuid` speichert. Sie bleibt ueber Neustarts, Firmware-Updates und Factory Reset stabil. Wenn im Provisioning-Request keine `device_id` enthalten ist, verwendet der Sensor seine eigene UUID.
 
 Sentero speichert daraus intern:
 
@@ -191,34 +161,22 @@ Sentero speichert daraus intern:
 - `capabilities`
 - Status `pending`
 
-Nach erfolgreicher Provisionierung sendet der Sensor keine Discovery-Broadcasts
-mehr. Erst ein Factory Reset loescht den `provisioned`-Status.
-
-------------------------------------------------------------------------
+Nach erfolgreicher Provisionierung sendet der Sensor keine Discovery-Broadcasts mehr. Erst ein Factory Reset loescht den `provisioned`-Status.
 
 ## HTTP-Provisioning auf dem Sensor
 
-Nach erfolgreicher UDP-Discovery ruft Sentero den Sensor direkt im Heimnetz
-per HTTP auf:
+Nach erfolgreicher UDP-Discovery ruft Sentero den Sensor direkt im Heimnetz per HTTP auf:
 
-``` text
+```text
 POST http://<sensor-ip>:<http_port>/api/provision
 Content-Type: application/json
 ```
 
-Beispiel:
-
-``` text
-POST http://192.168.178.44/api/provision
-```
-
-Die Firmware liest den JSON-Body auf ESP-IDF direkt aus dem rohen
-`httpd_req_t`, weil ESPHomes `web_server_idf` POST-Bodies nicht ueber
-`handleBody()` bereitstellt. Der Body darf maximal `4096` Bytes gross sein.
+Die Firmware liest den JSON-Body auf ESP-IDF direkt aus dem rohen `httpd_req_t`, weil ESPHomes `web_server_idf` POST-Bodies nicht ueber `handleBody()` bereitstellt. Der Body darf maximal `4096` Bytes gross sein.
 
 ### Request
 
-``` json
+```json
 {
   "protocol": 2,
   "wifi": {
@@ -233,9 +191,9 @@ Die Firmware liest den JSON-Body auf ESP-IDF direkt aus dem rohen
     "topic_prefix": "sentero"
   },
   "device": {
-    "device_id": "c1001-b16c33e0",
-    "friendly_name": "Wohnzimmer Praesenzsensor",
-    "room_id": "living_room",
+    "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
+    "friendly_name": "Keller Praesenz",
+    "room_id": "keller",
     "token": "optional"
   }
 }
@@ -243,9 +201,7 @@ Die Firmware liest den JSON-Body auf ESP-IDF direkt aus dem rohen
 
 ### Kompatible Kurzfelder
 
-Die Firmware akzeptiert zusaetzlich flache Legacy-Felder:
-
-``` json
+```json
 {
   "protocol": 2,
   "wifi_ssid": "MeinWLAN",
@@ -255,9 +211,9 @@ Die Firmware akzeptiert zusaetzlich flache Legacy-Felder:
   "mqtt_username": "sentero",
   "mqtt_password": "********",
   "topic_prefix": "sentero",
-  "device_id": "c1001-b16c33e0",
-  "friendly_name": "Wohnzimmer Praesenzsensor",
-  "room_id": "living_room",
+  "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
+  "friendly_name": "Keller Praesenz",
+  "room_id": "keller",
   "token": "optional"
 }
 ```
@@ -266,29 +222,27 @@ Die Firmware akzeptiert zusaetzlich flache Legacy-Felder:
 
 Aktuell ist nur ein MQTT-Host zwingend erforderlich:
 
-``` text
+```text
 mqtt.host oder mqtt_host
 ```
 
-WLAN-Daten koennen mitgesendet werden und werden dann erneut in ESP-IDF
-gespeichert. Im normalen Flow wurden sie aber bereits vorher im Captive Portal
-gespeichert.
-
 Akzeptierte Protokollversionen:
 
-``` text
+```text
 1, 2
 ```
 
+WLAN-Daten koennen mitgesendet werden und werden dann erneut gespeichert. Im normalen Flow wurden sie vorher im Captive Portal gespeichert.
+
 ### Erfolgreiche Response
 
-``` json
+```json
 {
   "ok": true,
   "success": true,
-  "device_id": "c1001-b16c33e0",
+  "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
   "model": "C1001",
-  "firmware": "1.0.0"
+  "firmware": "1.0.1"
 }
 ```
 
@@ -301,7 +255,7 @@ Nach der Response:
 
 ### Fehlercodes des Sensors
 
-``` text
+```text
 400 body_too_large
 400 request_read_failed
 400 invalid_json
@@ -311,70 +265,48 @@ Nach der Response:
 500 nvs_open_failed
 ```
 
-`already_provisioned` bedeutet: Der Sensor darf nicht erneut per HTTP
-umprovisioniert werden. Erst ein Factory Reset loescht diesen Schutz.
-
-------------------------------------------------------------------------
+`already_provisioned` bedeutet: Der Sensor darf nicht erneut per HTTP umprovisioniert werden. Erst ein Factory Reset loescht diesen Schutz.
 
 ## Sentero Backend API
 
-### Status
-
-``` text
-GET /api/sentero/sensors/provisioning/status
-```
-
-### Discovery starten
-
-``` text
+```text
+GET  /api/sentero/sensors/provisioning/status
 POST /api/sentero/sensors/provisioning/esp32/discovery/start
-```
-
-### Entdeckte Sensoren
-
-``` text
-GET /api/sentero/sensors/provisioning/esp32/discovered
-```
-
-### Praesenzsensor einrichten
-
-``` text
+GET  /api/sentero/sensors/provisioning/esp32/discovered
 POST /api/sentero/sensors/provisioning/esp32/start
 ```
 
-Request:
+Praesenzsensor einrichten:
 
-``` json
+```json
 {
-  "room_id": "living_room",
-  "display_name": "Wohnzimmer Praesenzsensor",
-  "device_id": "c1001-b16c33e0"
+  "room_id": "keller",
+  "display_name": "Keller Praesenz",
+  "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9"
 }
 ```
 
-Erfolgreiche Response:
+Response:
 
-``` json
+```json
 {
   "ok": true,
   "device": {
-    "id": "c1001-b16c33e0",
-    "name": "Wohnzimmer Praesenzsensor",
+    "id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
+    "name": "Keller Praesenz",
     "type": "presence_radar",
-    "room_id": "living_room",
+    "room_id": "keller",
     "source": "mqtt"
   },
   "message": "Praesenzsensor erfolgreich eingerichtet."
 }
 ```
 
-------------------------------------------------------------------------
-
 ## Sentero Konfiguration
 
 Nicht-sensitive Werte stehen in `config/sentero.yaml`:
 
-``` yaml
+```yaml
 esp32:
   topic_prefix: sentero
   discovery_port: 37020
@@ -386,7 +318,7 @@ esp32:
 
 Umgebungsvariablen koennen diese Werte ueberschreiben:
 
-``` dotenv
+```dotenv
 SENTERO_ESP32_DISCOVERY_PORT=37020
 SENTERO_ESP32_DISCOVERY_WAIT_TIMEOUT=6
 SENTERO_ESP32_PROVISIONING_TIMEOUT=10
@@ -395,42 +327,28 @@ SENTERO_ESP32_TOPIC_PREFIX=sentero
 SENTERO_ESP32_DEVICE_TOKEN=
 ```
 
-Eine feste `provisioning_url` wird nicht verwendet. Sentero baut die URL aus
-der UDP-Discovery:
+Eine feste `provisioning_url` wird nicht verwendet. Sentero baut die URL aus der UDP-Discovery:
 
-``` text
+```text
 http://<sender-ip>:<http_port>/api/provision
 ```
 
-Wenn `http_port` fehlt, verwendet Sentero Port `80`. Ein Fake-Server auf
-`localhost:8088` muss deshalb im UDP-Payload `"http_port": 8088` senden.
-
 Passwoerter und Tokens werden nicht geloggt.
-
-`esp32.token` kann ein direkter Token oder der Name einer Umgebungsvariable
-sein. Wenn `SENTERO_ESP32_DEVICE_TOKEN` in `.env` gesetzt ist, hat dieser Wert
-Vorrang. Wenn in `sentero.yaml` nur der Platzhalter steht und die
-Umgebungsvariable fehlt, wird kein Token an den Sensor gesendet.
-
-------------------------------------------------------------------------
 
 ## MQTT nach der Einrichtung
 
 Nach dem Neustart verbindet sich der Sensor mit dem konfigurierten Broker:
 
-``` text
+```text
 mqtt://<mqtt_host>:<mqtt_port>
 client_id: sentero-<device_id>
 ```
 
-Wenn ein MQTT-Benutzer gesetzt ist, wird auch das MQTT-Passwort verwendet.
-Das Topic-Prefix wird aus der Provisioning-Konfiguration gelesen und
-normalisiert. Leere oder nur aus Slashes bestehende Prefixes fallen auf
-`sentero` zurueck.
+Topic-Prefix wird aus dem Provisioning gelesen und normalisiert. Leere oder nur aus Slashes bestehende Prefixes fallen auf `sentero` zurueck.
 
 ### Topics
 
-``` text
+```text
 <topic_prefix>/<device_id>/availability
 <topic_prefix>/<device_id>/state
 <topic_prefix>/<device_id>/status
@@ -439,41 +357,24 @@ normalisiert. Leere oder nur aus Slashes bestehende Prefixes fallen auf
 
 Standard:
 
-``` text
+```text
 sentero/<device_id>/availability
 sentero/<device_id>/state
 sentero/<device_id>/status
 sentero/<device_id>/command
 ```
 
-`availability` und `state` werden retained veroeffentlicht. Das Status-Topic
-fuer Kommandobestaetigungen wird nicht retained.
-
 ### Availability
 
-Beim MQTT-Connect veroeffentlicht der Sensor `online`. Danach wiederholt er
-Availability alle 60 Sekunden. Als Last Will ist `offline` retained
-konfiguriert.
+Beim MQTT-Connect veroeffentlicht der Sensor `online`. Danach wiederholt er Availability alle 60 Sekunden. Als Last Will ist `offline` retained konfiguriert.
 
-``` json
+```json
 {
-  "device_id": "c1001-b16c33e0",
+  "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
   "status": "online",
-  "firmware": "1.0.0"
+  "firmware": "1.0.1"
 }
 ```
-
-``` json
-{
-  "device_id": "c1001-b16c33e0",
-  "status": "offline",
-  "firmware": "1.0.0"
-}
-```
-
-Lifecycle-Zustaende wie `factory_resetting`, `command_accepted` oder
-`command_rejected` gehoeren nicht in `availability`, sondern in
-`status`.
 
 ### State
 
@@ -483,35 +384,61 @@ Der Sensor veroeffentlicht State:
 - bei relevanten Sensor-Aenderungen, maximal einmal pro Sekunde
 - als Heartbeat spaetestens alle 5 Minuten
 
-Beispiel:
+Basisbeispiel fuer C1001 und MR60BDA2:
 
-``` json
+```json
 {
-  "device_id": "c1001-b16c33e0",
-  "name": "Wohnzimmer Praesenzsensor",
+  "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
+  "name": "Keller Praesenz",
   "type": "presence_radar",
   "manufacturer": "Sentero",
   "model": "C1001",
-  "firmware": "1.0.0",
+  "firmware": "1.0.1",
   "status": "online",
-  "capabilities": [
-    "presence",
-    "motion",
-    "fall_detection",
-    "signal_quality"
-  ],
+  "capabilities": ["presence", "motion", "fall_detection", "signal_quality"],
   "presence": true,
   "fall_detected": false,
-  "motion": "moving",
-  "moving_range": 182,
-  "work_mode": 1,
+  "motion": "Still",
   "sensor_ready": true,
-  "sensor_status": "ok",
+  "sensor_status": "OK",
   "setup_attempts": 1,
-  "last_sensor_update_ms": 123456,
+  "last_sensor_update_ms": 649149,
+  "last_value_change_ms": 649149,
   "power_source": "usb",
-  "signal_quality": 82,
-  "command_topic": "sentero/c1001-b16c33e0/command",
+  "signal_quality": 90,
+  "command_topic": "sentero/3be1ddd5-ddd6-45a2-a445-274be35449a9/command",
+  "writable_settings": [],
+  "friendly_name": "Keller Praesenz",
+  "room_id": "keller",
+  "room_hint": "keller"
+}
+```
+
+C1001 sendet zusaetzlich Diagnose- und LED-Felder, z. B.:
+
+```json
+{
+  "presence_raw": 1,
+  "motion_raw": 1,
+  "fall_raw": 0,
+  "moving_range": 1,
+  "work_mode": 1,
+  "poll_count": 313,
+  "poll_ok_count": 313,
+  "poll_error_count": 0,
+  "read_errors": 0,
+  "stuck_active_resets": 0,
+  "stuck_presence_resets": 0,
+  "stuck_inactive_resets": 1,
+  "last_poll_ms": 649144,
+  "last_poll_ok_ms": 649149,
+  "last_frame_ms": 649149,
+  "led_status": {
+    "hp_led": false,
+    "fall_led": false,
+    "all_on": false,
+    "any_on": false
+  },
   "writable_settings": [
     "hp_led",
     "fall_led",
@@ -520,62 +447,51 @@ Beispiel:
     "unmanned_time",
     "residence_time",
     "fall_sensitivity"
-  ],
-  "friendly_name": "Wohnzimmer Praesenzsensor",
-  "room_id": "living_room",
-  "room_hint": "living_room"
+  ]
 }
 ```
 
-Fuer dauerhaft per USB/Netzteil versorgte C1001-Sensoren wird kein `battery`
-gesendet. Stattdessen sendet die Firmware:
-
-``` json
-{
-  "power_source": "usb"
-}
-```
-
-------------------------------------------------------------------------
+MR60BDA2 sendet aktuell `last_frame_ms` und optional `last_frame` fuer UART-Diagnose. `writable_settings` bleibt leer.
 
 ## MQTT-Kommandos
 
-Runtime-Kommandos laufen ausschliesslich ueber MQTT:
+Runtime-Kommandos laufen ueber:
 
-``` text
+```text
 sentero/<device_id>/command
 ```
 
-Die Firmware akzeptiert Command-Namen mit Bindestrich oder Unterstrich und
-normalisiert sie auf Kleinbuchstaben mit Unterstrich.
+Antworten laufen ueber:
+
+```text
+sentero/<device_id>/status
+```
+
+Die Firmware akzeptiert Command-Namen mit Bindestrich oder Unterstrich und normalisiert sie auf Kleinbuchstaben mit Unterstrich.
 
 ### Allgemeine Bestaetigung
 
-Erfolgreiche Kommandos:
-
-``` json
+```json
 {
-  "device_id": "c1001-b16c33e0",
+  "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
   "status": "command_accepted",
-  "command": "set_hp_led",
+  "command": "configure",
   "ok": true,
-  "message": "enabled"
+  "message": "configured"
 }
 ```
 
-Abgelehnte Kommandos:
-
-``` json
+```json
 {
-  "device_id": "c1001-b16c33e0",
+  "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
   "status": "command_rejected",
-  "command": "set_hp_led",
+  "command": "configure",
   "ok": false,
-  "message": "missing_or_invalid_boolean"
+  "message": "no_known_settings"
 }
 ```
 
-Moegliche Ablehnungsgruende sind unter anderem:
+Moegliche Ablehnungsgruende:
 
 - `invalid_json`
 - `missing_command`
@@ -585,31 +501,44 @@ Moegliche Ablehnungsgruende sind unter anderem:
 - `value_out_of_range`
 - `no_known_settings`
 
-### Sensor-Neustart
+### Configure fuer Name und Raum
 
-``` json
+C1001 und MR60BDA2 akzeptieren `configure` fuer Metadaten:
+
+```json
 {
-  "command": "reset_sensor"
+  "command": "configure",
+  "device": {
+    "friendly_name": "Keller Praesenz",
+    "room_id": "keller"
+  }
 }
 ```
 
-Alias:
+Auch flach oder unter `settings` wird akzeptiert, sofern die Firmware das Feld kennt.
 
-``` text
-sensor_restart
-restart_sensor
+### Factory Reset
+
+```json
+{
+  "command": "factory_reset"
+}
 ```
 
-### LEDs
+Factory Reset loescht Provisioning-, WLAN- und MQTT-Daten, aber erhaelt die `device_uuid`.
 
-``` json
+### C1001 LEDs
+
+Nur senden, wenn der State `writable_settings` mit `hp_led` oder `fall_led` meldet.
+
+```json
 {
   "command": "set_hp_led",
   "enabled": true
 }
 ```
 
-``` json
+```json
 {
   "command": "set_fall_led",
   "enabled": false
@@ -618,96 +547,60 @@ restart_sensor
 
 Alias:
 
-``` text
+```text
 hp_led
 fall_led
 ```
 
-Boolesche Werte koennen als Boolean, Zahl oder Text gesendet werden:
-`true`, `false`, `1`, `0`, `on`, `off`, `yes`, `no`.
+Boolesche Werte koennen als Boolean, Zahl oder Text gesendet werden: `true`, `false`, `1`, `0`, `on`, `off`, `yes`, `no`.
 
-### Einzelne Zahlenwerte
+### C1001 Zahlenwerte
 
 Montagehoehe:
 
-``` json
-{
-  "command": "set_install_height",
-  "centimeters": 270
-}
+```json
+{"command": "set_install_height", "centimeters": 270}
 ```
 
-Range:
-
-``` text
-100..400
-```
+Range: `100..400`
 
 Sturz-Verzoegerung:
 
-``` json
-{
-  "command": "set_fall_time",
-  "seconds": 5
-}
+```json
+{"command": "set_fall_time", "seconds": 5}
 ```
 
-Range:
-
-``` text
-0..60
-```
+Range: `0..60`
 
 Abwesenheitszeit:
 
-``` json
-{
-  "command": "set_unmanned_time",
-  "seconds": 1
-}
+```json
+{"command": "set_unmanned_time", "seconds": 1}
 ```
 
-Range:
-
-``` text
-0..60
-```
+Range: `0..60`
 
 Verweilzeit:
 
-``` json
-{
-  "command": "set_residence_time",
-  "seconds": 200
-}
+```json
+{"command": "set_residence_time", "seconds": 200}
 ```
 
-Range:
-
-``` text
-0..3600
-```
+Range: `0..3600`
 
 Sturz-Empfindlichkeit:
 
-``` json
-{
-  "command": "set_fall_sensitivity",
-  "sensitivity": 3
-}
+```json
+{"command": "set_fall_sensitivity", "sensitivity": 3}
 ```
 
-Range:
+Range: `0..3`
 
-``` text
-0..3
-```
+Alle Zahlenkommandos akzeptieren alternativ das Feld `value`.
 
-Alle Zahlenkommandos akzeptieren alternativ auch das Feld `value`.
+### Mehrere C1001-Einstellungen
 
-### Mehrere Einstellungen
-
-``` json
+```json
 {
   "command": "configure",
   "settings": {
@@ -722,108 +615,16 @@ Alle Zahlenkommandos akzeptieren alternativ auch das Feld `value`.
 }
 ```
 
-Alias:
+Der Sensor wendet nur bekannte Einstellungen an. Wenn keine bekannte Einstellung enthalten ist, antwortet er mit `no_known_settings`.
 
-``` text
-set_config
-```
+## Factory-Reset-Taster
 
-Die Felder koennen auch direkt auf Root-Ebene stehen, wenn kein `settings`
-Objekt gesendet wird.
+Beide ESP32-Firmwares nutzen einen lokalen Factory-Reset-Taster. Der Button muss ca. 5 Sekunden gehalten werden. Danach werden Provisioning-Daten geloescht und der Sensor startet neu.
 
-------------------------------------------------------------------------
+## Kompatibilitaetsregeln fuer die UI
 
-## Factory Reset
-
-Wenn ein ESP32/C1001-Praesenzsensor aus Sentero geloescht wird, wird er nicht
-per HTTP angesprochen. HTTP ist ausschliesslich fuer die Ersteinrichtung
-reserviert. Runtime-Kommandos laufen ueber MQTT.
-
-### Command Topic
-
-``` text
-sentero/<device_id>/command
-```
-
-Payload:
-
-``` json
-{
-  "command": "factory_reset",
-  "reason": "removed_from_sentero"
-}
-```
-
-Alias:
-
-``` text
-factory_resetting
-```
-
-### Status Topic
-
-``` text
-sentero/<device_id>/status
-```
-
-Erwartete Bestaetigung:
-
-``` json
-{
-  "device_id": "c1001-b16c33e0",
-  "status": "factory_resetting"
-}
-```
-
-Nach Empfang von `factory_reset`:
-
-1. Der Sensor veroeffentlicht `factory_resetting` auf dem Status-Topic.
-2. Der Sensor veroeffentlicht `offline` auf dem Availability-Topic.
-3. Der Sensor loescht den kompletten NVS-Namespace `sentero`.
-4. Der Sensor ruft `esp_wifi_restore()` auf.
-5. Der Sensor startet nach ca. 500 ms neu.
-6. Danach befindet er sich wieder im Einrichtungszustand.
-
-`availability` bleibt ausschliesslich fuer `online` und `offline`.
-
-### Offline-Sensoren
-
-Wenn der Sensor offline ist, sendet Sentero kein Factory-Reset-Kommando. Die UI
-bietet dann nur eine bewusste lokale Entfernung an:
-
-``` text
-Nur aus Sentero entfernen
-```
-
-In diesem Fall bleibt der Sensor selbst unveraendert. Wird er spaeter wieder
-eingeschaltet, muss er manuell auf Werkseinstellungen zurueckgesetzt werden,
-bevor er erneut sauber eingerichtet wird.
-
-------------------------------------------------------------------------
-
-## Sicherheitsregeln
-
-- WLAN-Passwort niemals im Klartext protokollieren.
-- MQTT-Passwort niemals im Klartext protokollieren.
-- Provisioning per HTTP nur einmal zulassen, solange `provisioned` gesetzt ist.
-- Umprovisionierung nur nach Factory Reset erlauben.
-- Direkte HTTP-Kommunikation nur waehrend der Ersteinrichtung verwenden.
-- Runtime-Aktionen ausschliesslich ueber MQTT-Kommandos ausfuehren.
-
-------------------------------------------------------------------------
-
-## Architekturprinzip
-
-Sentero verwendet zwei klar getrennte Kommunikationsprotokolle:
-
-1. **Provisioning-Protokoll**
-   - nur waehrend der Ersteinrichtung aktiv
-   - direkte Kommunikation zwischen Sentero und Sensor
-   - Uebertragung der Provisioning-Konfiguration
-2. **MQTT-Laufzeitprotokoll**
-   - fuer den gesamten normalen Betrieb
-   - Uebertragung aller Sensordaten, Statusmeldungen und Ereignisse
-   - keine direkte HTTP-Kommunikation mehr zwischen Sentero und Sensor
-
-Diese Trennung vereinfacht die Firmware, reduziert Seiteneffekte und haelt die
-Einrichtungslogik vom normalen Sensorbetrieb getrennt.
+- Die UI entscheidet anhand von `type=presence_radar` und MQTT-State, nicht anhand eines festen Modells.
+- `model` darf `C1001` oder `MR60BDA2` sein.
+- Buttons fuer schreibbare Einstellungen werden nur aus `writable_settings` abgeleitet.
+- Zusatzfelder duerfen fehlen. Der Basis-State muss aber vollstaendig bleiben.
+- MR60BDA2 darf keine C1001-LED-Felder melden, solange er sie nicht wirklich steuern kann.

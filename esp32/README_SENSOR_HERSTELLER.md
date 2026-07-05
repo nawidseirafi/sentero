@@ -1,287 +1,276 @@
-# README_SENSOR_HERSTELLER.md
+# Sentero Sensor-Integrationsvertrag fuer Hersteller
 
-# Sentero -- Sensor-Integrationsvertrag für Hersteller
-
-**Version:** 1.0 (Entwurf)\
-**Gültig ab:** Sentero 1.x
-
-------------------------------------------------------------------------
+Version: 1.1
+Gueltig ab: Sentero 1.x
 
 ## Zweck
 
-Dieses Dokument beschreibt die technische Schnittstelle zwischen einem
-Sensor (Firmware) und der Sentero-Plattform.
+Dieses Dokument beschreibt die technische Schnittstelle zwischen kompatiblen Sensoren und der Sentero-Plattform. Ziel ist, dass Sensoren automatisch erkannt, registriert, konfiguriert und fuer Dashboard sowie Verhaltenserkennung verwendet werden koennen.
 
-Ziel ist, dass jeder kompatible Sensor von Sentero automatisch erkannt,
-registriert und verwendet werden kann.
+Der Benutzer interagiert ausschliesslich mit Sentero. WLAN, MQTT, ESP32, Zigbee und Payloads sind technische Implementierungsdetails.
 
-Dieses Dokument richtet sich ausschließlich an Hersteller und
-Firmware-Entwickler.
+## Unterstuetzte Sensortypen
 
-------------------------------------------------------------------------
+| Sensortyp | Technologie | `type` |
+| --- | --- | --- |
+| Praesenzradar | ESP32, WLAN, MQTT, C1001, MR60BDA2 | `presence_radar` |
+| Tuer-/Fensterkontakt | Zigbee, spaeter optional MQTT | `door_contact` |
 
-# 1. Unterstützte Sensortypen
+Weitere Typen koennen spaeter ergaenzt werden. Nicht bekannte Typen werden nicht automatisch als Praesenzsensor behandelt.
 
-## Türkontakt
+## Geraete-ID
 
-**Technologie**
-
--   Zigbee
-
-**Typ**
-
-``` text
-door_contact
-```
-
-------------------------------------------------------------------------
-
-## Präsenzsensor
-
-**Technologie**
-
--   ESP32
--   WLAN
--   MQTT
--   C1001
--   MR60BDA2
-
-**Typ**
-
-``` text
-presence_radar
-```
-
-Weitere Sensortypen können zukünftig ergänzt werden.
-
-------------------------------------------------------------------------
-
-# 2. Geräte-ID
-
-Jeder Sensor muss eine eindeutige und dauerhafte Geräte-ID besitzen.
+Jeder Sensor muss eine eindeutige und dauerhafte `device_id` besitzen.
 
 Anforderungen:
 
--   weltweit eindeutig
--   bleibt nach Neustarts erhalten
--   bleibt nach Firmware-Updates erhalten
--   keine Leerzeichen
+- UUID-Format empfohlen
+- pro physischem Sensor eindeutig
+- bleibt nach Neustarts erhalten
+- bleibt nach Firmware-Updates erhalten
+- bleibt nach Factory Reset erhalten, wenn das Geraet weiter als dasselbe physische Produkt erkannt werden soll
+- keine Leerzeichen
 
 Beispiel:
 
-``` text
-c1001-wohnzimmer-01
+```text
+3be1ddd5-ddd6-45a2-a445-274be35449a9
 ```
 
-------------------------------------------------------------------------
+Die aktuelle ESP32-Firmware erzeugt die UUID beim ersten Start und speichert sie im NVS-Schluessel `device_uuid`.
 
-# 3. MQTT-Kommunikation
+## Discovery
 
-## Topics
+Noch nicht provisionierte ESP32/WLAN-Sensoren senden UDP-Broadcasts an Port `37020`.
 
-Empfohlen:
+Payload:
 
-``` text
-sentero/<device_id>/availability
-sentero/<device_id>/state
-sentero/<device_id>/status
+```json
+{
+  "type": "sentero-discovery",
+  "protocol": 1,
+  "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
+  "model": "C1001",
+  "firmware": "1.0.1",
+  "sensor_type": "presence_radar",
+  "http_port": 80,
+  "capabilities": ["presence", "motion", "fall_detection", "signal_quality"]
+}
 ```
 
-Alternativ:
+Ein Sensor gilt als erkennbar, wenn `device_id`, `sensor_type` und mindestens eine Capability gueltig sind.
 
-``` text
-c1001/<device_id>/state
+## Provisioning
+
+Sentero provisioniert ESP32/WLAN-Sensoren per HTTP im lokalen Netzwerk:
+
+```text
+POST http://<sensor-ip>:<http_port>/api/provision
+Content-Type: application/json
 ```
 
-------------------------------------------------------------------------
+Die genaue Request-/Response-Struktur steht in `README_SENSOR_PROVISIONING.md`.
 
-# 4. Availability
+Der Benutzer konfiguriert keine MQTT- oder WLAN-Parameter manuell in Sentero. Der Wizard fuehrt ihn durch Setup-Hotspot, Heimnetz-Verbindung, Discovery und Raumzuordnung.
 
-Beim erfolgreichen Start muss der Sensor senden:
+## MQTT-Kommunikation
 
-``` text
-online
+Alle ESP32/WLAN-Sensoren muessen denselben Topic-Aufbau verwenden:
+
+```text
+<topic_prefix>/<device_id>/availability
+<topic_prefix>/<device_id>/state
+<topic_prefix>/<device_id>/status
+<topic_prefix>/<device_id>/command
 ```
 
-Als MQTT Last Will:
+Standard fuer `topic_prefix` ist:
 
-``` text
-offline
+```text
+sentero
 ```
 
-Die Availability-Nachricht soll retained sein.
+`availability` und `state` muessen retained veroeffentlicht werden. `status` fuer Kommandoantworten darf nicht retained sein.
 
-------------------------------------------------------------------------
+## Availability
 
-# 5. Status-Payload
+Payload `online`:
 
-Der Sensor sendet JSON.
+```json
+{
+  "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
+  "status": "online",
+  "firmware": "1.0.1"
+}
+```
 
-## Pflichtfelder
+Last-Will `offline`:
 
-  Feld           Beschreibung
-  -------------- --------------------------
-  device_id      Eindeutige Geräte-ID
-  type           Sensortyp
-  manufacturer   Hersteller
-  model          Modell
-  firmware       Firmware-Version
-  capabilities   Unterstützte Fähigkeiten
+```json
+{
+  "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
+  "status": "offline",
+  "firmware": "1.0.1"
+}
+```
 
-## Optionale Felder
+Lifecycle- und Kommandozustaende gehoeren in `status`, nicht in `availability`.
 
--   presence
--   motion
--   contact
--   fall_detected
--   breathing_detected
--   respiration_rate
--   temperature
--   humidity
--   illuminance
--   battery
--   signal_quality
+## State-Payload
 
-------------------------------------------------------------------------
+Pflichtfelder fuer Praesenzradar:
 
-# 6. Unterstützte Capabilities
+| Feld | Typ | Bedeutung |
+| --- | --- | --- |
+| `device_id` | string | stabile Geraete-ID |
+| `name` | string | Anzeigename |
+| `type` | string | `presence_radar` |
+| `manufacturer` | string | Hersteller, aktuell `Sentero` |
+| `model` | string | z. B. `C1001` oder `MR60BDA2` |
+| `firmware` | string | Firmware-Version |
+| `status` | string | normalerweise `online` |
+| `capabilities` | array | unterstuetzte Funktionen |
+| `presence` | boolean | Praesenz erkannt |
+| `fall_detected` | boolean | Fallhinweis erkannt |
+| `motion` | string | `None`, `Still`, `Active` oder modellspezifische Rohbezeichnung |
+| `sensor_ready` | boolean | Sensorwerte sind verwendbar |
+| `last_sensor_update_ms` | number | `millis()` der letzten Sensoraktualisierung |
+| `power_source` | string | z. B. `usb` |
+| `signal_quality` | number | 0..100 |
+| `command_topic` | string | Topic fuer MQTT-Kommandos |
+| `writable_settings` | array | schreibbare Einstellungen, leer wenn keine vorhanden |
 
-``` text
+Empfohlene Felder:
+
+| Feld | Bedeutung |
+| --- | --- |
+| `sensor_status` | menschenlesbarer technischer Sensorstatus |
+| `last_value_change_ms` | `millis()` der letzten inhaltlichen Wertveraenderung |
+| `friendly_name` | aktueller Name aus Sentero |
+| `room_id` | Raum-ID aus Sentero |
+| `room_hint` | identisch zu `room_id` fuer Discovery/Mapping |
+
+Beispiel:
+
+```json
+{
+  "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
+  "name": "Keller Praesenz",
+  "type": "presence_radar",
+  "manufacturer": "Sentero",
+  "model": "C1001",
+  "firmware": "1.0.1",
+  "status": "online",
+  "capabilities": ["presence", "motion", "fall_detection", "signal_quality"],
+  "presence": true,
+  "fall_detected": false,
+  "motion": "Still",
+  "sensor_ready": true,
+  "sensor_status": "OK",
+  "last_sensor_update_ms": 649149,
+  "last_value_change_ms": 649149,
+  "power_source": "usb",
+  "signal_quality": 90,
+  "command_topic": "sentero/3be1ddd5-ddd6-45a2-a445-274be35449a9/command",
+  "writable_settings": ["hp_led", "fall_led"],
+  "friendly_name": "Keller Praesenz",
+  "room_id": "keller",
+  "room_hint": "keller"
+}
+```
+
+## Capabilities
+
+Aktuell fuer Praesenzradar freigegeben:
+
+```text
 presence
 motion
-contact
 fall_detection
-breathing_detection
-respiration_rate
-temperature
-humidity
-illuminance
-battery
 signal_quality
-button
 ```
 
-Nicht unterstützte Felder werden von Sentero ignoriert.
+Weitere Felder werden von Sentero ignoriert, solange sie nicht vertraglich freigegeben sind. MR60BDA2 wird hier als Praesenz-/Motion-/Fall-Sensor behandelt, nicht als Vitaldaten-Sensor.
 
-------------------------------------------------------------------------
+## Writable Settings
 
-# 7. Discovery
+`writable_settings` steuert, welche UI-Aktionen Sentero anbietet.
 
-Während einer Discovery muss der Sensor innerhalb von **180 Sekunden**
-mindestens senden:
+C1001 kann melden:
 
--   Availability
--   State
-
-Ein Sensor gilt als erkannt, wenn:
-
--   device_id gültig
--   type gültig
--   mindestens eine Capability vorhanden
-
-------------------------------------------------------------------------
-
-# 8. Registrierung
-
-Nach erfolgreicher Erkennung speichert Sentero:
-
--   Geräte-ID
--   Name
--   Typ
--   Hersteller
--   Modell
--   Firmware-Version
--   Capabilities
--   Raumzuordnung
-
-Die Raumzuordnung wird ausschließlich von Sentero verwaltet.
-
-------------------------------------------------------------------------
-
-# 9. Provisioning
-
-Die Konfiguration erfolgt automatisch durch Sentero.
-
-Der Benutzer konfiguriert **keine** MQTT- oder WLAN-Parameter am Sensor.
-
-Sentero überträgt bei der Ersteinrichtung automatisch:
-
--   WLAN-SSID
--   WLAN-Passwort
--   MQTT-Host
--   MQTT-Port
--   MQTT-Benutzer
--   MQTT-Passwort
-
-Die technische Übertragung (z. B. über temporären WLAN-Access-Point oder
-BLE) ist implementierungsabhängig und nicht Bestandteil dieses Vertrags.
-
-------------------------------------------------------------------------
-
-# 10. Heartbeat
-
-Empfehlung:
-
--   alle 60 Sekunden Availability
--   alle 5 Minuten vollständigen Status senden
-
-Der vollständige Status sollte retained veröffentlicht werden.
-
-------------------------------------------------------------------------
-
-# 11. Fehlerstatus
-
-Topic:
-
-``` text
-sentero/<device_id>/status
+```json
+[
+  "hp_led",
+  "fall_led",
+  "install_height",
+  "fall_time",
+  "unmanned_time",
+  "residence_time",
+  "fall_sensitivity"
+]
 ```
 
-Empfohlene Statuswerte:
+MR60BDA2 meldet aktuell:
 
-``` text
-online
-offline
-provisioning
-battery_low
-wifi_error
-mqtt_error
-sensor_error
-firmware_error
+```json
+[]
 ```
 
-------------------------------------------------------------------------
+Ein Sensor darf keine Einstellung in `writable_settings` auffuehren, wenn er sie nicht per MQTT-Kommando bestaetigen und anwenden kann.
 
-# 12. Sicherheit
+## MQTT-Kommandos
 
-Der Sensor muss folgende Anforderungen erfüllen:
+Kommandos werden als JSON an `<topic_prefix>/<device_id>/command` gesendet. Antworten gehen an `<topic_prefix>/<device_id>/status`.
 
--   WLAN- und MQTT-Zugangsdaten niemals protokollieren.
--   Kommunikation ausschließlich innerhalb des lokalen Netzes.
--   Unterstützung individueller Zugangsdaten oder Tokens empfohlen.
--   TLS-Unterstützung für zukünftige Versionen empfohlen.
+Alle kompatiblen ESP32-Sensoren muessen unterstuetzen:
 
-------------------------------------------------------------------------
+- `configure` fuer `friendly_name` und `room_id`
+- `factory_reset`
 
-# 13. Akzeptanzkriterien
+C1001 unterstuetzt zusaetzlich LED- und Sensorparameter. Details stehen in `README_SENSOR_PROVISIONING.md`.
 
-Ein Sensor ist Sentero-kompatibel, wenn er:
+Erfolgreiche Antwort:
 
--   eine stabile Geräte-ID besitzt,
--   sich mit WLAN verbinden kann,
--   sich mit MQTT verbinden kann,
--   Availability veröffentlicht,
--   gültige JSON-Statusmeldungen sendet,
--   retained Status unterstützt,
--   automatisch erkannt werden kann,
--   durch Sentero registriert werden kann.
+```json
+{
+  "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
+  "status": "command_accepted",
+  "command": "configure",
+  "ok": true,
+  "message": "configured"
+}
+```
 
-------------------------------------------------------------------------
+Abgelehnte Antwort:
 
-# Grundprinzip
+```json
+{
+  "device_id": "3be1ddd5-ddd6-45a2-a445-274be35449a9",
+  "status": "command_rejected",
+  "command": "configure",
+  "ok": false,
+  "message": "no_known_settings"
+}
+```
 
-Der Benutzer interagiert ausschließlich mit **Sentero**.
+## Sicherheit
 
-Ob der Sensor intern über Zigbee, WLAN, ESP32 oder MQTT kommuniziert,
-ist ein technisches Implementierungsdetail und darf für den Benutzer
-nicht sichtbar sein.
+- WLAN- und MQTT-Zugangsdaten duerfen nicht geloggt werden.
+- Provisioning findet nur im lokalen Netzwerk statt.
+- MQTT-Zugangsdaten muessen individuell provisionierbar sein.
+- TLS ist fuer spaetere Versionen vorgesehen, aber fuer lokale Testsysteme nicht verpflichtend.
+
+## Akzeptanzkriterien
+
+Ein ESP32/WLAN-Sensor ist Sentero-kompatibel, wenn er:
+
+- eine stabile UUID als `device_id` besitzt,
+- den Setup-Hotspot bereitstellt,
+- per UDP-Discovery gefunden wird,
+- `/api/provision` akzeptiert,
+- sich mit MQTT verbindet,
+- `availability` und `state` retained veroeffentlicht,
+- den Basis-State fuer `presence_radar` sendet,
+- `configure` fuer Name/Raum bestaetigt,
+- `factory_reset` unterstuetzt,
+- nur tatsaechlich unterstuetzte Felder in `writable_settings` meldet.
