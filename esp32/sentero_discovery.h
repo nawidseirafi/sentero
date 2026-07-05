@@ -237,6 +237,8 @@ class SenteroProvisioning : public AsyncWebHandler {
     String device_id;
     String friendly_name;
     String room_id;
+    bool hp_led{false};
+    bool fall_led{false};
     String mqtt_host;
     uint16_t mqtt_port{1883};
     String mqtt_username;
@@ -245,7 +247,7 @@ class SenteroProvisioning : public AsyncWebHandler {
   };
 
   static constexpr uint32_t STATE_CHANGE_MIN_INTERVAL_MS = 1000;
-  static constexpr uint32_t STATE_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+  static constexpr uint32_t STATE_HEARTBEAT_INTERVAL_MS = 30 * 1000;
   static constexpr uint32_t AVAILABILITY_INTERVAL_MS = 60 * 1000;
 
   void register_handler_once_() {
@@ -409,6 +411,8 @@ class SenteroProvisioning : public AsyncWebHandler {
 
     if (!mqtt_connected_) return;
 
+    apply_desired_led_state_(config);
+
     const uint32_t now = millis();
     if (now - last_availability_publish_ms_ >= AVAILABILITY_INTERVAL_MS) {
       publish_availability_(config, "online");
@@ -499,6 +503,8 @@ class SenteroProvisioning : public AsyncWebHandler {
     config.device_id = sentero_nvs_get_string("device_id", "");
     config.friendly_name = sentero_nvs_get_string("friendly", "");
     config.room_id = sentero_nvs_get_string("room_id", "");
+    config.hp_led = sentero_nvs_get_bool("hp_led", false);
+    config.fall_led = sentero_nvs_get_bool("fall_led", false);
     config.mqtt_host = sentero_nvs_get_string("mqtt_host", "");
     config.mqtt_port = sentero_nvs_get_u16("mqtt_port", 1883);
     config.mqtt_username = sentero_nvs_get_string("mqtt_user", "");
@@ -511,6 +517,31 @@ class SenteroProvisioning : public AsyncWebHandler {
     while (config.topic_prefix.endsWith("/")) config.topic_prefix.remove(config.topic_prefix.length() - 1);
     if (config.topic_prefix.length() == 0) config.topic_prefix = "sentero";
     return provisioned && config.device_id.length() > 0 && config.mqtt_host.length() > 0;
+  }
+
+  bool store_led_preference_(const char *key, bool value) {
+    nvs_handle_t prefs;
+    if (nvs_open(SENTERO_NVS_NAMESPACE, NVS_READWRITE, &prefs) != ESP_OK) return false;
+    const esp_err_t set_result = nvs_set_u8(prefs, key, value ? 1 : 0);
+    const esp_err_t commit_result = nvs_commit(prefs);
+    nvs_close(prefs);
+    return set_result == ESP_OK && commit_result == ESP_OK;
+  }
+
+  void apply_desired_led_state_(const Config &config) {
+    const C1001Snapshot sensor = c1001_get_snapshot();
+    if (!sensor.ready) return;
+    bool changed = false;
+    if (!sensor.hp_led_known || sensor.hp_led != config.hp_led) {
+      changed = c1001_set_hp_led(config.hp_led) || changed;
+    }
+    if (!sensor.fall_led_known || sensor.fall_led != config.fall_led) {
+      changed = c1001_set_fall_led(config.fall_led) || changed;
+    }
+    if (changed) {
+      last_state_publish_ms_ = 0;
+      last_state_signature_ = "";
+    }
   }
 
   String topic_(const Config &config, const char *suffix) {
@@ -554,12 +585,26 @@ class SenteroProvisioning : public AsyncWebHandler {
     doc["presence"] = sensor.presence;
     doc["fall_detected"] = sensor.fall_detected;
     doc["motion"] = sensor.motion;
+    doc["presence_raw"] = sensor.presence_raw;
+    doc["motion_raw"] = sensor.motion_raw;
+    doc["fall_raw"] = sensor.fall_raw;
     doc["moving_range"] = sensor.moving_range;
     doc["work_mode"] = sensor.work_mode;
     doc["sensor_ready"] = sensor.ready;
     doc["sensor_status"] = sensor.status;
     doc["setup_attempts"] = sensor.setup_attempts;
+    doc["poll_count"] = sensor.poll_count;
+    doc["poll_ok_count"] = sensor.poll_ok_count;
+    doc["poll_error_count"] = sensor.poll_error_count;
+    doc["read_errors"] = sensor.read_errors;
+    doc["stuck_active_resets"] = sensor.stuck_active_resets;
+    doc["stuck_presence_resets"] = sensor.stuck_presence_resets;
+    doc["stuck_inactive_resets"] = sensor.stuck_inactive_resets;
     doc["last_sensor_update_ms"] = sensor.last_update_ms;
+    doc["last_value_change_ms"] = sensor.last_value_change_ms;
+    doc["last_poll_ms"] = sensor.last_poll_ms;
+    doc["last_poll_ok_ms"] = sensor.last_poll_ok_ms;
+    doc["last_frame_ms"] = sensor.last_frame_ms;
     doc["power_source"] = "usb";
     doc["signal_quality"] = signal_quality_();
     JsonObject led_status = doc.createNestedObject("led_status");
@@ -593,14 +638,23 @@ class SenteroProvisioning : public AsyncWebHandler {
 
   String state_signature_(const C1001Snapshot &sensor) {
     char signature[180];
-    snprintf(signature, sizeof(signature), "%u|%u|%s|%u|%u|%u|%s|%u|%u",
+    snprintf(signature, sizeof(signature), "%u|%u|%s|%u|%u|%u|%u|%u|%u|%s|%u|%u|%u|%u|%u|%u|%u|%u",
              sensor.ready ? 1 : 0,
              sensor.presence ? 1 : 0,
              sensor.motion == nullptr ? "" : sensor.motion,
+             sensor.presence_raw,
+             sensor.motion_raw,
+             sensor.fall_raw,
              sensor.moving_range,
              sensor.work_mode,
              sensor.fall_detected ? 1 : 0,
              sensor.status == nullptr ? "" : sensor.status,
+             sensor.poll_count,
+             sensor.read_errors,
+             sensor.stuck_active_resets,
+             sensor.stuck_presence_resets,
+             sensor.stuck_inactive_resets,
+             sensor.last_value_change_ms,
              sensor.hp_led_known ? (sensor.hp_led ? 1 : 0) : 2,
              sensor.fall_led_known ? (sensor.fall_led ? 1 : 0) : 2);
     return String(signature);
@@ -693,7 +747,7 @@ class SenteroProvisioning : public AsyncWebHandler {
   }
 
   bool apply_bool_command_(const Config &config, JsonObjectConst root, const char *command,
-                           bool (*setter)(bool)) {
+                           bool (*setter)(bool), const char *preference_key = nullptr) {
     bool enabled = false;
     if (!bool_arg_(root, enabled)) {
       publish_command_status_(config, command, false, "missing_or_invalid_boolean");
@@ -704,8 +758,13 @@ class SenteroProvisioning : public AsyncWebHandler {
       publish_command_status_(config, command, false, "sensor_command_failed");
       return true;
     }
+    if (preference_key != nullptr && !store_led_preference_(preference_key, enabled)) {
+      publish_command_status_(config, command, false, "nvs_commit_failed");
+      return true;
+    }
     publish_command_status_(config, command, true, enabled ? "enabled" : "disabled");
-    publish_state_(config);
+    Config updated_config;
+    publish_state_(load_config_(updated_config) ? updated_config : config);
     last_state_publish_ms_ = millis();
     last_state_signature_ = state_signature_(c1001_get_snapshot());
     return true;
@@ -824,7 +883,7 @@ class SenteroProvisioning : public AsyncWebHandler {
 
     nvs_handle_t prefs;
     bool prefs_open = false;
-    if (has_friendly_name || has_room_id) {
+    if (has_friendly_name || has_room_id || has_hp_led || has_fall_led) {
       if (nvs_open(SENTERO_NVS_NAMESPACE, NVS_READWRITE, &prefs) != ESP_OK) {
         publish_command_status_(config, command, false, "nvs_open_failed");
         return true;
@@ -833,10 +892,12 @@ class SenteroProvisioning : public AsyncWebHandler {
     }
 
     if (has_hp_led && !c1001_set_hp_led(hp_led)) {
+      if (prefs_open) nvs_close(prefs);
       publish_command_status_(config, command, false, "hp_led_command_failed");
       return true;
     }
     if (has_fall_led && !c1001_set_fall_led(fall_led)) {
+      if (prefs_open) nvs_close(prefs);
       publish_command_status_(config, command, false, "fall_led_command_failed");
       return true;
     }
@@ -845,6 +906,8 @@ class SenteroProvisioning : public AsyncWebHandler {
     if (has_unmanned_time) c1001_set_unmanned_time(unmanned_time);
     if (has_residence_time) c1001_set_residence_time(residence_time);
     if (has_fall_sensitivity) c1001_set_fall_sensitivity(fall_sensitivity);
+    if (has_hp_led) nvs_set_u8(prefs, "hp_led", hp_led ? 1 : 0);
+    if (has_fall_led) nvs_set_u8(prefs, "fall_led", fall_led ? 1 : 0);
     if (has_friendly_name) sentero_nvs_put_string(prefs, "friendly", friendly_name.c_str());
     if (has_room_id) sentero_nvs_put_string(prefs, "room_id", room_id.c_str());
     if (prefs_open) {
@@ -900,11 +963,11 @@ class SenteroProvisioning : public AsyncWebHandler {
       return;
     }
     if (command == "set_hp_led" || command == "hp_led") {
-      apply_bool_command_(config, root, command_c, c1001_set_hp_led);
+      apply_bool_command_(config, root, command_c, c1001_set_hp_led, "hp_led");
       return;
     }
     if (command == "set_fall_led" || command == "fall_led") {
-      apply_bool_command_(config, root, command_c, c1001_set_fall_led);
+      apply_bool_command_(config, root, command_c, c1001_set_fall_led, "fall_led");
       return;
     }
     if (command == "set_install_height" || command == "install_height") {

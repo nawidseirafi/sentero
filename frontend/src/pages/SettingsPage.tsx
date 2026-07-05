@@ -6,9 +6,14 @@ import { UpdatePanel } from '../components/UpdatePanel';
 import { useSenteroAuth } from '../auth/SenteroAuthContext';
 import type { SenteroSettingsTab } from '../routes/routes';
 import { senteroRouteToPath } from '../routes/routes';
-import ThumbUpIcon from '@mui/icons-material/ThumbUp';
+import PersonIcon from '@mui/icons-material/Person';
+import PersonOutlineIcon from '@mui/icons-material/PersonOff';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlined';
 import DirectionsRunIcon from '@mui/icons-material/DirectionsRun';
+import AccessibilityNewIcon from '@mui/icons-material/AccessibilityNew';
+import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutlined';
 
 const roomLabels: Record<string, string> = {
   living_room: 'Wohnzimmer',
@@ -1162,13 +1167,50 @@ function DoorContactStatus({ sensor }: { sensor: SenteroSensorRole }) {
     </div>
   );
 }
+function formatFallDetected(sensor: SenteroSensorRole) {
+  return sensor.fall_detected ? 'Sturz erkannt' : 'Kein Sturz';
+}
 
+function formatMotion(sensor: SenteroSensorRole) {
+  switch (sensor.motion) {
+    case 'Active':
+      return 'Aktive Bewegung';
+    case 'Still':
+      return 'Ruhig / regungslos';
+    case 'None':
+      return 'Keine Bewegung';
+    default:
+      return 'Unbekannt';
+  }
+}
+
+function motionIcon(sensor: SenteroSensorRole) {
+  switch (sensor.motion) {
+    case 'Active':
+      return <DirectionsRunIcon fontSize="small" />;
+    case 'Still':
+      return <AccessibilityNewIcon fontSize="small" />;
+    case 'None':
+      return <RadioButtonUncheckedIcon fontSize="small" />;
+    default:
+      return <HelpOutlineIcon fontSize="small" />;
+  }
+}
 function C1001Telemetry({ sensor }: { sensor: SenteroSensorRole }) {
   return (
     <>
-      <span className={sensor.presence ? 'presence active' : 'presence inactive'}><ThumbUpIcon fontSize="small" /> presence: {formatBoolean(sensor.presence)}</span>
-      <span className={sensor.fall_detected ? 'fall detected' : 'fall clear'}><WarningAmberIcon fontSize="small" /> fall_detected: {formatBoolean(sensor.fall_detected)}</span>
-      <span className="motion"><DirectionsRunIcon fontSize="small" /> motion: {sensor.motion || 'unbekannt'}</span>
+      <span className={sensor.presence ? 'presence active' : 'presence inactive'}>
+        {sensor.presence ? <PersonIcon fontSize="small" /> : <PersonOutlineIcon fontSize="small" />}
+        {sensor.presence ? 'Anwesend' : 'Abwesend'}
+      </span>
+      <span className={sensor.fall_detected ? 'fall detected' : 'fall clear'}>
+        {sensor.fall_detected ? <WarningAmberIcon fontSize="small" /> : <CheckCircleOutlineIcon fontSize="small" />}
+        {formatFallDetected(sensor)}
+      </span>
+      <span className={`motion motion-${(sensor.motion || 'unknown').toLowerCase()}`}>
+        {motionIcon(sensor)}
+        {formatMotion(sensor)}
+      </span>
     </>
   );
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esphome.h"
+#include <cstring>
 
 struct C1001Snapshot {
   bool ready{false};
@@ -14,8 +15,22 @@ struct C1001Snapshot {
   const char *status{"Startet"};
   uint16_t moving_range{0};
   uint16_t work_mode{0};
+  uint16_t presence_raw{0};
+  uint16_t motion_raw{0};
+  uint16_t fall_raw{0};
   uint32_t setup_attempts{0};
+  uint32_t poll_count{0};
+  uint32_t poll_ok_count{0};
+  uint32_t poll_error_count{0};
+  uint8_t read_errors{0};
+  uint32_t stuck_active_resets{0};
+  uint32_t stuck_presence_resets{0};
+  uint32_t stuck_inactive_resets{0};
   uint32_t last_update_ms{0};
+  uint32_t last_value_change_ms{0};
+  uint32_t last_poll_ms{0};
+  uint32_t last_poll_ok_ms{0};
+  uint32_t last_frame_ms{0};
 };
 
 class C1001Bridge {
@@ -122,15 +137,22 @@ class C1001Bridge {
   }
 
   void reset_sensor() {
+    reset_sensor_("Sensor startet neu", "Reset fehlgeschlagen");
+  }
+
+  bool reset_sensor_(const char *success_status, const char *failure_status) {
     uint8_t payload = QUERY_VALUE;
     std::vector<uint8_t> ignored;
     if (send_command_(0x01, 0x02, &payload, 1, ignored, 700)) {
       ready_ = false;
       snapshot_.ready = false;
+      snapshot_.last_value_change_ms = millis();
       mode_switch_wait_until_ = millis() + 10000;
-      publish_status_("Sensor startet neu");
+      publish_status_(success_status);
+      return true;
     } else {
-      publish_status_("Reset fehlgeschlagen");
+      publish_status_(failure_status);
+      return false;
     }
   }
 
@@ -156,9 +178,19 @@ class C1001Bridge {
   bool defaults_published_{false};
   bool ready_{false};
   uint32_t setup_attempts_{0};
+  uint8_t consecutive_read_errors_{0};
+  uint32_t last_stuck_active_reset_ms_{0};
+  uint32_t last_stuck_presence_reset_ms_{0};
+  bool inactive_probe_done_{false};
   uint32_t mode_switch_wait_until_{0};
   uint8_t poll_step_{0};
   C1001Snapshot snapshot_;
+
+  static constexpr uint32_t STUCK_ACTIVE_TIMEOUT_MS = 60 * 1000;
+  static constexpr uint32_t STUCK_PRESENCE_TIMEOUT_MS = 3 * 60 * 1000;
+  static constexpr uint32_t STUCK_INACTIVE_TIMEOUT_MS = 5 * 60 * 1000;
+  static constexpr uint32_t STUCK_ACTIVE_RESET_COOLDOWN_MS = 5 * 60 * 1000;
+  static constexpr uint32_t STUCK_PRESENCE_RESET_COOLDOWN_MS = 10 * 60 * 1000;
 
   void publish_defaults_once_() {
     if (defaults_published_) return;
@@ -172,10 +204,12 @@ class C1001Bridge {
     attempts_->publish_state(0);
     snapshot_ = C1001Snapshot{};
     snapshot_.last_update_ms = millis();
+    snapshot_.last_value_change_ms = millis();
     defaults_published_ = true;
   }
 
   void setup_sensor_() {
+    consecutive_read_errors_ = 0;
     setup_attempts_++;
     attempts_->publish_state(setup_attempts_);
     snapshot_.setup_attempts = setup_attempts_;
@@ -211,15 +245,23 @@ class C1001Bridge {
   void poll_next_value_() {
     uint16_t value = 0;
     bool ok = false;
+    snapshot_.poll_count++;
+    snapshot_.last_poll_ms = millis();
 
     switch (poll_step_) {
       case 0:
         ok = query_u16_(0x80, 0x81, value, 500);
-        if (ok) publish_presence_(value == 1);
+        if (ok) {
+          snapshot_.presence_raw = value;
+          publish_presence_(value == 1);
+        }
         break;
       case 1:
         ok = query_u16_(0x80, 0x82, value, 500);
-        if (ok) publish_motion_(motion_text_(value));
+        if (ok) {
+          snapshot_.motion_raw = value;
+          publish_motion_(motion_text_(value));
+        }
         break;
       case 2:
         ok = query_u16_(0x80, 0x83, value, 500);
@@ -227,7 +269,10 @@ class C1001Bridge {
         break;
       case 3:
         ok = query_u16_(0x83, 0x81, value, 500);
-        if (ok) publish_fall_(value == 1);
+        if (ok) {
+          snapshot_.fall_raw = value;
+          publish_fall_(value == 1);
+        }
         break;
       default:
         ok = query_u16_(0x02, 0xA8, value, 500);
@@ -236,7 +281,31 @@ class C1001Bridge {
     }
 
     poll_step_ = (poll_step_ + 1) % 5;
-    publish_status_(ok ? "OK" : "Lesefehler");
+    if (ok) {
+      snapshot_.poll_ok_count++;
+      snapshot_.last_poll_ok_ms = millis();
+      consecutive_read_errors_ = 0;
+      snapshot_.read_errors = 0;
+      publish_status_("OK");
+      check_stuck_active_();
+      check_stuck_presence_();
+      check_stuck_inactive_();
+    } else {
+      snapshot_.poll_error_count++;
+      consecutive_read_errors_++;
+      snapshot_.read_errors = consecutive_read_errors_;
+      if (consecutive_read_errors_ >= 4) {
+        ready_ = false;
+        snapshot_.ready = false;
+        rx_.clear();
+        publish_not_ready_values_();
+        publish_status_("Sensor neu synchronisieren");
+        consecutive_read_errors_ = 0;
+        snapshot_.read_errors = 0;
+      } else {
+        publish_status_("Lesefehler");
+      }
+    }
   }
 
   bool set_u8_(uint8_t control, uint8_t command, uint8_t value, const char *status_text) {
@@ -263,6 +332,51 @@ class C1001Bridge {
     publish_fall_(false);
     publish_motion_("Nicht bereit");
     publish_moving_range_(0);
+  }
+
+  void mark_value_change_() {
+    snapshot_.last_value_change_ms = millis();
+    inactive_probe_done_ = false;
+  }
+
+  void check_stuck_active_() {
+    if (!snapshot_.ready || !snapshot_.presence) return;
+    if (strcmp(snapshot_.motion == nullptr ? "" : snapshot_.motion, "Active") != 0) return;
+    const uint32_t now = millis();
+    if (now - snapshot_.last_value_change_ms < STUCK_ACTIVE_TIMEOUT_MS) return;
+    if (last_stuck_active_reset_ms_ != 0 && now - last_stuck_active_reset_ms_ < STUCK_ACTIVE_RESET_COOLDOWN_MS) return;
+
+    last_stuck_active_reset_ms_ = now;
+    snapshot_.stuck_active_resets++;
+    if (reset_sensor_("Stuck active, Sensor Neustart", "Stuck active, Reset fehlgeschlagen")) {
+      publish_not_ready_values_();
+    }
+  }
+
+  void check_stuck_presence_() {
+    if (!snapshot_.ready || !snapshot_.presence) return;
+    const uint32_t now = millis();
+    if (now - snapshot_.last_value_change_ms < STUCK_PRESENCE_TIMEOUT_MS) return;
+    if (last_stuck_presence_reset_ms_ != 0 && now - last_stuck_presence_reset_ms_ < STUCK_PRESENCE_RESET_COOLDOWN_MS) return;
+
+    last_stuck_presence_reset_ms_ = now;
+    snapshot_.stuck_presence_resets++;
+    if (reset_sensor_("Stuck presence, Sensor Neustart", "Stuck presence, Reset fehlgeschlagen")) {
+      publish_not_ready_values_();
+    }
+  }
+
+  void check_stuck_inactive_() {
+    if (!snapshot_.ready || snapshot_.presence || inactive_probe_done_) return;
+    if (strcmp(snapshot_.motion == nullptr ? "" : snapshot_.motion, "None") != 0) return;
+    const uint32_t now = millis();
+    if (now - snapshot_.last_value_change_ms < STUCK_INACTIVE_TIMEOUT_MS) return;
+
+    inactive_probe_done_ = true;
+    snapshot_.stuck_inactive_resets++;
+    if (reset_sensor_("Stuck inactive, Sensor Probe-Neustart", "Stuck inactive, Reset fehlgeschlagen")) {
+      publish_not_ready_values_();
+    }
   }
 
   const char *motion_text_(uint16_t value) {
@@ -376,6 +490,7 @@ class C1001Bridge {
     }
 
     publish_frame_hex_();
+    snapshot_.last_frame_ms = millis();
     handle_known_frame_(len);
 
     const uint8_t control = rx_[2];
@@ -442,30 +557,37 @@ class C1001Bridge {
   }
 
   void publish_presence_(bool value) {
+    if (snapshot_.presence != value) mark_value_change_();
     presence_->publish_state(value);
     snapshot_.presence = value;
     snapshot_.last_update_ms = millis();
   }
 
   void publish_fall_(bool value) {
+    if (snapshot_.fall_detected != value) mark_value_change_();
     fall_->publish_state(value);
     snapshot_.fall_detected = value;
     snapshot_.last_update_ms = millis();
   }
 
   void publish_motion_(const char *value) {
+    const char *current = snapshot_.motion == nullptr ? "" : snapshot_.motion;
+    const char *next = value == nullptr ? "" : value;
+    if (strcmp(current, next) != 0) mark_value_change_();
     motion_->publish_state(value);
     snapshot_.motion = value;
     snapshot_.last_update_ms = millis();
   }
 
   void publish_moving_range_(uint16_t value) {
+    if (snapshot_.moving_range != value) mark_value_change_();
     moving_range_->publish_state(value);
     snapshot_.moving_range = value;
     snapshot_.last_update_ms = millis();
   }
 
   void publish_work_mode_(uint16_t value) {
+    if (snapshot_.work_mode != value) mark_value_change_();
     work_mode_->publish_state(value);
     snapshot_.work_mode = value;
     snapshot_.last_update_ms = millis();

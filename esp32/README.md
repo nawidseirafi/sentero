@@ -218,6 +218,12 @@ sentero/<device_id>/status
 sentero/<device_id>/command
 ```
 
+LED-Status:
+
+- `led_status.hp_led` und `led_status.fall_led` sind direkt nach dem Start kurz `null`, solange der ESP den Zustand noch nicht aktiv auf den C1001 geschrieben hat.
+- Der gespeicherte Standard ist `false`. Sobald `sensor_ready=true` ist, setzt der ESP beide LEDs gemaess gespeichertem Sollwert und veroeffentlicht danach `true` oder `false`.
+- Aenderungen ueber `hp_led`, `fall_led` oder `configure` werden im ESP-NVS gespeichert und nach einem Neustart wieder auf den C1001 angewendet.
+
 Factory-Reset per MQTT:
 
 ```bash

@@ -83,7 +83,7 @@ export function DashboardPage() {
       <h3 className="sc-simple-section-title">Heute</h3>
       <section className="sc-metric-grid" aria-label="Wichtige Tagespunkte">
         <MetricCard icon={<AlarmClock size={20} />} label="Aufgestanden" value={morning || 'Noch offen'} />
-        <MetricCard icon={<House size={20} />} label="Aktueller Aufenthaltsort" value={currentRoomValue} muted={!currentPresence} />
+        <MetricCard icon={<House size={20} />} label="Aufenthaltsort" value={currentRoomValue} muted={!currentPresence} />
         <MetricCard icon={<Activity size={20} />} label="Letzte Bewegung" value={lastSeen} highlight={Boolean(lastEventTime)} muted={!lastEventTime} />
       </section>
     </section>
