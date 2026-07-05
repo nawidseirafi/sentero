@@ -1,0 +1,498 @@
+#pragma once
+
+#include "esphome.h"
+#include "esphome/components/captive_portal/captive_portal.h"
+#include "esphome/components/web_server_base/web_server_base.h"
+#include "esphome/components/wifi/wifi_component.h"
+#include "sentero_portal_logo.h"
+
+#include <cstring>
+
+static constexpr const char *SENTERO_PORTAL_TAG = "sentero.portal";
+
+class SenteroCaptivePortal : public AsyncWebHandler, public esphome::Component {
+ public:
+  bool register_handler() {
+    if (registered_) return true;
+    auto *base = esphome::web_server_base::global_web_server_base;
+    if (base == nullptr) return false;
+
+    base->add_handler_without_auth(this);
+    registered_ = true;
+    ESP_LOGI(SENTERO_PORTAL_TAG, "Sentero captive portal UI registered");
+    return true;
+  }
+
+  bool canHandle(AsyncWebServerRequest *request) const override {
+    auto *portal = esphome::captive_portal::global_captive_portal;
+    return portal != nullptr && portal->is_active() && request->method() == HTTP_GET;
+  }
+
+  void handleRequest(AsyncWebServerRequest *request) override {
+#ifdef USE_ESP32
+    char url_buf[AsyncWebServerRequest::URL_BUF_SIZE];
+    StringRef url = request->url_to(url_buf);
+#else
+    const auto &url = request->url();
+#endif
+
+    if (url == ESPHOME_F("/config.json")) {
+      handle_config_(request);
+      return;
+    }
+    if (url == ESPHOME_F("/scan.json")) {
+      handle_scan_(request);
+      return;
+    }
+    if (url == ESPHOME_F("/wifisave")) {
+      handle_wifi_save_(request);
+      return;
+    }
+    if (url == ESPHOME_F("/sentero-logo.png")) {
+      handle_logo_(request);
+      return;
+    }
+    if (url == ESPHOME_F("/favicon.ico")) {
+      request->send(204, ESPHOME_F("text/plain"), ESPHOME_F(""));
+      return;
+    }
+
+    handle_index_(request);
+  }
+
+ private:
+  bool registered_{false};
+
+  static constexpr const char INDEX_HTML[] = R"HTML(<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Sentero Setup</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0f0c;
+      --card: rgba(255,255,255,.05);
+      --card-border: rgba(255,255,255,.09);
+      --ink: #f2f3ee;
+      --muted: #93a091;
+      --accent: #7fa984;
+      --accent-ink: #0b140c;
+      --line: rgba(255,255,255,.10);
+      --field: rgba(255,255,255,.06);
+      --danger: #e0796a;
+      --ok: #7fa984;
+      --radius: 18px;
+      --radius-sm: 12px;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+      background:
+        radial-gradient(120% 90% at 15% -10%, #16241a 0%, transparent 60%),
+        radial-gradient(120% 90% at 100% 110%, #17251b 0%, transparent 55%),
+        var(--bg);
+      color: var(--ink);
+      display: flex;
+      min-height: 100svh;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    button, input { font: inherit; color: inherit; }
+    .wrap { width: 100%; max-width: 400px; animation: rise .45s ease both; }
+    @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+    .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+    .brand img { width: 40px; height: 40px; border-radius: 10px; display: block; object-fit: cover; flex-shrink: 0; }
+    .brand h1 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -.01em; }
+    .brand p { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      backdrop-filter: blur(20px);
+      border-radius: var(--radius);
+      padding: 18px;
+    }
+    .card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+    .card-head h2 { margin: 0; font-size: 14px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 12px; font-weight: 600; color: var(--muted);
+      border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px 4px 8px;
+    }
+    .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); transition: background .2s; }
+    .badge.busy .dot { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+    .badge.ok .dot { background: var(--ok); }
+    .badge.err .dot { background: var(--danger); }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+    .networks { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .network {
+      display: flex; align-items: center; gap: 10px;
+      width: 100%; text-align: left;
+      background: var(--field); border: 1px solid transparent; border-radius: var(--radius-sm);
+      padding: 11px 12px; cursor: pointer; transition: border-color .15s, background .15s;
+    }
+    .network:active { transform: scale(.99); }
+    .network.selected { border-color: var(--accent); background: rgba(127,169,132,.14); }
+    .network svg.sig { flex-shrink: 0; }
+    .network .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 500; }
+    .network svg.lock { flex-shrink: 0; opacity: .55; }
+
+    .skeleton { height: 42px; border-radius: var(--radius-sm); background: linear-gradient(90deg, var(--field) 25%, rgba(255,255,255,.1) 37%, var(--field) 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; }
+    @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+
+    .hint { margin: 10px 2px 0; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+
+    .scan-link { background: none; border: 0; color: var(--accent); font-size: 13px; font-weight: 600; padding: 8px 2px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+    .scan-link:disabled { opacity: .5; cursor: wait; }
+    .scan-link svg { transition: transform .5s ease; }
+    .scan-link.spinning svg { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    hr.sep { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+
+    label { display: block; font-size: 12.5px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+    .field { margin-bottom: 12px; }
+    input[type="text"], input[type="password"] {
+      width: 100%; min-height: 46px; border-radius: var(--radius-sm);
+      border: 1px solid var(--line); background: var(--field); color: var(--ink);
+      padding: 0 13px; outline: none; transition: border-color .15s, background .15s;
+    }
+    input::placeholder { color: #6b756a; }
+    input:focus { border-color: var(--accent); background: rgba(127,169,132,.09); }
+
+    .pw-row { position: relative; }
+    .pw-row input { padding-right: 44px; }
+    .icon-btn {
+      position: absolute; right: 4px; top: 4px; bottom: 4px; width: 38px;
+      display: flex; align-items: center; justify-content: center;
+      background: none; border: 0; border-radius: 9px; color: var(--muted); cursor: pointer;
+    }
+    .icon-btn:active { background: rgba(255,255,255,.08); }
+
+    .primary {
+      width: 100%; min-height: 48px; margin-top: 4px; border: 0; border-radius: var(--radius-sm);
+      background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 15px;
+      cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+      transition: opacity .15s, transform .1s;
+    }
+    .primary:active { transform: scale(.99); }
+    .primary:disabled { opacity: .55; cursor: wait; }
+    .spinner { width: 15px; height: 15px; border-radius: 50%; border: 2px solid rgba(11,20,12,.3); border-top-color: var(--accent-ink); animation: spin .7s linear infinite; display: none; }
+    .primary.loading .spinner { display: inline-block; }
+    .primary.loading .btn-label { opacity: .85; }
+
+    .message { min-height: 18px; margin: 10px 2px 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .message.error { color: var(--danger); }
+    .message.ok { color: var(--ok); }
+
+    .meta { display: flex; justify-content: space-between; gap: 10px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 11.5px; color: #5c675a; }
+    .meta span:last-child { text-align: right; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand">
+      <img src="/sentero-logo.png" alt="Sentero" width="40" height="40">
+      <div>
+        <h1>WLAN einrichten</h1>
+        <p>Verbinde den Sensor mit deinem Heimnetz</p>
+      </div>
+    </div>
+
+    <section class="card" aria-label="WLAN Setup">
+      <div class="card-head">
+        <h2>Netzwerke</h2>
+        <span class="badge" id="state"><span class="dot"></span><span id="stateText">Lädt</span></span>
+      </div>
+
+      <div class="networks" id="networkList">
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+      </div>
+      <p class="hint" id="scanHint"></p>
+      <button type="button" class="scan-link" id="refresh">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v5h-5"/></svg>
+        Erneut scannen
+      </button>
+
+      <hr class="sep">
+
+      <form id="wifiForm" novalidate>
+        <div class="field">
+          <label for="ssid">SSID</label>
+          <input id="ssid" name="ssid" type="text" autocomplete="username" required placeholder="Netzwerkname">
+        </div>
+        <div class="field">
+          <label for="psk">Passwort</label>
+          <div class="pw-row">
+            <input id="psk" name="psk" type="password" autocomplete="current-password" placeholder="WLAN Passwort">
+            <button type="button" class="icon-btn" id="togglePass" aria-label="Passwort anzeigen">
+              <svg id="eyeIcon" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <button class="primary" type="submit" id="submit">
+          <span class="spinner"></span>
+          <span class="btn-label">Verbinden</span>
+        </button>
+        <p class="message" id="message" role="status" aria-live="polite"></p>
+      </form>
+
+      <div class="meta">
+        <span id="deviceName">Sensor</span>
+        <span id="deviceMac">MAC wird geladen</span>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const form = $("wifiForm");
+    const ssid = $("ssid");
+    const psk = $("psk");
+    const list = $("networkList");
+    const hint = $("scanHint");
+    const message = $("message");
+    const state = $("state");
+    const stateText = $("stateText");
+    const submit = $("submit");
+    const refresh = $("refresh");
+    const eyeIcon = $("eyeIcon");
+
+    const EYE_OPEN = eyeIcon.innerHTML;
+    const EYE_OFF = '<path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 7 11 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61C3.36 8.64 1 12 1 12s4 7 11 7a9.26 9.26 0 0 0 5.39-1.61"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/>';
+
+    function setState(text, mode) {
+      stateText.textContent = text;
+      state.className = "badge" + (mode ? " " + mode : "");
+    }
+    function setMessage(text, mode) {
+      message.textContent = text;
+      message.className = "message" + (mode ? " " + mode : "");
+    }
+
+    function signalIcon(rssi) {
+      const bars = rssi >= -55 ? 4 : rssi >= -67 ? 3 : rssi >= -75 ? 2 : 1;
+      let s = '<svg class="sig" width="16" height="16" viewBox="0 0 20 16" fill="none">';
+      for (let i = 0; i < 4; i++) {
+        const h = 4 + i * 3.6, x = i * 5, y = 16 - h;
+        s += `<rect x="${x}" y="${y}" width="3.4" height="${h}" rx="1" fill="${i < bars ? 'var(--accent)' : 'var(--line)'}"/>`;
+      }
+      return s + "</svg>";
+    }
+    const LOCK_ICON = '<svg class="lock" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
+
+    function chooseNetwork(name, el) {
+      ssid.value = name;
+      document.querySelectorAll(".network.selected").forEach((n) => n.classList.remove("selected"));
+      if (el) el.classList.add("selected");
+      psk.focus();
+    }
+
+    async function loadConfig() {
+      try {
+        const response = await fetch("/config.json", { cache: "no-store" });
+        if (!response.ok) throw new Error("scan_failed");
+        const data = await response.json();
+        $("deviceName").textContent = data.name || "MR60BHA2 mmWave";
+        $("deviceMac").textContent = data.mac || "";
+
+        const aps = (data.aps || [])
+          .filter((ap) => ap && ap.ssid)
+          .sort((a, b) => (b.rssi || -100) - (a.rssi || -100));
+
+        list.innerHTML = "";
+        aps.forEach((ap) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "network";
+          button.innerHTML = `${signalIcon(ap.rssi || -100)}<span class="name"></span>${ap.lock ? LOCK_ICON : ""}`;
+          button.querySelector(".name").textContent = ap.ssid;
+          button.addEventListener("click", () => chooseNetwork(ap.ssid, button));
+          list.appendChild(button);
+        });
+
+        if (aps.length) {
+          setState(`${aps.length} gefunden`, "ok");
+          hint.textContent = "";
+        } else {
+          setState("Manuell", "err");
+          hint.textContent = "Keine Netzwerke gefunden. Erneut scannen oder SSID unten manuell eintragen.";
+        }
+      } catch (err) {
+        setState("Manuell", "err");
+        list.innerHTML = "";
+        hint.textContent = "Scan nicht verfügbar. SSID unten manuell eintragen.";
+      }
+    }
+
+    async function startScan() {
+      refresh.disabled = true;
+      refresh.classList.add("spinning");
+      setState("Scan läuft", "busy");
+      hint.textContent = "Scan läuft, die Verbindung zum Setup-WLAN kann kurz pausieren...";
+      try {
+        const response = await fetch("/scan.json", { cache: "no-store" });
+        if (!response.ok) throw new Error("scan_start_failed");
+        await new Promise((resolve) => setTimeout(resolve, 4500));
+        await loadConfig();
+      } catch (err) {
+        setState("Manuell", "err");
+        hint.textContent = "Scan konnte nicht gestartet werden. SSID unten manuell eintragen.";
+      } finally {
+        refresh.disabled = false;
+        refresh.classList.remove("spinning");
+      }
+    }
+
+    refresh.addEventListener("click", startScan);
+
+    $("togglePass").addEventListener("click", () => {
+      const hidden = psk.type === "password";
+      psk.type = hidden ? "text" : "password";
+      eyeIcon.innerHTML = hidden ? EYE_OFF : EYE_OPEN;
+      $("togglePass").setAttribute("aria-label", hidden ? "Passwort verbergen" : "Passwort anzeigen");
+    });
+
+    form.addEventListener("submit", async (event) => {
+      if (!window.fetch) return;
+      event.preventDefault();
+      if (!ssid.value.trim()) {
+        setMessage("SSID fehlt.", "error");
+        ssid.focus();
+        return;
+      }
+
+      submit.disabled = true;
+      submit.classList.add("loading");
+      setMessage("WLAN wird gespeichert...");
+
+      const params = new URLSearchParams({ ssid: ssid.value.trim(), psk: psk.value });
+      try {
+        const response = await fetch(`/wifisave?${params.toString()}`, { cache: "no-store" });
+        if (!response.ok) throw new Error("save_failed");
+        setMessage("Gespeichert. Der Sensor verbindet sich jetzt neu.", "ok");
+      } catch (err) {
+        submit.disabled = false;
+        submit.classList.remove("loading");
+        setMessage("Speichern fehlgeschlagen.", "error");
+      }
+    });
+
+    loadConfig();
+  </script>
+</body>
+</html>)HTML";
+
+  void print_json_string_(AsyncResponseStream *stream, const char *value) {
+    stream->print('"');
+    if (value != nullptr) {
+      for (const char *cursor = value; *cursor != '\0'; cursor++) {
+        const uint8_t ch = static_cast<uint8_t>(*cursor);
+        if (*cursor == '"' || *cursor == '\\') {
+          stream->print('\\');
+          stream->print(*cursor);
+        } else if (ch < 0x20) {
+          stream->printf("\\u%04x", ch);
+        } else {
+          stream->print(*cursor);
+        }
+      }
+    }
+    stream->print('"');
+  }
+
+  void handle_index_(AsyncWebServerRequest *request) {
+    auto *response = request->beginResponse(200, ESPHOME_F("text/html"), INDEX_HTML);
+    response->addHeader(ESPHOME_F("cache-control"), ESPHOME_F("public, max-age=0, must-revalidate"));
+    request->send(response);
+  }
+
+  void handle_config_(AsyncWebServerRequest *request) {
+    AsyncResponseStream *stream = request->beginResponseStream(ESPHOME_F("application/json"));
+    stream->addHeader(ESPHOME_F("cache-control"), ESPHOME_F("public, max-age=0, must-revalidate"));
+
+    char mac_s[18];
+    const char *mac_str = get_mac_address_pretty_into_buffer(mac_s);
+    stream->print(ESPHOME_F("{\"mac\":"));
+    print_json_string_(stream, mac_str);
+    stream->print(ESPHOME_F(",\"name\":"));
+    print_json_string_(stream, esphome::App.get_name().c_str());
+    stream->print(ESPHOME_F(",\"aps\":["));
+
+    bool first = true;
+    for (auto &scan : esphome::wifi::global_wifi_component->get_scan_result()) {
+      if (scan.get_is_hidden()) continue;
+      if (!first) stream->print(',');
+      first = false;
+      stream->print(ESPHOME_F("{\"ssid\":"));
+      print_json_string_(stream, scan.get_ssid().c_str());
+      stream->printf(",\"rssi\":%d,\"lock\":%d}", scan.get_rssi(), scan.get_with_auth());
+    }
+
+    stream->print(ESPHOME_F("]}"));
+    request->send(stream);
+  }
+
+  void handle_scan_(AsyncWebServerRequest *request) {
+    auto *wifi = esphome::wifi::global_wifi_component;
+    if (wifi == nullptr) {
+      request->send(503, ESPHOME_F("application/json"), ESPHOME_F("{\"ok\":false,\"error\":\"wifi_unavailable\"}"));
+      return;
+    }
+
+    wifi->set_keep_scan_results(true);
+    wifi->start_scanning();
+    request->send(202, ESPHOME_F("application/json"), ESPHOME_F("{\"ok\":true,\"status\":\"scan_started\"}"));
+  }
+
+  void handle_wifi_save_(AsyncWebServerRequest *request) {
+    const auto &ssid = request->arg("ssid");
+    const auto &psk = request->arg("psk");
+    if (ssid.length() == 0) {
+      request->send(400, ESPHOME_F("text/plain"), ESPHOME_F("Missing SSID"));
+      return;
+    }
+
+    ESP_LOGI(SENTERO_PORTAL_TAG,
+             "Requested WiFi Settings Change:\n"
+             "  SSID='%s'\n"
+             "  Password=" LOG_SECRET("'%s'"),
+             ssid.c_str(), psk.c_str());
+
+#ifdef USE_ESP8266
+    esphome::wifi::global_wifi_component->save_wifi_sta(ssid.c_str(), psk.c_str());
+#else
+    this->defer([ssid, psk]() {
+      esphome::wifi::global_wifi_component->save_wifi_sta(ssid.c_str(), psk.c_str());
+    });
+#endif
+
+    request->send(200, ESPHOME_F("text/plain"), ESPHOME_F("Saved. Connecting..."));
+  }
+
+  void handle_logo_(AsyncWebServerRequest *request) {
+    auto *response = request->beginResponse(
+        200,
+        ESPHOME_F("image/png"),
+        SENTERO_PORTAL_LOGO_PNG,
+        SENTERO_PORTAL_LOGO_PNG_LEN);
+    response->addHeader(ESPHOME_F("cache-control"), ESPHOME_F("public, max-age=31536000, immutable"));
+    request->send(response);
+  }
+};
+
+static SenteroCaptivePortal sentero_captive_portal;
+
+inline void sentero_captive_portal_setup() {
+  sentero_captive_portal.register_handler();
+}
