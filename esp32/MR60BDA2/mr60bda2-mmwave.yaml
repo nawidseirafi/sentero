@@ -110,7 +110,7 @@ button:
     entity_category: config
 
 interval:
-  - interval: 2s
+  - interval: 100ms
     then:
       - lambda: |-
           mr60bda2_update(id(mr60bda2_uart));

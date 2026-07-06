@@ -55,7 +55,7 @@ class C1001Bridge {
     attempts_ = attempts;
 
     publish_defaults_once_();
-    drain_passive_frames_(25);
+    drain_passive_frames_(PASSIVE_DRAIN_BUDGET_MS);
 
     const uint32_t now = millis();
     if (now < 10000) {
@@ -70,11 +70,17 @@ class C1001Bridge {
     mode_switch_wait_until_ = 0;
 
     if (!ready_) {
-      setup_sensor_();
+      if (last_setup_attempt_ms_ == 0 || now - last_setup_attempt_ms_ >= SETUP_RETRY_INTERVAL_MS) {
+        last_setup_attempt_ms_ = now;
+        setup_sensor_();
+      }
       return;
     }
 
-    poll_next_value_();
+    if (last_active_poll_ms_ == 0 || now - last_active_poll_ms_ >= ACTIVE_POLL_INTERVAL_MS) {
+      last_active_poll_ms_ = now;
+      poll_next_value_();
+    }
   }
 
   bool set_fall_led(bool enabled) {
@@ -145,6 +151,8 @@ class C1001Bridge {
     std::vector<uint8_t> ignored;
     if (send_command_(0x01, 0x02, &payload, 1, ignored, 700)) {
       ready_ = false;
+      last_setup_attempt_ms_ = 0;
+      last_active_poll_ms_ = 0;
       snapshot_.ready = false;
       snapshot_.last_value_change_ms = millis();
       mode_switch_wait_until_ = millis() + 10000;
@@ -184,6 +192,8 @@ class C1001Bridge {
   bool inactive_probe_done_{false};
   uint32_t mode_switch_wait_until_{0};
   uint8_t poll_step_{0};
+  uint32_t last_setup_attempt_ms_{0};
+  uint32_t last_active_poll_ms_{0};
   C1001Snapshot snapshot_;
 
   static constexpr uint32_t STUCK_ACTIVE_TIMEOUT_MS = 60 * 1000;
@@ -191,6 +201,9 @@ class C1001Bridge {
   static constexpr uint32_t STUCK_INACTIVE_TIMEOUT_MS = 5 * 60 * 1000;
   static constexpr uint32_t STUCK_ACTIVE_RESET_COOLDOWN_MS = 5 * 60 * 1000;
   static constexpr uint32_t STUCK_PRESENCE_RESET_COOLDOWN_MS = 10 * 60 * 1000;
+  static constexpr uint32_t PASSIVE_DRAIN_BUDGET_MS = 25;
+  static constexpr uint32_t SETUP_RETRY_INTERVAL_MS = 2000;
+  static constexpr uint32_t ACTIVE_POLL_INTERVAL_MS = 2000;
 
   void publish_defaults_once_() {
     if (defaults_published_) return;
@@ -237,6 +250,7 @@ class C1001Bridge {
     }
 
     ready_ = true;
+    last_active_poll_ms_ = 0;
     snapshot_.ready = true;
     snapshot_.last_update_ms = millis();
     publish_status_("OK");
@@ -296,6 +310,7 @@ class C1001Bridge {
       snapshot_.read_errors = consecutive_read_errors_;
       if (consecutive_read_errors_ >= 4) {
         ready_ = false;
+        last_setup_attempt_ms_ = 0;
         snapshot_.ready = false;
         rx_.clear();
         publish_not_ready_values_();

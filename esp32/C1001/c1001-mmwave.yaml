@@ -244,7 +244,10 @@ number:
           c1001_set_fall_sensitivity(x);
 
 interval:
-  - interval: 2s
+  # UART-Puffer häufig leeren. Die eigentlichen Sensor-Abfragen bleiben in
+  # c1001_bridge.h intern auf 2s gedrosselt, damit der C1001 nicht mit
+  # Commands überlastet wird.
+  - interval: 100ms
     then:
       - lambda: |-
           c1001_update(id(c1001_uart), id(c1001_presence), id(c1001_fall),
