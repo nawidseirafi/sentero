@@ -62,7 +62,7 @@ uart:
   tx_pin: GPIO21
   rx_pin: GPIO20
   baud_rate: 115200
-  rx_buffer_size: 512
+  rx_buffer_size: 2048
 
 binary_sensor:
   - platform: template
@@ -244,10 +244,9 @@ number:
           c1001_set_fall_sensitivity(x);
 
 interval:
-  # UART-Puffer häufig leeren. Die eigentlichen Sensor-Abfragen bleiben in
-  # c1001_bridge.h intern auf 2s gedrosselt, damit der C1001 nicht mit
-  # Commands überlastet wird.
-  - interval: 100ms
+  # UART haeufig lesen, damit passive C1001-Frames den ESP32-Puffer nicht fuellen.
+  # Aktive Sensor-Abfragen bleiben in c1001_bridge.h auf 2s gedrosselt.
+  - interval: 50ms
     then:
       - lambda: |-
           c1001_update(id(c1001_uart), id(c1001_presence), id(c1001_fall),
