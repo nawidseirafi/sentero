@@ -987,20 +987,18 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                     <small className="sc-contact-role">{aalRoleLabel(contact.actor_role)}</small>
                     <small>{contact.email || 'Keine E-Mail hinterlegt'}</small>
                     <div className="sc-contact-channel-list">{normalizeChannels(contact.preferred_channels).map((channel) => <span key={channel}>{channelLabel(channel)}</span>)}</div>
-                    <ContactConsentControl
-                      consent={activeBehaviorConsent(contact.id, consents)}
-                      revokedConsent={latestBehaviorConsent(contact.id, consents)}
-                      onGrant={() => void grantContactConsent(contact.id)}
-                      onRevoke={(consentId) => void revokeContactConsent(consentId)}
-                    />
-                    <ContactExportControl
-                      consent={activeExportConsent(contact.id, consents)}
-                      revokedConsent={latestExportConsent(contact.id, consents)}
+                    <ContactDataSharingControl
+                      behaviorConsent={activeBehaviorConsent(contact.id, consents)}
+                      revokedBehaviorConsent={latestBehaviorConsent(contact.id, consents)}
+                      exportConsent={activeExportConsent(contact.id, consents)}
+                      revokedExportConsent={latestExportConsent(contact.id, consents)}
                       token={activeExportToken(contact.id, exportTokens)}
                       latestToken={latestExportToken(contact.id, exportTokens)}
                       newToken={newExportToken?.contactId === contact.id ? newExportToken.token : null}
-                      onGrant={() => void grantExportConsent(contact.id)}
-                      onRevokeConsent={(consentId) => void revokeExportConsent(consentId)}
+                      onGrantBehavior={() => void grantContactConsent(contact.id)}
+                      onRevokeBehavior={(consentId) => void revokeContactConsent(consentId)}
+                      onGrantExport={() => void grantExportConsent(contact.id)}
+                      onRevokeExportConsent={(consentId) => void revokeExportConsent(consentId)}
                       onCreateToken={() => void createExportToken(contact.id)}
                       onRevokeToken={(tokenId) => void revokeExportToken(tokenId)}
                       onOpenPackage={() => setExportDialogContactId(contact.id)}
@@ -1251,91 +1249,96 @@ function EmptyState({ text, action }: { text: string; action: string }) {
   );
 }
 
-function ContactConsentControl({
-  consent,
-  revokedConsent,
-  onGrant,
-  onRevoke,
-}: {
-  consent?: SenteroConsent | null;
-  revokedConsent?: SenteroConsent | null;
-  onGrant: () => void;
-  onRevoke: (consentId: number) => void;
-}) {
-  const current = consent || revokedConsent || null;
-  const active = Boolean(consent);
-  return (
-    <div className={`sc-contact-consent ${active ? 'active' : 'inactive'}`}>
-      <span>{active ? <ShieldCheck size={18} /> : <ShieldAlert size={18} />}</span>
-      <div>
-        <strong>{active ? 'Freigabe aktiv' : 'Freigabe fehlt'}</strong>
-        <small>{current ? consentDescription(current) : 'Verhaltensmeldungen gesperrt'}</small>
-      </div>
-      {active && consent ? (
-        <button type="button" onClick={() => onRevoke(consent.id)}>Widerrufen</button>
-      ) : (
-        <button type="button" onClick={onGrant}>Freigeben</button>
-      )}
-    </div>
-  );
-}
-
-function ContactExportControl({
-  consent,
-  revokedConsent,
+function ContactDataSharingControl({
+  behaviorConsent,
+  revokedBehaviorConsent,
+  exportConsent,
+  revokedExportConsent,
   token,
   latestToken,
   newToken,
-  onGrant,
-  onRevokeConsent,
+  onGrantBehavior,
+  onRevokeBehavior,
+  onGrantExport,
+  onRevokeExportConsent,
   onCreateToken,
   onRevokeToken,
   onOpenPackage,
 }: {
-  consent?: SenteroConsent | null;
-  revokedConsent?: SenteroConsent | null;
+  behaviorConsent?: SenteroConsent | null;
+  revokedBehaviorConsent?: SenteroConsent | null;
+  exportConsent?: SenteroConsent | null;
+  revokedExportConsent?: SenteroConsent | null;
   token?: SenteroExportToken | null;
   latestToken?: SenteroExportToken | null;
   newToken?: string | null;
-  onGrant: () => void;
-  onRevokeConsent: (consentId: number) => void;
+  onGrantBehavior: () => void;
+  onRevokeBehavior: (consentId: number) => void;
+  onGrantExport: () => void;
+  onRevokeExportConsent: (consentId: number) => void;
   onCreateToken: () => void;
   onRevokeToken: (tokenId: number) => void;
   onOpenPackage: () => void;
 }) {
-  const currentConsent = consent || revokedConsent || null;
+  const currentBehavior = behaviorConsent || revokedBehaviorConsent || null;
+  const currentExport = exportConsent || revokedExportConsent || null;
   const currentToken = token || latestToken || null;
-  const activeConsent = Boolean(consent);
+  const activeBehavior = Boolean(behaviorConsent);
+  const activeExport = Boolean(exportConsent);
   const activeToken = Boolean(token);
   return (
-    <div className={`sc-contact-export ${activeConsent ? 'active' : 'inactive'}`}>
-      <div className="sc-contact-export-head">
-        <span>{activeToken ? <KeyRound size={18} /> : <ShieldAlert size={18} />}</span>
-        <div>
-          <strong>{activeToken ? 'Export aktiv' : activeConsent ? 'Export freigegeben' : 'Export gesperrt'}</strong>
-          <small>{currentConsent ? consentDescription(currentConsent) : 'Keine Partnerfreigabe'}</small>
-        </div>
+    <section className="sc-contact-sharing" aria-label="Datenfreigaben">
+      <header>
+        <span><ShieldCheck size={18} /></span>
+        <strong>Datenfreigaben</strong>
+      </header>
+      <SharingRow
+        active={activeBehavior}
+        icon={activeBehavior ? <ShieldCheck size={16} /> : <ShieldAlert size={16} />}
+        title="Meldungen"
+        detail={currentBehavior ? consentDescription(currentBehavior) : 'Verhaltensmeldungen gesperrt'}
+        action={activeBehavior && behaviorConsent
+          ? <button type="button" onClick={() => onRevokeBehavior(behaviorConsent.id)}>Widerrufen</button>
+          : <button type="button" onClick={onGrantBehavior}>Freigeben</button>}
+      />
+      <SharingRow
+        active={activeExport}
+        icon={activeToken ? <KeyRound size={16} /> : activeExport ? <ShieldCheck size={16} /> : <ShieldAlert size={16} />}
+        title="Partnerexport"
+        detail={exportDetail(currentExport, currentToken, newToken)}
+        action={(
+          <div className="sc-sharing-actions">
+            {!activeExport && <button type="button" onClick={onGrantExport}>Freigeben</button>}
+            {activeExport && !activeToken && <button type="button" onClick={onCreateToken}>Token</button>}
+            {newToken && <button type="button" onClick={onOpenPackage}>Paket</button>}
+            {activeExport && exportConsent && <button type="button" onClick={() => onRevokeExportConsent(exportConsent.id)}>Widerrufen</button>}
+            {activeToken && token && <button type="button" onClick={() => onRevokeToken(token.id)}>Token widerrufen</button>}
+          </div>
+        )}
+      />
+    </section>
+  );
+}
+
+function SharingRow({ active, icon, title, detail, action }: { active: boolean; icon: React.ReactNode; title: string; detail: string; action: React.ReactNode }) {
+  return (
+    <div className={`sc-sharing-row ${active ? 'active' : 'inactive'}`}>
+      <span>{icon}</span>
+      <div>
+        <strong>{title}</strong>
+        <small>{detail}</small>
       </div>
-
-      {newToken && <small className="sc-export-token-ready">Partnerpaket bereit. Der Token ist nur in dieser Sitzung sichtbar.</small>}
-
-      {currentToken && (
-        <small className="sc-export-token-meta">
-          Ablauf: {formatDateTime(currentToken.expires_at)}
-          {currentToken.last_used_at ? ` · letzter Zugriff: ${formatDateTime(currentToken.last_used_at)}` : ''}
-          {currentToken.revoked_at ? ` · widerrufen: ${formatDateTime(currentToken.revoked_at)}` : ''}
-        </small>
-      )}
-
-      <div className="sc-contact-export-actions">
-        {!activeConsent && <button type="button" onClick={onGrant}>Export freigeben</button>}
-        {activeConsent && !activeToken && <button type="button" onClick={onCreateToken}>Token erstellen</button>}
-        {newToken && <button type="button" onClick={onOpenPackage}>Partnerpaket anzeigen</button>}
-        {activeConsent && consent && <button type="button" onClick={() => onRevokeConsent(consent.id)}>Freigabe widerrufen</button>}
-        {activeToken && token && <button type="button" onClick={() => onRevokeToken(token.id)}>Token widerrufen</button>}
-      </div>
+      {action}
     </div>
   );
+}
+
+function exportDetail(consent?: SenteroConsent | null, token?: SenteroExportToken | null, newToken?: string | null) {
+  if (newToken) return 'Partnerpaket bereit. Token nur in dieser Sitzung sichtbar.';
+  if (token?.revoked_at) return `Token widerrufen am ${formatDateTime(token.revoked_at)}`;
+  if (token?.active) return `Token aktiv bis ${formatDateTime(token.expires_at)}`;
+  if (consent) return consentDescription(consent);
+  return 'Kein Partnerexport freigegeben';
 }
 
 function PartnerExportDialog({

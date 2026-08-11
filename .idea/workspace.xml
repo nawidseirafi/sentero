@@ -5,28 +5,8 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="fdb978cf-ab20-4d2b-8e67-e27469e99a2d" name="Changes" comment="AAL_GAIA_X added">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/api/routes.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/api/routes.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/behavior_agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/behavior_agent.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/main.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/sensors/models.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/sensors/models.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/sensors/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/sensors/service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/services/auth_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/services/auth_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/services/container.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/services/container.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/services/device_mapping_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/services/device_mapping_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/services/notification_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/services/notification_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/services/setup_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/services/setup_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/AAL_GAIA_X_ROADMAP.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/AAL_GAIA_X_ROADMAP.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/frontend/src/components/SenteroShell.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/components/SenteroShell.tsx" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/frontend/src/pages/HistoryPage.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/pages/HistoryPage.tsx" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/frontend/src/pages/SettingsPage.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/pages/SettingsPage.tsx" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/frontend/src/routes/routes.ts" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/routes/routes.ts" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/frontend/src/shared/api/client.ts" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/shared/api/client.ts" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/frontend/src/styles/sentero.css" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/styles/sentero.css" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_backend_lifecycle.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_backend_lifecycle.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_notifications.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_notifications.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_sensor_architecture.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_sensor_architecture.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_smart_meter_behavior.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_smart_meter_behavior.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -72,23 +52,23 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.5320789099452892" />
-      <entry key="MS500" value="3.945776732172861" />
-      <entry key="S2" value="8.577085907347147" />
-      <entry key="S5" value="11.017696756790198" />
-      <entry key="S10" value="13.947762640413194" />
-      <entry key="S30" value="30.139735958095034" />
-      <entry key="S60" value="49.27568144154603" />
-      <entry key="M2" value="76.14991115493136" />
-      <entry key="M5" value="123.33448518308907" />
-      <entry key="M10" value="188.03824108848178" />
-      <entry key="M15" value="252.98746096227129" />
-      <entry key="M30" value="405.01551912104367" />
-      <entry key="H1" value="594.9876863967938" />
-      <entry key="H2" value="814.5954189447115" />
-      <entry key="H4" value="1013.5588322593321" />
-      <entry key="D1" value="1268.8261554669743" />
-      <entry key="W1" value="1324.3436458105662" />
+      <entry key="MS100" value="1.2884961506448134" />
+      <entry key="MS500" value="3.531434909470352" />
+      <entry key="S2" value="10.20982540347162" />
+      <entry key="S5" value="19.491526222577114" />
+      <entry key="S10" value="31.589575872202076" />
+      <entry key="S30" value="55.38038710858468" />
+      <entry key="S60" value="67.01447921072406" />
+      <entry key="M2" value="76.56363183460545" />
+      <entry key="M5" value="109.46926895989577" />
+      <entry key="M10" value="174.066763954714" />
+      <entry key="M15" value="239.8862361046853" />
+      <entry key="M30" value="402.5806585488792" />
+      <entry key="H1" value="611.7245433886101" />
+      <entry key="H2" value="850.9672344847739" />
+      <entry key="H4" value="1067.1449188667154" />
+      <entry key="D1" value="1345.617322276684" />
+      <entry key="W1" value="1406.4160025383376" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
@@ -96,37 +76,37 @@
       <entry key="S2" value="0.0" />
       <entry key="S5" value="0.0" />
       <entry key="S10" value="0.0" />
-      <entry key="S30" value="5.76805798878824E-130" />
-      <entry key="S60" value="2.401678160950773E-65" />
-      <entry key="M2" value="4.9006919521133015E-33" />
-      <entry key="M5" value="1.1915244591128804E-13" />
-      <entry key="M10" value="3.4518465480273515E-7" />
-      <entry key="M15" value="4.9207842118005644E-5" />
-      <entry key="M30" value="0.007014830156033998" />
-      <entry key="H1" value="0.08375458289570781" />
-      <entry key="H2" value="0.28940384049923357" />
-      <entry key="H4" value="0.5379626757492048" />
-      <entry key="D1" value="0.9018314103632127" />
-      <entry key="W1" value="0.9853473133721875" />
+      <entry key="S30" value="4.350318125418347E-136" />
+      <entry key="S60" value="2.0857416247987336E-68" />
+      <entry key="M2" value="1.4442096886528523E-34" />
+      <entry key="M5" value="2.9097260465371507E-14" />
+      <entry key="M10" value="1.705791911851215E-7" />
+      <entry key="M15" value="3.075747647860036E-5" />
+      <entry key="M30" value="0.005545942343605748" />
+      <entry key="H1" value="0.07447108394273406" />
+      <entry key="H2" value="0.2728939060197792" />
+      <entry key="H4" value="0.5223924827366778" />
+      <entry key="D1" value="0.8974277333277165" />
+      <entry key="W1" value="0.9846585150785935" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="1.507359241651126" />
-      <entry key="MS500" value="3.9303308375581807" />
-      <entry key="S2" value="8.56809718911618" />
-      <entry key="S5" value="11.013021069348111" />
-      <entry key="S10" value="13.944747047494621" />
-      <entry key="S30" value="30.137460953469706" />
-      <entry key="S60" value="49.27380360385807" />
-      <entry key="M2" value="76.14846238827901" />
-      <entry key="M5" value="123.3335496492253" />
-      <entry key="M10" value="188.0375314977101" />
-      <entry key="M15" value="252.98687510797893" />
-      <entry key="M30" value="405.0220116096815" />
-      <entry key="H1" value="595.0709776112383" />
-      <entry key="H2" value="814.8844107735933" />
-      <entry key="H4" value="1014.0964903750727" />
-      <entry key="D1" value="1269.7279130132035" />
-      <entry key="W1" value="1325.3289818258456" />
+      <entry key="MS100" value="1.2634965223452366" />
+      <entry key="MS500" value="3.5170854031387364" />
+      <entry key="S2" value="10.198933421587881" />
+      <entry key="S5" value="19.483120606523507" />
+      <entry key="S10" value="31.582744342845153" />
+      <entry key="S30" value="55.376386779304276" />
+      <entry key="S60" value="67.01205671560278" />
+      <entry key="M2" value="76.56224519899094" />
+      <entry key="M5" value="109.4684663296479" />
+      <entry key="M10" value="174.06611968684103" />
+      <entry key="M15" value="239.88567269102865" />
+      <entry key="M30" value="402.5856921643876" />
+      <entry key="H1" value="611.7985525942906" />
+      <entry key="H2" value="851.2397149009722" />
+      <entry key="H4" value="1067.667003101048" />
+      <entry key="D1" value="1346.5146744210301" />
+      <entry key="W1" value="1407.4006494652483" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo"><![CDATA[{
@@ -208,7 +188,15 @@
       <option name="project" value="LOCAL" />
       <updated>1786446632611</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="AAL_GAIA_X added">
+      <option name="closed" value="true" />
+      <created>1786457972320</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1786457972320</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
