@@ -30,6 +30,26 @@ STATE_KEYS = (
     "bed_presence",
     "state",
 )
+MEASUREMENT_KEYS = (
+    "battery",
+    "battery_low",
+    "linkquality",
+    "signal_quality",
+    "temperature",
+    "humidity",
+    "illuminance",
+    "illuminance_lux",
+    "energy",
+    "energy_consumption",
+    "electricity",
+    "electricity_consumption",
+    "power",
+    "power_usage",
+    "water",
+    "water_consumption",
+    "gas",
+    "gas_consumption",
+)
 
 
 class Zigbee2MqttSensorSource:
@@ -120,7 +140,7 @@ class Zigbee2MqttSensorSource:
         if state_keys:
             for state_key in state_keys:
                 rows.append(self._entity(device, state_key, payload.get(state_key), enriched_payload, timestamp))
-        for key in ("battery", "battery_low", "linkquality", "signal_quality", "temperature", "humidity", "illuminance", "illuminance_lux"):
+        for key in MEASUREMENT_KEYS:
             if key in payload:
                 rows.append(self._entity(device, key, payload.get(key), enriched_payload, timestamp))
         logger.debug(
@@ -218,6 +238,14 @@ class Zigbee2MqttSensorSource:
             return key
         if key == "action":
             return "button"
+        if key in {"energy", "energy_consumption", "electricity", "electricity_consumption"}:
+            return "energy"
+        if key in {"power", "power_usage"}:
+            return "power"
+        if key in {"water", "water_consumption"}:
+            return "water"
+        if key in {"gas", "gas_consumption"}:
+            return "gas"
         return None if is_binary else key
 
     def _topic_prefixes(self) -> list[str]:

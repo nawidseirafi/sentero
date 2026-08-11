@@ -15,6 +15,19 @@ PRESENCE_CLASSES = {"occupancy", "presence"}
 MOTION_CLASSES = {"motion"}
 ENVIRONMENTAL_CLASSES = {"temperature", "humidity", "illuminance", "illuminance_lux"}
 BUTTON_CLASSES = {"action", "button"}
+SMART_METER_CLASSES = {"energy", "power", "gas", "water"}
+SMART_METER_KEYS = {
+    "energy",
+    "energy_consumption",
+    "electricity",
+    "electricity_consumption",
+    "power",
+    "power_usage",
+    "water",
+    "water_consumption",
+    "gas",
+    "gas_consumption",
+}
 C1001_KEYS = {"presence", "fall_detected", "breathing_detected", "respiration_rate", "sleep_status", "bed_presence"}
 
 
@@ -130,6 +143,14 @@ def event_from_value(device_class: str, key: str, state: Any, attrs: dict[str, A
         return "humidity", parse_number(raw), ["humidity"]
     if device_class in {"illuminance", "illuminance_lux"} or key in {"illuminance", "illuminance_lux"}:
         return "illuminance", parse_number(raw), ["illuminance"]
+    if device_class == "energy" or key in {"energy", "energy_consumption", "electricity", "electricity_consumption"}:
+        return "energy_consumption", parse_number(raw), ["energy_consumption"]
+    if device_class == "power" or key in {"power", "power_usage"}:
+        return "power_usage", parse_number(raw), ["power_usage"]
+    if device_class == "water" or key in {"water", "water_consumption"}:
+        return "water_consumption", parse_number(raw), ["water_consumption"]
+    if device_class == "gas" or key in {"gas", "gas_consumption"}:
+        return "gas_consumption", parse_number(raw), ["gas_consumption"]
     if device_class == "battery" or key in {"battery", "battery_low"}:
         return "battery", parse_int(raw), ["battery"]
     if key in {"linkquality", "signal_quality"}:
@@ -154,6 +175,8 @@ def device_type_for(device_class: str, key: str, capabilities: list[Capability])
         return "motion_sensor"
     if "button" in capabilities:
         return "button"
+    if any(cap in capabilities for cap in ["energy_consumption", "power_usage", "water_consumption", "gas_consumption"]):
+        return "smart_meter"
     if any(cap in capabilities for cap in ["temperature", "humidity", "illuminance"]):
         return "environmental_sensor"
     if key in C1001_KEYS:
@@ -163,17 +186,19 @@ def device_type_for(device_class: str, key: str, capabilities: list[Capability])
 
 def mqtt_state_key(row: dict[str, Any], attrs: dict[str, Any]) -> str:
     device_class = str(row.get("device_class") or attrs.get("device_class") or "").lower()
-    if device_class in {"battery", "temperature", "humidity", "illuminance", "illuminance_lux", "motion", "occupancy", "presence", "linkquality", "signal_quality"}:
+    if device_class in {"battery", "temperature", "humidity", "illuminance", "illuminance_lux", "motion", "occupancy", "presence", "linkquality", "signal_quality", *SMART_METER_CLASSES}:
         return device_class
     for key in [
         "contact", "open", "occupancy", "presence", "motion", "fall_detected",
         "breathing_detected", "respiration_rate", "sleep_status", "bed_presence",
         "battery", "linkquality", "action", "temperature", "humidity", "illuminance", "illuminance_lux",
+        "energy", "energy_consumption", "electricity", "electricity_consumption",
+        "power", "power_usage", "water", "water_consumption", "gas", "gas_consumption",
     ]:
         if key in attrs:
             return key
     unique = str(row.get("unique_id") or row.get("entity_id") or "").lower()
-    for key in ["battery", "linkquality", "temperature", "humidity", "illuminance"]:
+    for key in ["battery", "linkquality", "temperature", "humidity", "illuminance", *SMART_METER_KEYS]:
         if key in unique:
             return key
     return str(row.get("device_class") or attrs.get("device_class") or "state").lower()

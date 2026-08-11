@@ -21,6 +21,19 @@ DISCOVERY_TIMEOUT_SECONDS = 180
 DISCOVERY_CONFIDENCE_THRESHOLD = 50
 PRESENCE_CLASSES = {'occupancy', 'motion', 'presence'}
 CONTACT_CLASSES = {'door', 'window', 'opening', 'contact'}
+SMART_METER_CLASSES = {'energy', 'power', 'water', 'gas'}
+SMART_METER_KEYS = {
+    'energy',
+    'energy_consumption',
+    'electricity',
+    'electricity_consumption',
+    'power',
+    'power_usage',
+    'water',
+    'water_consumption',
+    'gas',
+    'gas_consumption',
+}
 logger = get_logger(__name__)
 ROOM_TERMS = {
     'living_room': ['wohnzimmer', 'living', 'living_room'],
@@ -817,7 +830,7 @@ class DeviceMappingService:
             availability = find_mqtt_availability_state({**row, **(state or {})}, states)
             if availability is not None:
                 reachable = availability
-            battery_entity = find_battery_entity({**row, **(state or {})}, states)
+            battery_entity = find_battery_entity(dict(row), states) or find_battery_entity(state or {}, states)
             battery_level = parse_battery(battery_entity.get('state')) if battery_entity else battery_level_from_state(state)
             power_source = power_source_from_state(state)
             c1001_telemetry = c1001_telemetry_from_state(state)
@@ -1488,6 +1501,8 @@ def domain_matches(role: str, domain: Any) -> bool:
         return str(domain or '') in {'binary_sensor', 'sensor', 'lock', 'switch'}
     if role_is_button(role):
         return str(domain or '') in {'button', 'sensor'}
+    if role_is_smart_meter(role):
+        return str(domain or '') == 'sensor'
     return bool(domain)
 
 
@@ -1517,6 +1532,12 @@ def role_candidate_matches(role: str, item: dict[str, Any], allow_missing_device
     domain = str(item.get('domain') or '')
     device_class = item.get('device_class')
     has_device_class = bool(str(device_class or '').strip())
+    if role_is_smart_meter(role):
+        return (
+            domain == 'sensor'
+            and (allow_device_class_mismatch or class_matches(role, device_class) or smart_meter_candidate_matches(role, item))
+            and (allow_missing_device_class or has_device_class or smart_meter_candidate_matches(role, item))
+        )
     if role_is_button(role):
         return domain in {'button', 'sensor'} and (
             str(device_class or '').lower() == 'button'
@@ -1545,6 +1566,14 @@ def class_matches(role: str, device_class: Any) -> bool:
         return dc in CONTACT_CLASSES
     if role_is_button(role):
         return dc == 'button'
+    if role_is_smart_meter(role):
+        if role_is_electricity_meter(role):
+            return dc in {'energy', 'power'}
+        if 'water' in normalize(role):
+            return dc == 'water'
+        if 'gas' in normalize(role):
+            return dc == 'gas'
+        return dc in SMART_METER_CLASSES
     return False
 
 
@@ -1617,6 +1646,13 @@ def candidate_entity_priority(role: str, item: dict[str, Any]) -> int:
             return 40
         if any(term in haystack for term in ['button', 'action', 'knopf', 'taster']):
             return 25
+    if role_is_smart_meter(role):
+        if domain != 'sensor':
+            return -80
+        if class_matches(role, device_class):
+            return 45
+        if smart_meter_candidate_matches(role, item):
+            return 35
     return 0
 
 
@@ -1673,6 +1709,8 @@ def role_state_matches(role: str, item: dict[str, Any]) -> bool:
     domain = str(item.get('domain') or str(item.get('entity_id') or '').split('.', 1)[0])
     if role_is_button(role):
         return domain == 'button' or str(item.get('device_class') or '').lower() == 'button' or str(item.get('payload_key') or '').lower() in {'action', 'button'}
+    if role_is_smart_meter(role):
+        return role_candidate_matches(role, item, allow_missing_device_class=True, allow_device_class_mismatch=False)
     if domain in {'button', 'update', 'number', 'select'}:
         return False
     haystack = normalize(' '.join(str(item.get(key) or '') for key in ['entity_id', 'friendly_name', 'original_name', 'device_name']))
@@ -1697,6 +1735,11 @@ def role_state_priority(role: str, item: dict[str, Any]) -> int:
             score += 25
         if device_class in CONTACT_CLASSES:
             score += 20
+    if role_is_smart_meter(role):
+        if any(term in entity_id for term in ['energy', 'electricity', 'strom', 'power', 'water', 'wasser', 'gas']):
+            score += 25
+        if device_class in SMART_METER_CLASSES:
+            score += 25
     return score
 
 
@@ -1908,6 +1951,31 @@ def role_is_contact(role: str) -> bool:
 def role_is_button(role: str) -> bool:
     value = str(role or '')
     return value.endswith('_button') or value == 'button'
+
+
+def role_is_smart_meter(role: str) -> bool:
+    value = normalize(str(role or ''))
+    return value.endswith(('_energy', '_power', '_water', '_gas', '_meter')) or any(term in value for term in ['electricity_meter', 'smart_meter', 'stromzaehler', 'wasserzaehler', 'gaszaehler'])
+
+
+def role_is_electricity_meter(role: str) -> bool:
+    value = normalize(str(role or ''))
+    return any(term in value for term in ['energy', 'power', 'electricity', 'smart_meter', 'strom'])
+
+
+def smart_meter_candidate_matches(role: str, item: dict[str, Any]) -> bool:
+    haystack = normalize(' '.join(str(item.get(key) or '') for key in ['entity_id', 'friendly_name', 'original_name', 'device_name', 'model', 'payload_key']))
+    device_class = str(item.get('device_class') or '').lower()
+    payload_key = str(item.get('payload_key') or '').lower()
+    keys = {device_class, payload_key}
+    if role_is_electricity_meter(role):
+        return bool(keys.intersection({'energy', 'power', 'energy_consumption', 'electricity', 'electricity_consumption', 'power_usage'})) or any(term in haystack for term in ['energy', 'electricity', 'strom', 'power', 'kwh', 'watt'])
+    normalized_role = normalize(role)
+    if 'water' in normalized_role or 'wasser' in normalized_role:
+        return 'water' in keys or 'water_consumption' in keys or any(term in haystack for term in ['water', 'wasser'])
+    if 'gas' in normalized_role:
+        return 'gas' in keys or 'gas_consumption' in keys or 'gas' in haystack
+    return bool(keys.intersection(SMART_METER_CLASSES | SMART_METER_KEYS)) or any(term in haystack for term in ['energy', 'electricity', 'strom', 'power', 'water', 'wasser', 'gas'])
 
 
 def candidate_id_matches(item: dict[str, Any], selected_id: str) -> bool:
@@ -2185,7 +2253,7 @@ def find_battery_level(role: dict[str, Any], states: list[dict[str, Any]]) -> in
 def find_battery_entity(role: dict[str, Any], states: list[dict[str, Any]]) -> dict[str, Any] | None:
     device_id = str(role.get('device_id') or '').strip()
     role_entity = str(role.get('entity_id') or '')
-    role_prefix = role_entity.rsplit('_', 1)[0] if '_' in role_entity else role_entity
+    role_prefixes = battery_lookup_prefixes(role_entity)
     role_identities = mqtt_identity_values(role)
     for state in states:
         entity_id = str(state.get('entity_id') or '')
@@ -2197,10 +2265,45 @@ def find_battery_entity(role: dict[str, Any], states: list[dict[str, Any]]) -> d
         if role_identities.intersection(mqtt_identity_values(state)):
             if parse_battery(state.get('state')) is not None:
                 return state
-        if role_prefix and entity_id.startswith(role_prefix):
+        if any(entity_id.startswith(prefix) for prefix in role_prefixes):
             if parse_battery(state.get('state')) is not None:
                 return state
     return None
+
+
+def battery_lookup_prefixes(entity_id: str) -> list[str]:
+    text = str(entity_id or '').strip()
+    if not text:
+        return []
+    domain, _, object_id = text.partition('.')
+    base = object_id or text
+    for suffix in (
+        '_contact',
+        '_door',
+        '_opening',
+        '_presence',
+        '_occupancy',
+        '_motion',
+        '_bewegung',
+        '_praesenz',
+        '_präsenz',
+    ):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    prefixes = []
+    for candidate_domain in ['sensor', domain]:
+        if candidate_domain:
+            prefixes.append(f'{candidate_domain}.{base}')
+    return unique_ordered([item for item in prefixes if item])
+
+
+def unique_ordered(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
 
 
 def is_battery_entity(state: dict[str, Any]) -> bool:

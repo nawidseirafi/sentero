@@ -25,7 +25,7 @@ type NotificationPreferences = {
   daily_summary: boolean;
 };
 
-type SensorPlan = { motion: boolean; door: boolean };
+type SensorPlan = { motion: boolean; door: boolean; electricity: boolean; water: boolean; gas: boolean };
 
 const steps = ['Willkommen', 'Profil', 'Räume', 'Sensoren', 'Vertraute Personen', 'Benachrichtigungen', 'Abschluss'];
 const ZIGBEE_DISCOVERY_SECONDS = 180;
@@ -42,7 +42,7 @@ const roomOptions = [
   { id: 'garden', label: 'Balkon/Garten', door: false },
 ];
 
-const baseRoomLabel = Object.fromEntries(roomOptions.map((room) => [room.id, room.label]));
+const baseRoomLabel: Record<string, string> = { ...Object.fromEntries(roomOptions.map((room) => [room.id, room.label])), home: 'Haushalt' };
 
 export function SetupWizard({ onFinish }: { onFinish: () => void }) {
   const [step, setStep] = useState(0);
@@ -226,7 +226,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     return customRooms[roomId] || baseRoomLabel[roomId] || roomId;
   }
 
-  function toggleSensorType(roomId: string, type: 'motion' | 'door') {
+  function toggleSensorType(roomId: string, type: keyof SensorPlan) {
     if (lockedSensorPlan[roomId]?.[type]) return;
     setSensorPlan((current) => {
       const fallback = defaultSensorPlan(roomId);
@@ -265,7 +265,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     }
     try {
       const result = await api.startSenteroSensorDiscovery({
-        sensor_type: sensor.type === 'door' ? 'door_contact' : 'presence_sensor',
+        sensor_type: sensorTypeForDiscovery(sensor.type),
         room_id: sensor.roomId,
         role: sensor.id,
         duration: ZIGBEE_DISCOVERY_SECONDS,
@@ -450,7 +450,7 @@ function RoomsStep({ selected, customRooms, sensorPlan, lockedSensorPlan, custom
   onToggle: (id: string) => void;
   onCustomChange: (value: string) => void;
   onCustomAdd: () => void;
-  onToggleSensorType: (roomId: string, type: 'motion' | 'door') => void;
+  onToggleSensorType: (roomId: string, type: keyof SensorPlan) => void;
 }) {
   const visibleRooms = [...roomOptions, ...Object.entries(customRooms).map(([id, label]) => ({ id, label, door: false }))];
   return (
@@ -460,7 +460,7 @@ function RoomsStep({ selected, customRooms, sensorPlan, lockedSensorPlan, custom
         {visibleRooms.map((room) => {
           const active = selected.includes(room.id);
           const plan = sensorPlan[room.id] || defaultSensorPlan(room.id);
-          const locked = lockedSensorPlan[room.id] || { motion: false, door: false };
+          const locked = lockedSensorPlan[room.id] || defaultSensorPlan(room.id);
           const roomLocked = roomHasLockedSensor(lockedSensorPlan, room.id);
           return (
             <div key={room.id} className={`sc-room-choice-card ${active ? 'active' : ''}${roomLocked ? ' has-bound-sensor' : ''}`}>
@@ -489,6 +489,30 @@ function RoomsStep({ selected, customRooms, sensorPlan, lockedSensorPlan, custom
         <button type="button" onClick={onCustomAdd}><Plus size={20} /> Hinzufügen</button>
       </div>
       <strong>{selected.length} Räume ausgewählt</strong>
+      <div className="sc-wizard-section-copy">
+        <h3>Verbrauchszähler</h3>
+        <p>Optional: Verbrauchsdaten können als zusätzlicher Hinweis auf Alltagsaktivität genutzt werden.</p>
+      </div>
+      <div className="sc-meter-choice-card">
+        <div className="sc-meter-choice-head">
+          <strong>Haushalt</strong>
+          <small>Strom, Wasser und Gas</small>
+        </div>
+        <div className="sc-room-sensor-toggles">
+          <label className={`${(sensorPlan.home || defaultSensorPlan('home')).electricity ? 'active' : ''}${lockedSensorPlan.home?.electricity ? ' locked' : ''}`}>
+            <input type="checkbox" checked={(sensorPlan.home || defaultSensorPlan('home')).electricity} disabled={lockedSensorPlan.home?.electricity} onChange={() => onToggleSensorType('home', 'electricity')} />
+            <i aria-hidden="true" /> <span>Stromzähler{lockedSensorPlan.home?.electricity}</span>
+          </label>
+          <label className={`${(sensorPlan.home || defaultSensorPlan('home')).water ? 'active' : ''}${lockedSensorPlan.home?.water ? ' locked' : ''}`}>
+            <input type="checkbox" checked={(sensorPlan.home || defaultSensorPlan('home')).water} disabled={lockedSensorPlan.home?.water} onChange={() => onToggleSensorType('home', 'water')} />
+            <i aria-hidden="true" /> <span>Wasserzähler{lockedSensorPlan.home?.water}</span>
+          </label>
+          <label className={`${(sensorPlan.home || defaultSensorPlan('home')).gas ? 'active' : ''}${lockedSensorPlan.home?.gas ? ' locked' : ''}`}>
+            <input type="checkbox" checked={(sensorPlan.home || defaultSensorPlan('home')).gas} disabled={lockedSensorPlan.home?.gas} onChange={() => onToggleSensorType('home', 'gas')} />
+            <i aria-hidden="true" /> <span>Gaszähler{lockedSensorPlan.home?.gas}</span>
+          </label>
+        </div>
+      </div>
     </section>
   );
 }
@@ -614,6 +638,9 @@ function buildBindings(roomIds: string[], sensorPlan: Record<string, SensorPlan>
       const doorId = `${roomId}_door`;
       bindings.push(byId[doorId] || { id: doorId, roomId, type: 'door', sensorId: '', name: `${label} Türkontakt`, status: 'idle' });
     }
+    if (roomId === 'home' && plan.electricity) bindings.push(byId.home_energy || { id: 'home_energy', roomId, type: 'electricity_meter', sensorId: '', name: 'Stromzähler', status: 'idle' });
+    if (roomId === 'home' && plan.water) bindings.push(byId.home_water || { id: 'home_water', roomId, type: 'water_meter', sensorId: '', name: 'Wasserzähler', status: 'idle' });
+    if (roomId === 'home' && plan.gas) bindings.push(byId.home_gas || { id: 'home_gas', roomId, type: 'gas_meter', sensorId: '', name: 'Gaszähler', status: 'idle' });
     return bindings;
   });
 }
@@ -649,8 +676,8 @@ function mergeSensorPlan(current: Record<string, SensorPlan>, roles: SenteroSens
     const type = sensorTypeFromRole(role.role);
     const roomId = role.room || roomFromRole(role.role);
     if (!type || !roomId) continue;
-    const plan = next[roomId] || { motion: false, door: false };
-    next[roomId] = { ...plan, [type]: true };
+    const plan = next[roomId] || defaultSensorPlan(roomId);
+    next[roomId] = { ...plan, [sensorPlanKey(type)]: true };
   }
   return next;
 }
@@ -662,34 +689,41 @@ function lockedPlanFromRoles(roles: SenteroSensorRole[]) {
     const type = sensorTypeFromRole(role.role);
     const roomId = role.room || roomFromRole(role.role);
     if (!type || !roomId) continue;
-    plan[roomId] = { ...(plan[roomId] || { motion: false, door: false }), [type]: true };
+    plan[roomId] = { ...(plan[roomId] || defaultSensorPlan(roomId)), [sensorPlanKey(type)]: true };
   }
   return plan;
 }
 
 function roomHasLockedSensor(lockedSensorPlan: Record<string, SensorPlan>, roomId: string) {
   const locked = lockedSensorPlan[roomId];
-  return Boolean(locked?.motion || locked?.door);
+  return Boolean(locked?.motion || locked?.door || locked?.electricity || locked?.water || locked?.gas);
 }
 
 function sensorTypeFromRole(role: string): SensorBinding['type'] | null {
   if (role.endsWith('_presence') || role.endsWith('_motion')) return 'motion';
   if (role.endsWith('_door') || role.endsWith('_contact')) return 'door';
+  if (role.endsWith('_energy') || role.endsWith('_power')) return 'electricity_meter';
+  if (role.endsWith('_water')) return 'water_meter';
+  if (role.endsWith('_gas')) return 'gas_meter';
   return null;
 }
 
 function roomFromRole(role: string) {
-  return role.replace(/_(presence|motion|door|contact)$/, '');
+  return role.replace(/_(presence|motion|door|contact|energy|power|water|gas)$/, '');
 }
 
 function defaultSensorName(roomLabel: string, type: SensorBinding['type']) {
-  return type === 'motion' ? `${roomLabel} Präsenz` : `${roomLabel} Türkontakt`;
+  if (type === 'motion') return `${roomLabel} Präsenz`;
+  if (type === 'door') return `${roomLabel} Türkontakt`;
+  if (type === 'electricity_meter') return 'Stromzähler';
+  if (type === 'water_meter') return 'Wasserzähler';
+  return 'Gaszähler';
 }
 
 function isPresenceBinding(sensor: SensorBinding) {
   const type = String(sensor.type || '').toLowerCase();
   const id = String(sensor.id || '').toLowerCase();
-  return type !== 'door' || id.endsWith('_presence') || id.endsWith('_motion');
+  return type === 'motion' || id.endsWith('_presence') || id.endsWith('_motion');
 }
 
 async function waitForPresenceSensor(): Promise<SenteroEsp32DiscoverySensor> {
@@ -712,10 +746,12 @@ function uniqueValues(values: string[]) {
 }
 
 function selectedRoomsWithSensors(roomIds: string[], sensorPlan: Record<string, SensorPlan>) {
-  return roomIds.filter((roomId) => {
+  const selected = roomIds.filter((roomId) => {
     const plan = sensorPlan[roomId] || defaultSensorPlan(roomId);
-    return plan.motion || plan.door;
+    return plan.motion || plan.door || plan.electricity || plan.water || plan.gas;
   });
+  const homePlan = sensorPlan.home || defaultSensorPlan('home');
+  return homePlan.electricity || homePlan.water || homePlan.gas ? uniqueValues([...selected, 'home']) : selected;
 }
 
 function ageFromBirthYear(value: string) {
@@ -731,7 +767,22 @@ function validBirthYear(value: string) {
 
 function defaultSensorPlan(roomId: string) {
   const option = roomOptions.find((room) => room.id === roomId);
-  return { motion: true, door: option?.door !== false };
+  return { motion: roomId !== 'home', door: roomId !== 'home' && option?.door !== false, electricity: false, water: false, gas: false };
+}
+
+function sensorTypeForDiscovery(type: SensorBinding['type']) {
+  if (type === 'door') return 'door_contact';
+  if (type === 'electricity_meter') return 'electricity_meter';
+  if (type === 'water_meter') return 'water_meter';
+  if (type === 'gas_meter') return 'gas_meter';
+  return 'presence_sensor';
+}
+
+function sensorPlanKey(type: SensorBinding['type']): keyof SensorPlan {
+  if (type === 'electricity_meter') return 'electricity';
+  if (type === 'water_meter') return 'water';
+  if (type === 'gas_meter') return 'gas';
+  return type;
 }
 
 function normalizeEmail(value: string) {

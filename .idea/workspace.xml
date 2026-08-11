@@ -1,4 +1,198 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PropertiesComponent">{}</component>
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="fdb978cf-ab20-4d2b-8e67-e27469e99a2d" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/backend/behavior_agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/behavior_agent.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/sensor_sources/zigbee2mqtt.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/sensor_sources/zigbee2mqtt.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/sensors/models.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/sensors/models.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/sensors/normalizer.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/sensors/normalizer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/sensors/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/sensors/service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/services/device_mapping_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/services/device_mapping_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/services/sensor_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/services/sensor_manager.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/frontend/src/components/SensorWizard.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/components/SensorWizard.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/frontend/src/components/SetupWizard.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/components/SetupWizard.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/frontend/src/pages/SettingsPage.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/pages/SettingsPage.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/frontend/src/styles/sentero.css" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/styles/sentero.css" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_sensor_architecture.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_sensor_architecture.py" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="DBNavigator.Project.Workspace.Settings">
+    <assistant-settings>
+      <credential-settings>
+        <credentials />
+      </credential-settings>
+      <profile-settings>
+        <profiles />
+      </profile-settings>
+      <mcp-server-settings>
+        <workspace-integration value="false" />
+        <mcp-servers />
+        <mcp-tool-approvals />
+      </mcp-server-settings>
+    </assistant-settings>
+  </component>
+  <component name="EmbeddingIndexingInfo">
+    <option name="cachedIndexableFilesCount" value="10465" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="GitHubPullRequestSearchHistory"><![CDATA[{
+  "lastFilter": {
+    "state": "OPEN",
+    "assignee": "nawidseirafi"
+  }
+}]]></component>
+  <component name="GithubPullRequestsUISettings"><![CDATA[{
+  "selectedUrlAndAccountId": {
+    "url": "https://github.com/nawidseirafi/sentero.git",
+    "accountId": "ed797659-9438-4ace-a523-d3568764772e"
+  }
+}]]></component>
+  <component name="McpProjectServerCommands">
+    <commands />
+    <urls />
+  </component>
+  <component name="NextEditCompletionFeaturesState">
+    <decayedCancelled>
+      <entry key="MS100" value="1.1203547533392755" />
+      <entry key="MS500" value="3.1103227254422747" />
+      <entry key="S2" value="9.124800505059115" />
+      <entry key="S5" value="17.953818709053056" />
+      <entry key="S10" value="24.956795320299154" />
+      <entry key="S30" value="32.60923805334041" />
+      <entry key="S60" value="39.31277456741604" />
+      <entry key="M2" value="55.15289684404469" />
+      <entry key="M5" value="95.58246157501306" />
+      <entry key="M10" value="160.08170674720233" />
+      <entry key="M15" value="215.03610443972892" />
+      <entry key="M30" value="315.69406308467245" />
+      <entry key="H1" value="396.2788903563918" />
+      <entry key="H2" value="447.86117384496214" />
+      <entry key="H4" value="477.12446753087715" />
+      <entry key="D1" value="503.4956557347427" />
+      <entry key="W1" value="508.20882769426623" />
+    </decayedCancelled>
+    <decayedSelected>
+      <entry key="MS100" value="0.0" />
+      <entry key="MS500" value="0.0" />
+      <entry key="S2" value="7.825080720031692E-228" />
+      <entry key="S5" value="1.4367973902681345E-91" />
+      <entry key="S10" value="3.790511034501969E-46" />
+      <entry key="S30" value="7.237122465405811E-16" />
+      <entry key="S60" value="2.690190042618875E-8" />
+      <entry key="M2" value="1.6401798811773274E-4" />
+      <entry key="M5" value="0.030616574050932276" />
+      <entry key="M10" value="0.17497592420367997" />
+      <entry key="M15" value="0.31283754137321007" />
+      <entry key="M30" value="0.559318819076569" />
+      <entry key="H1" value="0.747876205716273" />
+      <entry key="H2" value="0.8647983613052661" />
+      <entry key="H4" value="0.929945353934988" />
+      <entry key="D1" value="0.9879680607214443" />
+      <entry key="W1" value="0.9982722216217315" />
+    </decayedSelected>
+    <decayedShown>
+      <entry key="MS100" value="1.0965096070090539" />
+      <entry key="MS500" value="3.0951850279818944" />
+      <entry key="S2" value="9.113494653892856" />
+      <entry key="S5" value="17.94495154241035" />
+      <entry key="S10" value="24.950633410055172" />
+      <entry key="S30" value="32.6065567922291" />
+      <entry key="S60" value="39.31118333986929" />
+      <entry key="M2" value="55.151974105216745" />
+      <entry key="M5" value="95.61195514733207" />
+      <entry key="M10" value="160.2549469557408" />
+      <entry key="M15" value="215.34705156209105" />
+      <entry key="M30" value="316.25177721162044" />
+      <entry key="H1" value="397.0257095020274" />
+      <entry key="H2" value="448.7253641687186" />
+      <entry key="H4" value="478.0540866302655" />
+      <entry key="D1" value="504.48356611064537" />
+      <entry key="W1" value="509.20709159113414" />
+    </decayedShown>
+  </component>
+  <component name="ProjectColorInfo"><![CDATA[{
+  "customColor": "",
+  "associatedIndex": 5
+}]]></component>
+  <component name="ProjectId" id="3HlYcHlp1fI7bJRZROnBzWsURzM" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.MCP Project settings loaded": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "codeWithMe.voiceChat.enabledByDefault": "false",
+    "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
+    "git-widget-placeholder": "main",
+    "junie.onboarding.icon.badge.shown": "true",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "to.speed.mode.migration.done": "true"
+  }
+}]]></component>
+  <component name="RunManager">
+    <configuration name="Unnamed" type="PythonConfigurationType" factoryName="Python" nameIsGenerated="true">
+      <module name="sentero" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="SDK_NAME" value="Python 3.12 (.venv)" />
+      <option name="WORKING_DIRECTORY" value="" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="false" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-python-sdk-c59985aa861c-c2ffad84badb-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-261.24374.152" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="fdb978cf-ab20-4d2b-8e67-e27469e99a2d" name="Changes" comment="" />
+      <created>1786444199219</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1786444199219</updated>
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
 </project>

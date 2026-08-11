@@ -15,6 +15,8 @@ import AccessibilityNewIcon from '@mui/icons-material/AccessibilityNew';
 import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutlined';
 
+type MeterAddType = 'electricity_meter' | 'water_meter' | 'gas_meter';
+
 const roomLabels: Record<string, string> = {
   living_room: 'Wohnzimmer',
   kitchen: 'Küche',
@@ -60,6 +62,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [ledStates, setLedStates] = useState<Record<string, boolean>>({});
   const [ledBusyRole, setLedBusyRole] = useState<string | null>(null);
   const [channels, setChannels] = useState<SenteroNotificationChannel[]>([]);
+  const [meterDiscovery, setMeterDiscovery] = useState<{ type: MeterAddType; status: 'idle' | 'searching' | 'found' | 'missing'; message: string; remainingSeconds?: number } | null>(null);
   const [setupChannel, setSetupChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
   const [helpChannel, setHelpChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
   const [channelForms, setChannelForms] = useState({
@@ -146,6 +149,46 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Einstellungen konnten nicht geladen werden.');
     }
+  }
+
+  async function addMeter(type: MeterAddType) {
+    const meta = meterMeta(type);
+    setError('');
+    setSaved('');
+    setMeterDiscovery({ type, status: 'searching', message: `${meta.label} wird gesucht.`, remainingSeconds: 180 });
+    try {
+      const started = await api.startSenteroSensorDiscovery({
+        sensor_type: type,
+        room_id: 'home',
+        role: meta.role,
+        duration: 180,
+      });
+      if (!started.discovery_id) throw new Error(started.message || 'Zähler konnte nicht gesucht werden.');
+      await pollMeterDiscovery(type, started.discovery_id, Date.now());
+    } catch (err) {
+      setMeterDiscovery({ type, status: 'missing', message: err instanceof Error ? err.message : `${meta.label} konnte nicht verbunden werden.` });
+    }
+  }
+
+  async function pollMeterDiscovery(type: MeterAddType, discoveryId: number, startedAt: number): Promise<void> {
+    const meta = meterMeta(type);
+    const result = await api.senteroDiscoveredSensors(discoveryId, false);
+    if (result.status === 'found' && result.sensor) {
+      await api.registerSenteroSensor(result.sensor.id, { discovery_id: discoveryId, name: meta.label, room_id: 'home' });
+      setMeterDiscovery({ type, status: 'found', message: `${meta.label} wurde verbunden.`, remainingSeconds: 0 });
+      setSaved(`${meta.label} wurde verbunden.`);
+      await load();
+      return;
+    }
+    const remainingSeconds = result.remaining_seconds ?? Math.max(0, 180 - Math.round((Date.now() - startedAt) / 1000));
+    if (remainingSeconds <= 0 || result.status === 'not_found') {
+      await api.cancelSenteroSensorDiscovery(discoveryId).catch(() => undefined);
+      setMeterDiscovery({ type, status: 'missing', message: `${meta.label} wurde nicht gefunden.`, remainingSeconds: 0 });
+      return;
+    }
+    setMeterDiscovery({ type, status: 'searching', message: `${meta.label} wird gesucht.`, remainingSeconds });
+    await wait(2000);
+    return pollMeterDiscovery(type, discoveryId, startedAt);
   }
 
   function hydrateLedStates(sensorRoles: SenteroSensorRole[]) {
@@ -630,6 +673,16 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         <section className="sc-panel sc-settings-panel">
           <div className="sc-section-title"><h2>Räume & Sensoren</h2><button type="button" onClick={() => window.location.assign('/sentero/setup')}><Plus size={20} /> Sensor hinzufügen</button></div>
           <div className="sc-inline-add">
+            <button type="button" onClick={() => void addMeter('electricity_meter')} disabled={meterDiscovery?.status === 'searching'}><Plug size={18} /> Stromzähler suchen</button>
+            <button type="button" onClick={() => void addMeter('water_meter')} disabled={meterDiscovery?.status === 'searching'}><Plus size={18} /> Wasserzähler suchen</button>
+            <button type="button" onClick={() => void addMeter('gas_meter')} disabled={meterDiscovery?.status === 'searching'}><Plus size={18} /> Gaszähler suchen</button>
+          </div>
+          {meterDiscovery && (
+            <p className={`sc-muted-note ${meterDiscovery.status}`}>
+              {meterDiscovery.message}{meterDiscovery.status === 'searching' && typeof meterDiscovery.remainingSeconds === 'number' ? ` (${Math.ceil(meterDiscovery.remainingSeconds)}s)` : ''}
+            </p>
+          )}
+          <div className="sc-inline-add">
             <input value={roomDraft} onChange={(event) => setRoomDraft(event.target.value)} placeholder="Raum hinzufügen" />
             <button type="button" onClick={() => void addRoom()}><Plus size={20} /> Raum hinzufügen</button>
           </div>
@@ -658,6 +711,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                           <div className="sc-sensor-health">
                             {isDoorContactSensor(sensor) && <DoorContactStatus sensor={sensor} />}
                             {isEsp32PresenceSensor(sensor) && <C1001Telemetry sensor={sensor} />}
+                            {isSmartMeterSensor(sensor) && <span className="battery"><Plug size={17} /> {formatMeterValue(sensor)}</span>}
                             <span className={sensor.reachable === false ? 'offline' : sensor.reachable == null ? 'unknown' : 'online'}>
                               {sensor.reachable === false ? <WifiOff size={17} /> : <CheckCircle2 size={17} />}
                               {sensor.reachable === false ? 'Nicht erreichbar' : sensor.reachable == null ? 'In HA vorhanden' : 'Erreichbar'}
@@ -1220,11 +1274,33 @@ function C1001Telemetry({ sensor }: { sensor: SenteroSensorRole }) {
 }
 
 function sensorType(sensor: SenteroSensorRole) {
+  if (isSmartMeterSensor(sensor)) return meterLabelFromRole(sensor.role);
   if (isDoorContactSensor(sensor)) return 'Türkontakt';
   if (isEsp32PresenceSensor(sensor)) return 'Präsenzsensor';
   if (String(sensor.device_class || '') === 'vibration') return 'Vibrationssensor';
   if (String(sensor.domain || '') === 'lock') return 'Türsensor';
   return 'Bewegung';
+}
+
+function isSmartMeterSensor(sensor: SenteroSensorRole) {
+  const role = String(sensor.role || '').toLowerCase();
+  const dc = String(sensor.device_class || '').toLowerCase();
+  return role.endsWith('_energy') || role.endsWith('_power') || role.endsWith('_water') || role.endsWith('_gas') || ['energy', 'power', 'water', 'gas'].includes(dc);
+}
+
+function meterLabelFromRole(role: string) {
+  if (role.endsWith('_water')) return 'Wasserzähler';
+  if (role.endsWith('_gas')) return 'Gaszähler';
+  return 'Stromzähler';
+}
+
+function formatMeterValue(sensor: SenteroSensorRole) {
+  const value = sensor.state ?? 'unbekannt';
+  const dc = String(sensor.device_class || '').toLowerCase();
+  if (dc === 'power') return `${value} W`;
+  if (dc === 'water' || sensor.role.endsWith('_water')) return `${value} m³`;
+  if (dc === 'gas' || sensor.role.endsWith('_gas')) return `${value} m³`;
+  return `${value} kWh`;
 }
 
 function isEsp32PresenceSensor(sensor: SenteroSensorRole) {
@@ -1509,4 +1585,14 @@ function formatRelativeDuration(value?: string | null) {
   if (hours < 24) return `${hours} Std.`;
   const days = Math.round(hours / 24);
   return `${days} Tg.`;
+}
+
+function meterMeta(type: MeterAddType) {
+  if (type === 'water_meter') return { label: 'Wasserzähler', role: 'home_water' };
+  if (type === 'gas_meter') return { label: 'Gaszähler', role: 'home_gas' };
+  return { label: 'Stromzähler', role: 'home_energy' };
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }

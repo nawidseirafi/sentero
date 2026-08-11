@@ -1114,6 +1114,43 @@ button:disabled {
   border-color: #78b89f;
 }
 
+.sc-meter-choice-card {
+  background: #f4fbf8;
+  border: 1px solid #cbe4da;
+  border-radius: 18px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.sc-meter-choice-head {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.sc-meter-choice-head strong {
+  color: var(--sc-text);
+  font-size: 1.08rem;
+  line-height: 1.25;
+}
+
+.sc-meter-choice-head small {
+  color: var(--sc-green);
+  font-size: 0.9rem;
+  font-weight: 850;
+}
+
+.sc-meter-choice-card .sc-room-sensor-toggles {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 0;
+}
+
+.sc-meter-choice-card .sc-room-sensor-toggles label {
+  min-height: 46px;
+}
+
 .sc-room-sensor-toggles {
   display: grid;
   gap: 8px;
@@ -3711,6 +3748,10 @@ button:disabled {
 
   .sc-room-choice-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sc-meter-choice-card .sc-room-sensor-toggles {
+    grid-template-columns: 1fr;
   }
 
   .sc-sensor-row {

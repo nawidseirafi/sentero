@@ -5,7 +5,7 @@ import { SetupWifiQr } from './SetupWifiQr';
 export type SensorBinding = {
   id: string;
   roomId: string;
-  type: 'motion' | 'door';
+  type: 'motion' | 'door' | 'electricity_meter' | 'water_meter' | 'gas_meter';
   sensorId: string;
   name: string;
   status: 'idle' | 'searching' | 'connected' | 'missing' | 'skipped';
@@ -89,10 +89,8 @@ function SensorRow({ sensor, state, devMode, onChange, onSearch, onSkip }: {
   onSkip: (sensor: SensorBinding) => void;
 }) {
   const presence = isPresenceBinding(sensor);
-  const label = presence ? 'Präsenzsensor' : 'Türsensor';
-  const help = presence
-    ? 'Erkennt, ob sich eine Person im Raum bewegt oder anwesend ist.'
-    : 'Erkennt, ob eine Tür oder ein Fenster geöffnet wurde.';
+  const label = sensorLabel(sensor);
+  const help = sensorHelp(sensor);
 
   return (
     <div className={`sc-sensor-row ${sensor.status === 'connected' ? 'is-connected' : ''}`}>
@@ -143,5 +141,21 @@ function SensorStatus({ status, remainingSeconds }: { status: SensorBinding['sta
 function isPresenceBinding(sensor: SensorBinding) {
   const type = String(sensor.type || '').toLowerCase();
   const id = String(sensor.id || '').toLowerCase();
-  return type !== 'door' || id.endsWith('_presence') || id.endsWith('_motion');
+  return type === 'motion' || id.endsWith('_presence') || id.endsWith('_motion');
+}
+
+function sensorLabel(sensor: SensorBinding) {
+  if (sensor.type === 'door') return 'Türsensor';
+  if (sensor.type === 'electricity_meter') return 'Stromzähler';
+  if (sensor.type === 'water_meter') return 'Wasserzähler';
+  if (sensor.type === 'gas_meter') return 'Gaszähler';
+  return 'Präsenzsensor';
+}
+
+function sensorHelp(sensor: SensorBinding) {
+  if (sensor.type === 'door') return 'Erkennt, ob eine Tür oder ein Fenster geöffnet wurde.';
+  if (sensor.type === 'electricity_meter') return 'Liefert Stromverbrauch oder aktuelle Leistung als zusätzlichen Aktivitätshinweis.';
+  if (sensor.type === 'water_meter') return 'Liefert Wasserverbrauch als zusätzlichen Aktivitätshinweis.';
+  if (sensor.type === 'gas_meter') return 'Liefert Gasverbrauch als zusätzlichen Aktivitätshinweis.';
+  return 'Erkennt, ob sich eine Person im Raum bewegt oder anwesend ist.';
 }

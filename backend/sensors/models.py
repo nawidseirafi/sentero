@@ -9,6 +9,7 @@ DeviceType = Literal[
     "motion_sensor",
     "button",
     "environmental_sensor",
+    "smart_meter",
 ]
 DeviceStatus = Literal["online", "offline", "unknown"]
 Capability = Literal[
@@ -24,6 +25,10 @@ Capability = Literal[
     "battery",
     "signal_quality",
     "button",
+    "energy_consumption",
+    "power_usage",
+    "water_consumption",
+    "gas_consumption",
 ]
 
 

@@ -235,7 +235,11 @@ class SenteroBehaviorAgent:
 
     def _record_snapshot(self, roles: list[dict[str, Any]], ha_snapshot: list[dict[str, Any]] | None = None) -> int:
         timestamp = now()
-        extra_events = self._fp300_snapshot_events(roles, ha_snapshot or [], timestamp)
+        snapshot_rows = ha_snapshot or []
+        extra_events = [
+            *self._fp300_snapshot_events(roles, snapshot_rows, timestamp),
+            *self._smart_meter_snapshot_events(snapshot_rows, timestamp),
+        ]
         written = 0
         with self.mapping.connect() as con:
             for role in [*roles, *extra_events]:
@@ -323,6 +327,7 @@ class SenteroBehaviorAgent:
         today_events = [event for event in history if self._parse_time(event.get("event_time")).date() == today]
         previous_events = [event for event in history if self._parse_time(event.get("event_time")).date() != today]
         learning = behavior_profile.get("learning") or {}
+        utility_usage = self._utility_usage_summary(history)
         return {
             "learning_completed": bool(learning.get("completed")),
             "learning": learning,
@@ -349,11 +354,12 @@ class SenteroBehaviorAgent:
             "trusted_contacts": [{"name": item.get("name"), "relationship": item.get("relationship"), "email": item.get("email")} for item in contacts],
             "daily_profile": self._daily_profile(previous_events),
             "current_day": self._day_summary(today_events),
+            "utility_usage": utility_usage,
             "sensor_context": {
                 "configured_sensors": len(sensor_snapshot),
                 "rooms": sorted({str(item.get("room")) for item in sensor_snapshot if item.get("room")}),
             },
-            "deviations": {**self._deviations(today_events, previous_events, sensor_snapshot), **deviations},
+            "deviations": {**self._deviations(today_events, previous_events, sensor_snapshot), "low_utility_usage_today": utility_usage.get("low_usage_today"), **deviations},
             "safety_rules": {
                 "no_medical_diagnosis": True,
                 "no_emergency_calls": True,
@@ -417,6 +423,8 @@ class SenteroBehaviorAgent:
             findings.append("In der Nacht wurde ungewöhnliche Aktivität erkannt.")
         if deviations.get("door_usage_change"):
             findings.append("Die Türnutzung wich vom gewohnten Muster ab.")
+        if deviations.get("low_utility_usage_today"):
+            findings.append("Strom-, Wasser- oder Gasverbrauch lagen heute deutlich unter dem bisherigen Muster.")
         if deviations.get("no_activity_today"):
             findings.append("Heute wurde bisher keine Sensoraktivität erkannt.")
         if deviations.get("inactive_hours", 0) >= 8:
@@ -950,6 +958,98 @@ class SenteroBehaviorAgent:
                     "last_updated": item.get("last_updated") or timestamp,
                 })
         return events
+
+    def _smart_meter_snapshot_events(self, snapshot: list[dict[str, Any]], timestamp: str) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for item in snapshot:
+            event_type = self._smart_meter_event_type(item)
+            if not event_type:
+                continue
+            state = item.get("state")
+            if self._number(state) is None:
+                continue
+            events.append({
+                "role": event_type,
+                "room": item.get("room") or item.get("area_id"),
+                "entity_id": item.get("entity_id") or item.get("source_ref") or item.get("unique_id"),
+                "state": state,
+                "device_class": item.get("device_class"),
+                "source": "smart_meter_snapshot",
+                "last_changed": item.get("last_changed") or item.get("changed_at") or timestamp,
+                "last_updated": item.get("last_updated") or timestamp,
+            })
+        return events
+
+    def _smart_meter_event_type(self, item: dict[str, Any]) -> str | None:
+        dc = self._device_class(item)
+        payload_key = str(item.get("payload_key") or "").strip().lower()
+        text = self._entity_text(item)
+        if dc == "energy" or payload_key in {"energy", "energy_consumption", "electricity", "electricity_consumption"}:
+            return "energy_consumption"
+        if dc == "power" or payload_key in {"power", "power_usage"}:
+            return "power_usage"
+        if dc == "water" or payload_key in {"water", "water_consumption"}:
+            return "water_consumption"
+        if dc == "gas" or payload_key in {"gas", "gas_consumption"}:
+            return "gas_consumption"
+        if any(term in text for term in ["energy", "electricity", "stromzaehler", "stromzähler", "kwh"]):
+            return "energy_consumption"
+        if any(term in text for term in ["power", "leistung", "watt"]):
+            return "power_usage"
+        if any(term in text for term in ["water", "wasserzaehler", "wasserzähler"]):
+            return "water_consumption"
+        if any(term in text for term in ["gas", "gaszaehler", "gaszähler"]):
+            return "gas_consumption"
+        return None
+
+    def _utility_usage_summary(self, history: list[dict[str, Any]]) -> dict[str, Any]:
+        meter_events = [event for event in history if str(event.get("role") or "") in {"energy_consumption", "power_usage", "water_consumption", "gas_consumption"}]
+        today = datetime.now(timezone.utc).date()
+        by_type: dict[str, dict[date, list[tuple[datetime, float]]]] = defaultdict(lambda: defaultdict(list))
+        latest: dict[str, dict[str, Any]] = {}
+        for event in meter_events:
+            value = self._number(event.get("state"))
+            if value is None:
+                continue
+            event_time = self._parse_time(event.get("event_time"))
+            event_type = str(event.get("role") or "")
+            by_type[event_type][event_time.date()].append((event_time, value))
+            latest[event_type] = {
+                "event_type": event_type,
+                "value": value,
+                "entity_id": event.get("entity_id"),
+                "room": event.get("room"),
+                "event_time": event_time.isoformat(timespec="seconds"),
+            }
+
+        summaries = []
+        low_usage_today = False
+        for event_type, by_day in sorted(by_type.items()):
+            today_delta = self._meter_delta(by_day.get(today, []))
+            previous_deltas = [self._meter_delta(values) for day, values in by_day.items() if day != today]
+            previous_deltas = [value for value in previous_deltas if value is not None and value > 0]
+            historical_average = round(sum(previous_deltas) / len(previous_deltas), 3) if previous_deltas else None
+            low_usage = bool(today_delta is not None and historical_average and historical_average > 0 and today_delta <= historical_average * 0.3)
+            low_usage_today = low_usage_today or low_usage
+            summaries.append({
+                "event_type": event_type,
+                "today_delta": today_delta,
+                "historical_daily_average": historical_average,
+                "low_usage_today": low_usage,
+                "latest": latest.get(event_type),
+            })
+        return {
+            "meters_configured": bool(summaries),
+            "low_usage_today": low_usage_today,
+            "meters": summaries,
+        }
+
+    def _meter_delta(self, values: list[tuple[datetime, float]]) -> float | None:
+        if len(values) < 2:
+            return None
+        ordered = sorted(values, key=lambda item: item[0])
+        delta = ordered[-1][1] - ordered[0][1]
+        return round(delta, 3) if delta >= 0 else None
 
     def _fp300_analysis(
         self,
