@@ -5,8 +5,9 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="fdb978cf-ab20-4d2b-8e67-e27469e99a2d" name="Changes" comment="AAL_GAIA_X added">
-      <change beforePath="$PROJECT_DIR$/frontend/src/pages/SettingsPage.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/pages/SettingsPage.tsx" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/frontend/src/styles/sentero.css" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/styles/sentero.css" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.env.example" beforeDir="false" afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docker-compose.yml" beforeDir="false" afterPath="$PROJECT_DIR$/docker-compose.yml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/AAL_GAIA_X_ROADMAP.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/AAL_GAIA_X_ROADMAP.md" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -52,23 +53,23 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.2884961506448134" />
-      <entry key="MS500" value="3.531434909470352" />
-      <entry key="S2" value="10.20982540347162" />
-      <entry key="S5" value="19.491526222577114" />
-      <entry key="S10" value="31.589575872202076" />
-      <entry key="S30" value="55.38038710858468" />
-      <entry key="S60" value="67.01447921072406" />
-      <entry key="M2" value="76.56363183460545" />
-      <entry key="M5" value="109.46926895989577" />
-      <entry key="M10" value="174.066763954714" />
-      <entry key="M15" value="239.8862361046853" />
-      <entry key="M30" value="402.5806585488792" />
-      <entry key="H1" value="611.7245433886101" />
-      <entry key="H2" value="850.9672344847739" />
-      <entry key="H4" value="1067.1449188667154" />
-      <entry key="D1" value="1345.617322276684" />
-      <entry key="W1" value="1406.4160025383376" />
+      <entry key="MS100" value="1.4581508653097732" />
+      <entry key="MS500" value="3.963669930821627" />
+      <entry key="S2" value="9.174739892239424" />
+      <entry key="S5" value="15.627742538673397" />
+      <entry key="S10" value="24.084595119930665" />
+      <entry key="S30" value="40.5492502878484" />
+      <entry key="S60" value="58.290288054242765" />
+      <entry key="M2" value="101.82051275605073" />
+      <entry key="M5" value="180.37110466801576" />
+      <entry key="M10" value="226.84333747600056" />
+      <entry key="M15" value="245.80953379973508" />
+      <entry key="M30" value="271.5418001797115" />
+      <entry key="H1" value="344.80021706216115" />
+      <entry key="H2" value="565.0049857266077" />
+      <entry key="H4" value="900.2339841047163" />
+      <entry key="D1" value="1516.4400687312047" />
+      <entry key="W1" value="1677.91594339236" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
@@ -76,37 +77,37 @@
       <entry key="S2" value="0.0" />
       <entry key="S5" value="0.0" />
       <entry key="S10" value="0.0" />
-      <entry key="S30" value="4.350318125418347E-136" />
-      <entry key="S60" value="2.0857416247987336E-68" />
-      <entry key="M2" value="1.4442096886528523E-34" />
-      <entry key="M5" value="2.9097260465371507E-14" />
-      <entry key="M10" value="1.705791911851215E-7" />
-      <entry key="M15" value="3.075747647860036E-5" />
-      <entry key="M30" value="0.005545942343605748" />
-      <entry key="H1" value="0.07447108394273406" />
-      <entry key="H2" value="0.2728939060197792" />
-      <entry key="H4" value="0.5223924827366778" />
-      <entry key="D1" value="0.8974277333277165" />
-      <entry key="W1" value="0.9846585150785935" />
+      <entry key="S30" value="1.4620761799803788E-251" />
+      <entry key="S60" value="3.8237104754155486E-126" />
+      <entry key="M2" value="1.9554310203675326E-63" />
+      <entry key="M5" value="8.250817863152688E-26" />
+      <entry key="M10" value="2.8724236914411203E-13" />
+      <entry key="M15" value="4.353437695323589E-9" />
+      <entry key="M30" value="6.598058574553125E-5" />
+      <entry key="H1" value="0.008122843451989662" />
+      <entry key="H2" value="0.09012681871668034" />
+      <entry key="H4" value="0.30021129012194764" />
+      <entry key="D1" value="0.8182848366146408" />
+      <entry key="W1" value="0.9717572427266213" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="1.2634965223452366" />
-      <entry key="MS500" value="3.5170854031387364" />
-      <entry key="S2" value="10.198933421587881" />
-      <entry key="S5" value="19.483120606523507" />
-      <entry key="S10" value="31.582744342845153" />
-      <entry key="S30" value="55.376386779304276" />
-      <entry key="S60" value="67.01205671560278" />
-      <entry key="M2" value="76.56224519899094" />
-      <entry key="M5" value="109.4684663296479" />
-      <entry key="M10" value="174.06611968684103" />
-      <entry key="M15" value="239.88567269102865" />
-      <entry key="M30" value="402.5856921643876" />
-      <entry key="H1" value="611.7985525942906" />
-      <entry key="H2" value="851.2397149009722" />
-      <entry key="H4" value="1067.667003101048" />
-      <entry key="D1" value="1346.5146744210301" />
-      <entry key="W1" value="1407.4006494652483" />
+      <entry key="MS100" value="1.4292809752469147" />
+      <entry key="MS500" value="3.949895794684651" />
+      <entry key="S2" value="9.166509771421161" />
+      <entry key="S5" value="15.62189617124984" />
+      <entry key="S10" value="24.079971528025013" />
+      <entry key="S30" value="40.54659836688155" />
+      <entry key="S60" value="58.288359851838294" />
+      <entry key="M2" value="101.81880473027893" />
+      <entry key="M5" value="180.3698820453604" />
+      <entry key="M10" value="226.8425662287974" />
+      <entry key="M15" value="245.80897608112642" />
+      <entry key="M30" value="271.54155715064786" />
+      <entry key="H1" value="344.80813156324893" />
+      <entry key="H2" value="565.0948953123532" />
+      <entry key="H4" value="900.5339774818134" />
+      <entry key="D1" value="1517.258277789825" />
+      <entry key="W1" value="1678.8876882179593" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo"><![CDATA[{
@@ -196,7 +197,15 @@
       <option name="project" value="LOCAL" />
       <updated>1786457972320</updated>
     </task>
-    <option name="localTasksCounter" value="3" />
+    <task id="LOCAL-00003" summary="AAL_GAIA_X added">
+      <option name="closed" value="true" />
+      <created>1786458797120</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1786458797120</updated>
+    </task>
+    <option name="localTasksCounter" value="4" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
