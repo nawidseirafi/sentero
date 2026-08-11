@@ -134,6 +134,9 @@ class SensorArchitectureTests(unittest.TestCase):
         self.assertEqual(dashboard["summary"]["open_doors"], 1)
         self.assertNotIn("source_ref", devices[0])
         self.assertNotIn("raw_payload", events[0])
+        self.assertEqual(devices[0]["data_class"], "personal_behavior")
+        self.assertEqual(events[0]["data_class"], "personal_behavior")
+        self.assertEqual(events[0]["aggregation_level"], "raw")
         self.assertNotIn("entity_id", str(dashboard))
 
     def test_dashboard_exposes_utility_usage_summary(self) -> None:
@@ -153,6 +156,8 @@ class SensorArchitectureTests(unittest.TestCase):
         self.assertEqual(dashboard["summary"]["smart_meter_readings"], 1)
         self.assertTrue(dashboard["utility_usage"]["has_energy"])
         self.assertEqual(dashboard["utility_usage"]["readings"][0]["event_type"], "energy_consumption")
+        self.assertEqual(dashboard["utility_usage"]["readings"][0]["data_class"], "utility")
+        self.assertEqual(dashboard["utility_usage"]["readings"][0]["aggregation_level"], "aggregate")
 
 
 if __name__ == "__main__":

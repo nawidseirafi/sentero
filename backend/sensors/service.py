@@ -6,6 +6,7 @@ from typing import Any
 
 from backend.logging_config import get_logger
 from backend.sensors.normalizer import normalize_snapshot
+from backend.services.data_classification import aggregation_for_data_class, classify_sensor_event
 from backend.services.device_mapping_service import ROOM_LABELS, DeviceMappingService, sensor_source_mode
 
 logger = get_logger(__name__)
@@ -148,6 +149,8 @@ class SenteroSensorService:
                 "value": event.value,
                 "occurred_at": event.occurred_at,
                 "source": event.source,
+                "data_class": classify_sensor_event(event.event_type),
+                "aggregation_level": aggregation_for_data_class(classify_sensor_event(event.event_type)),
             }
         return {
             "readings": list(latest.values()),

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type React from 'react';
-import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, DoorClosed, DoorOpen, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
-import { api, type BoxNetworkStatus, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus } from '@shared/api/client';
+import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, Copy, DoorClosed, DoorOpen, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, ShieldCheck, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
+import { api, type BoxNetworkStatus, type SenteroConsent, type SenteroExportToken, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroTransparency } from '@shared/api/client';
 import { UpdatePanel } from '../components/UpdatePanel';
 import { useSenteroAuth } from '../auth/SenteroAuthContext';
 import type { SenteroSettingsTab } from '../routes/routes';
@@ -16,6 +16,16 @@ import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutlined';
 
 type MeterAddType = 'electricity_meter' | 'water_meter' | 'gas_meter';
+type AalActorRole = 'resident' | 'relative' | 'care_service' | 'emergency_service' | 'housing_provider' | 'admin';
+
+const aalActorRoles: Array<{ value: AalActorRole; label: string }> = [
+  { value: 'relative', label: 'Angehörige' },
+  { value: 'care_service', label: 'Pflegedienst' },
+  { value: 'emergency_service', label: 'Notfalldienst' },
+  { value: 'housing_provider', label: 'Wohnungsanbieter' },
+  { value: 'resident', label: 'Bewohner' },
+  { value: 'admin', label: 'Administrator' },
+];
 
 const roomLabels: Record<string, string> = {
   living_room: 'Wohnzimmer',
@@ -32,6 +42,7 @@ const settingsTabs: Array<{ tab: SenteroSettingsTab; label: string; shortLabel: 
   { tab: 'network', label: 'Netzwerk', shortLabel: 'Netz', icon: Wifi },
   { tab: 'contacts', label: 'Vertraute Personen', shortLabel: 'Personen', icon: Users },
   { tab: 'notifications', label: 'Benachrichtigungen', shortLabel: 'Benachr.', icon: Bell },
+  { tab: 'transparency', label: 'Transparenz', shortLabel: 'Daten', icon: ShieldCheck },
   { tab: 'account', label: 'Konto & Zugriff', shortLabel: 'Konto', icon: KeyRound },
   { tab: 'system', label: 'System', shortLabel: 'System', icon: HardDrive },
 ];
@@ -62,6 +73,11 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [ledStates, setLedStates] = useState<Record<string, boolean>>({});
   const [ledBusyRole, setLedBusyRole] = useState<string | null>(null);
   const [channels, setChannels] = useState<SenteroNotificationChannel[]>([]);
+  const [consents, setConsents] = useState<SenteroConsent[]>([]);
+  const [exportTokens, setExportTokens] = useState<SenteroExportToken[]>([]);
+  const [newExportToken, setNewExportToken] = useState<{ contactId: number; token: string } | null>(null);
+  const [exportDialogContactId, setExportDialogContactId] = useState<number | null>(null);
+  const [transparency, setTransparency] = useState<SenteroTransparency | null>(null);
   const [meterDiscovery, setMeterDiscovery] = useState<{ type: MeterAddType; status: 'idle' | 'searching' | 'found' | 'missing'; message: string; remainingSeconds?: number } | null>(null);
   const [setupChannel, setSetupChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
   const [helpChannel, setHelpChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
@@ -110,10 +126,13 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
   async function load() {
     try {
-      const [nextStatus, nextSensors, nextChannels, nextNetwork, nextBoxNetwork] = await Promise.all([
+      const [nextStatus, nextSensors, nextChannels, nextConsents, nextExportTokens, nextTransparency, nextNetwork, nextBoxNetwork] = await Promise.all([
         api.senteroSetupStatus(),
         api.senteroSensorRoles(true),
         api.senteroNotificationChannels(),
+        api.senteroConsents(),
+        api.senteroExportTokens(),
+        api.senteroTransparency(),
         api.senteroSensorNetwork(),
         api.boxNetworkStatus(),
       ]);
@@ -121,6 +140,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       setSensors(nextSensors.sensor_roles);
       hydrateLedStates(nextSensors.sensor_roles);
       setChannels(nextChannels.channels);
+      setConsents(nextConsents.consents);
+      setExportTokens(nextExportTokens.tokens);
+      setTransparency(nextTransparency);
       setNetworkStatus(nextNetwork);
       setNetworkForm({
         wifi_ssid: nextNetwork.wifi_ssid || '',
@@ -339,10 +361,122 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     }
   }
 
+  async function grantContactConsent(contactId: number) {
+    try {
+      const result = await api.grantSenteroConsent({
+        contact_id: contactId,
+        recipient_type: actorRoleForContact(status?.trusted_contacts?.find((contact) => contact.id === contactId)?.actor_role),
+        purpose: 'behavior_notification',
+        data_classes: ['personal_behavior', 'health_adjacent', 'emergency'],
+      });
+      setConsents(result.consents);
+      toast('Freigabe aktiv');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Freigabe konnte nicht gespeichert werden.');
+    }
+  }
+
+  async function revokeContactConsent(consentId: number) {
+    if (!window.confirm('Freigabe für Verhaltensmeldungen widerrufen?')) return;
+    try {
+      const result = await api.revokeSenteroConsent(consentId);
+      setConsents(result.consents);
+      toast('Freigabe widerrufen');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Freigabe konnte nicht widerrufen werden.');
+    }
+  }
+
+  async function grantExportConsent(contactId: number) {
+    try {
+      const result = await api.grantSenteroConsent({
+        contact_id: contactId,
+        recipient_type: actorRoleForContact(status?.trusted_contacts?.find((contact) => contact.id === contactId)?.actor_role),
+        purpose: 'aal_partner_export',
+        data_classes: exportDataClassesForContact(status?.trusted_contacts?.find((contact) => contact.id === contactId)?.actor_role),
+      });
+      setConsents(result.consents);
+      toast('Export freigegeben');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export-Freigabe konnte nicht gespeichert werden.');
+    }
+  }
+
+  async function revokeExportConsent(consentId: number) {
+    if (!window.confirm('Export-Freigabe widerrufen? Aktive Tokens sollten danach ebenfalls widerrufen werden.')) return;
+    try {
+      const result = await api.revokeSenteroConsent(consentId);
+      setConsents(result.consents);
+      toast('Export-Freigabe widerrufen');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export-Freigabe konnte nicht widerrufen werden.');
+    }
+  }
+
+  async function createExportToken(contactId: number) {
+    try {
+      const contact = status?.trusted_contacts?.find((entry) => entry.id === contactId);
+      const result = await api.createSenteroExportToken({
+        contact_id: contactId,
+        purpose: 'aal_partner_export',
+        data_classes: exportDataClassesForContact(contact?.actor_role),
+      });
+      setExportTokens((tokens) => [result.record, ...tokens.filter((token) => token.id !== result.record.id)]);
+      setNewExportToken({ contactId, token: result.token });
+      setExportDialogContactId(contactId);
+      toast('Export-Token erstellt');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export-Token konnte nicht erstellt werden.');
+    }
+  }
+
+  async function revokeExportToken(tokenId: number) {
+    if (!window.confirm('Export-Token widerrufen? Der Partner kann ihn danach nicht mehr nutzen.')) return;
+    try {
+      const revokedContactId = exportTokens.find((token) => token.id === tokenId)?.contact_id || null;
+      const result = await api.revokeSenteroExportToken(tokenId);
+      setExportTokens(result.tokens);
+      setNewExportToken((value) => value && revokedContactId === value.contactId ? null : value);
+      toast('Export-Token widerrufen');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export-Token konnte nicht widerrufen werden.');
+    }
+  }
+
+  async function copyExportToken(token: string) {
+    try {
+      await navigator.clipboard.writeText(token);
+      toast('Token kopiert');
+    } catch {
+      setError('Token konnte nicht automatisch kopiert werden.');
+    }
+  }
+
+  async function cleanupTransparency() {
+    const days = transparency?.retention.retention_days || 180;
+    if (!window.confirm(`Audit- und Transparenzdaten älter als ${days} Tage löschen?`)) return;
+    try {
+      await api.cleanupSenteroTransparency(days);
+      const refreshed = await api.senteroTransparency();
+      setTransparency(refreshed);
+      toast('Alte Transparenzdaten gelöscht');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Transparenzdaten konnten nicht gelöscht werden.');
+    }
+  }
+
   function startEditContact(contact: {
     id: number;
     name: string;
     relationship?: string | null;
+    actor_role?: string | null;
     email?: string | null;
     phone?: string | null;
     telegram_chat_id?: string | null;
@@ -355,6 +489,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     setEditContactForm({
       name: contact.name,
       relationship: contact.relationship || '',
+      actor_role: actorRoleForContact(contact.actor_role),
       email: contact.email || '',
       phone: contact.phone || '',
       telegram_chat_id: contact.telegram_chat_id || '',
@@ -600,6 +735,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   }
 
   const activeTabMeta = settingsTabs.find((item) => item.tab === activeTab);
+  const exportDialogToken = newExportToken && exportDialogContactId === newExportToken.contactId ? newExportToken.token : null;
+  const exportDialogContact = exportDialogContactId ? status?.trusted_contacts?.find((contact) => contact.id === exportDialogContactId) || null : null;
 
   function mobileNavigateTab(tab: SenteroSettingsTab) {
     setMobileShowList(false);
@@ -647,7 +784,6 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
       {/* Tab-Inhalte – auf Mobile ausgeblendet wenn Liste sichtbar */}
       <div className={mobileShowList ? 'sc-settings-content sc-mobile-hidden' : 'sc-settings-content'}>
-
 
       {activeTab === 'profile' && (
         <section className="sc-panel sc-settings-panel">
@@ -815,6 +951,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
               <div className="sc-form-grid">
                 <label>Name<input value={contactForm.name} onChange={(event) => setContactForm((value) => ({ ...value, name: event.target.value }))} /></label>
                 <label>Beziehung<input value={contactForm.relationship} onChange={(event) => setContactForm((value) => ({ ...value, relationship: event.target.value }))} /></label>
+                <label>AAL-Rolle<select value={contactForm.actor_role} onChange={(event) => setContactForm((value) => ({ ...value, actor_role: actorRoleForContact(event.target.value) }))}>{aalActorRoles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
                 {channelSelected(contactForm.preferred_channels, 'email', availableChannels) && <label>E-Mail<input type="email" value={contactForm.email} onChange={(event) => setContactForm((value) => ({ ...value, email: event.target.value }))} /></label>}
                 {channelSelected(contactForm.preferred_channels, 'telegram', availableChannels) && <label>Telegram Chat ID<input value={contactForm.telegram_chat_id} onChange={(event) => setContactForm((value) => ({ ...value, telegram_chat_id: event.target.value }))} /></label>}
                 {channelSelected(contactForm.preferred_channels, 'whatsapp', availableChannels) && <label>WhatsApp Telefonnummer<input value={contactForm.whatsapp_phone_number} onChange={(event) => setContactForm((value) => ({ ...value, whatsapp_phone_number: event.target.value, phone: event.target.value }))} /></label>}
@@ -831,6 +968,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                     <div className="sc-contact-edit-grid">
                       <label>Name<input value={editContactForm.name} onChange={(event) => setEditContactForm((value) => ({ ...value, name: event.target.value }))} /></label>
                       <label>Beziehung<input value={editContactForm.relationship} onChange={(event) => setEditContactForm((value) => ({ ...value, relationship: event.target.value }))} /></label>
+                      <label>AAL-Rolle<select value={editContactForm.actor_role} onChange={(event) => setEditContactForm((value) => ({ ...value, actor_role: actorRoleForContact(event.target.value) }))}>{aalActorRoles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
                       {channelSelected(editContactForm.preferred_channels, 'email', availableChannels) && <label>E-Mail<input type="email" value={editContactForm.email} onChange={(event) => setEditContactForm((value) => ({ ...value, email: event.target.value }))} /></label>}
                       {channelSelected(editContactForm.preferred_channels, 'telegram', availableChannels) && <label>Telegram Chat ID<input value={editContactForm.telegram_chat_id} onChange={(event) => setEditContactForm((value) => ({ ...value, telegram_chat_id: event.target.value }))} /></label>}
                       {channelSelected(editContactForm.preferred_channels, 'whatsapp', availableChannels) && <label>WhatsApp Telefonnummer<input value={editContactForm.whatsapp_phone_number} onChange={(event) => setEditContactForm((value) => ({ ...value, whatsapp_phone_number: event.target.value, phone: event.target.value }))} /></label>}
@@ -846,8 +984,27 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                     <span className="sc-avatar">{contact.name[0]}</span>
                     <h3>{contact.name}</h3>
                     <p>{contact.relationship || 'Kontakt'}</p>
+                    <small className="sc-contact-role">{aalRoleLabel(contact.actor_role)}</small>
                     <small>{contact.email || 'Keine E-Mail hinterlegt'}</small>
                     <div className="sc-contact-channel-list">{normalizeChannels(contact.preferred_channels).map((channel) => <span key={channel}>{channelLabel(channel)}</span>)}</div>
+                    <ContactConsentControl
+                      consent={activeBehaviorConsent(contact.id, consents)}
+                      revokedConsent={latestBehaviorConsent(contact.id, consents)}
+                      onGrant={() => void grantContactConsent(contact.id)}
+                      onRevoke={(consentId) => void revokeContactConsent(consentId)}
+                    />
+                    <ContactExportControl
+                      consent={activeExportConsent(contact.id, consents)}
+                      revokedConsent={latestExportConsent(contact.id, consents)}
+                      token={activeExportToken(contact.id, exportTokens)}
+                      latestToken={latestExportToken(contact.id, exportTokens)}
+                      newToken={newExportToken?.contactId === contact.id ? newExportToken.token : null}
+                      onGrant={() => void grantExportConsent(contact.id)}
+                      onRevokeConsent={(consentId) => void revokeExportConsent(consentId)}
+                      onCreateToken={() => void createExportToken(contact.id)}
+                      onRevokeToken={(tokenId) => void revokeExportToken(tokenId)}
+                      onOpenPackage={() => setExportDialogContactId(contact.id)}
+                    />
                     <footer>
                       <button type="button" onClick={() => startEditContact(contact)}><Pencil size={18} /> </button>
                       <button type="button" onClick={() => void deleteContact(contact.id)}><Trash2 size={18} /> </button>
@@ -918,6 +1075,55 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         </section>
       )}
 
+      {activeTab === 'transparency' && (
+        <section className="sc-panel sc-settings-panel sc-transparency-panel">
+          <div className="sc-settings-hero">
+            <div className="sc-section-title">
+              <h2>Transparenz</h2>
+            </div>
+            <p>Sehen Sie, wann Sentero Daten genutzt, geteilt oder Freigaben geändert hat.</p>
+          </div>
+
+          <section className="sc-transparency-summary" aria-label="Transparenzübersicht">
+            <TransparencyMetric label="Einträge" value={String(transparency?.summary.total || 0)} />
+            <TransparencyMetric label="Exporte" value={String(transparency?.summary.exports || 0)} />
+            <TransparencyMetric label="Benachrichtigungen" value={String(transparency?.summary.notifications || 0)} />
+            <TransparencyMetric label="Freigaben" value={String(transparency?.summary.consents || 0)} />
+          </section>
+
+          <section className="sc-transparency-retention">
+            <div>
+              <strong>Aufbewahrung</strong>
+              <small>{transparency?.retention.retention_days || 180} Tage fuer Audit-, Export- und Benachrichtigungslogs</small>
+            </div>
+            <button type="button" onClick={() => void cleanupTransparency()}><Trash2 size={18} /> Alte Daten löschen</button>
+          </section>
+
+          <section className="sc-transparency-list" aria-label="Datenverwendung">
+            {(transparency?.items || []).map((item) => (
+              <article className={`sc-transparency-item ${item.category}`} key={item.id}>
+                <span aria-hidden="true">{transparencyIcon(item.category)}</span>
+                <div>
+                  <header>
+                    <strong>{item.summary}</strong>
+                    <time>{formatDateTime(item.created_at)}</time>
+                  </header>
+                  <p>{transparencyDetail(item)}</p>
+                  <small>{item.data_classes.map(dataClassLabel).join(', ') || 'Metadaten'} · {item.aggregation_level || 'summary'} · {item.raw_data_included ? 'Rohdaten' : 'keine Rohdaten'}</small>
+                </div>
+              </article>
+            ))}
+            {!transparency?.items.length && (
+              <div className="sc-history-empty">
+                <ShieldCheck size={24} />
+                <strong>Noch keine Transparenzeinträge</strong>
+                <p>Neue Exporte, Benachrichtigungen und Freigaben erscheinen hier automatisch.</p>
+              </div>
+            )}
+          </section>
+        </section>
+      )}
+
       {activeTab === 'account' && (
         <section className="sc-panel sc-settings-panel sc-account-panel">
           <div className="sc-settings-hero">
@@ -941,7 +1147,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                   <div className="sc-account-details">
                     <p><span>Name</span><strong>{user?.display_name || accountForm.display_name || 'Nicht hinterlegt'}</strong></p>
                     <p><span>E-Mail-Adresse</span><strong>{user?.email || accountForm.email || 'Nicht hinterlegt'}</strong></p>
-                    <p><span>Rolle</span><strong>{user?.role === 'owner' ? 'Inhaber-Konto' : user?.role === 'admin' ? 'Admin-Konto' : 'Ansichtskonto'}</strong></p>
+                    <p><span>Technische Rolle</span><strong>{user?.role === 'owner' ? 'Inhaber-Konto' : user?.role === 'admin' ? 'Admin-Konto' : 'Ansichtskonto'}</strong></p>
+                    <p><span>AAL-Rolle</span><strong>{aalRoleLabel(user?.aal_role || 'admin')}</strong></p>
                   </div>
                   <button className="sc-soft-action" type="button" onClick={() => setAccountEditing(true)}><Pencil size={18} /> Konto bearbeiten</button>
                 </>
@@ -1021,6 +1228,15 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
           </div>
         </section>
       )}
+
+      {exportDialogToken && (
+        <PartnerExportDialog
+          contactName={exportDialogContact?.name || 'Partner'}
+          token={exportDialogToken}
+          onClose={() => setExportDialogContactId(null)}
+          onCopy={(value) => void copyExportToken(value)}
+        />
+      )}
       </div>
     </section>
   );
@@ -1033,6 +1249,203 @@ function EmptyState({ text, action }: { text: string; action: string }) {
       <button type="button" onClick={() => window.location.assign('/sentero/setup')}>{action}</button>
     </div>
   );
+}
+
+function ContactConsentControl({
+  consent,
+  revokedConsent,
+  onGrant,
+  onRevoke,
+}: {
+  consent?: SenteroConsent | null;
+  revokedConsent?: SenteroConsent | null;
+  onGrant: () => void;
+  onRevoke: (consentId: number) => void;
+}) {
+  const current = consent || revokedConsent || null;
+  const active = Boolean(consent);
+  return (
+    <div className={`sc-contact-consent ${active ? 'active' : 'inactive'}`}>
+      <span>{active ? <ShieldCheck size={18} /> : <ShieldAlert size={18} />}</span>
+      <div>
+        <strong>{active ? 'Freigabe aktiv' : 'Freigabe fehlt'}</strong>
+        <small>{current ? consentDescription(current) : 'Verhaltensmeldungen gesperrt'}</small>
+      </div>
+      {active && consent ? (
+        <button type="button" onClick={() => onRevoke(consent.id)}>Widerrufen</button>
+      ) : (
+        <button type="button" onClick={onGrant}>Freigeben</button>
+      )}
+    </div>
+  );
+}
+
+function ContactExportControl({
+  consent,
+  revokedConsent,
+  token,
+  latestToken,
+  newToken,
+  onGrant,
+  onRevokeConsent,
+  onCreateToken,
+  onRevokeToken,
+  onOpenPackage,
+}: {
+  consent?: SenteroConsent | null;
+  revokedConsent?: SenteroConsent | null;
+  token?: SenteroExportToken | null;
+  latestToken?: SenteroExportToken | null;
+  newToken?: string | null;
+  onGrant: () => void;
+  onRevokeConsent: (consentId: number) => void;
+  onCreateToken: () => void;
+  onRevokeToken: (tokenId: number) => void;
+  onOpenPackage: () => void;
+}) {
+  const currentConsent = consent || revokedConsent || null;
+  const currentToken = token || latestToken || null;
+  const activeConsent = Boolean(consent);
+  const activeToken = Boolean(token);
+  return (
+    <div className={`sc-contact-export ${activeConsent ? 'active' : 'inactive'}`}>
+      <div className="sc-contact-export-head">
+        <span>{activeToken ? <KeyRound size={18} /> : <ShieldAlert size={18} />}</span>
+        <div>
+          <strong>{activeToken ? 'Export aktiv' : activeConsent ? 'Export freigegeben' : 'Export gesperrt'}</strong>
+          <small>{currentConsent ? consentDescription(currentConsent) : 'Keine Partnerfreigabe'}</small>
+        </div>
+      </div>
+
+      {newToken && <small className="sc-export-token-ready">Partnerpaket bereit. Der Token ist nur in dieser Sitzung sichtbar.</small>}
+
+      {currentToken && (
+        <small className="sc-export-token-meta">
+          Ablauf: {formatDateTime(currentToken.expires_at)}
+          {currentToken.last_used_at ? ` · letzter Zugriff: ${formatDateTime(currentToken.last_used_at)}` : ''}
+          {currentToken.revoked_at ? ` · widerrufen: ${formatDateTime(currentToken.revoked_at)}` : ''}
+        </small>
+      )}
+
+      <div className="sc-contact-export-actions">
+        {!activeConsent && <button type="button" onClick={onGrant}>Export freigeben</button>}
+        {activeConsent && !activeToken && <button type="button" onClick={onCreateToken}>Token erstellen</button>}
+        {newToken && <button type="button" onClick={onOpenPackage}>Partnerpaket anzeigen</button>}
+        {activeConsent && consent && <button type="button" onClick={() => onRevokeConsent(consent.id)}>Freigabe widerrufen</button>}
+        {activeToken && token && <button type="button" onClick={() => onRevokeToken(token.id)}>Token widerrufen</button>}
+      </div>
+    </div>
+  );
+}
+
+function PartnerExportDialog({
+  contactName,
+  token,
+  onClose,
+  onCopy,
+}: {
+  contactName: string;
+  token: string;
+  onClose: () => void;
+  onCopy: (value: string) => void;
+}) {
+  const headerValue = `Authorization: Bearer ${token}`;
+  return (
+    <div className="sc-modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="sc-channel-modal sc-partner-export-modal" role="dialog" aria-modal="true" aria-label="Partnerzugang" onMouseDown={(event) => event.stopPropagation()}>
+        <header>
+          <span><KeyRound size={22} /></span>
+          <div>
+            <h3>Partnerzugang</h3>
+            <p>{contactName} kann die freigegebenen Exporte mit diesem Token abrufen.</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Dialog schließen"><X size={20} /></button>
+        </header>
+
+        <div className="sc-partner-export-warning">
+          <ShieldAlert size={18} />
+          <span>Der Token wird nur einmal vollständig angezeigt. Danach bleiben nur Ablaufdatum und Widerruf sichtbar.</span>
+        </div>
+
+        <section className="sc-partner-export-section">
+          <div className="sc-partner-export-row">
+            <span>Token</span>
+            <code>{token}</code>
+            <button type="button" onClick={() => onCopy(token)}><Copy size={16} /> Kopieren</button>
+          </div>
+          <div className="sc-partner-export-row">
+            <span>Header</span>
+            <code>{headerValue}</code>
+            <button type="button" onClick={() => onCopy(headerValue)}><Copy size={16} /> Kopieren</button>
+          </div>
+        </section>
+
+        <section className="sc-partner-export-section">
+          <h4>Export-Endpunkte</h4>
+          {exportExchangeEndpoints().map((endpoint) => (
+            <div className="sc-partner-export-row" key={endpoint.path}>
+              <span>{endpoint.label}</span>
+              <code>{endpoint.url}</code>
+              <button type="button" onClick={() => onCopy(`${endpoint.url}?token=${encodeURIComponent(token)}`)}><Copy size={16} /> Direktlink</button>
+            </div>
+          ))}
+        </section>
+
+        <footer>
+          <button type="button" onClick={onClose}>Schließen</button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function TransparencyMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <article>
+      <small>{label}</small>
+      <strong>{value}</strong>
+    </article>
+  );
+}
+
+function transparencyIcon(category: string) {
+  if (category === 'export') return <KeyRound size={18} />;
+  if (category === 'notification') return <Bell size={18} />;
+  if (category === 'consent') return <ShieldCheck size={18} />;
+  return <ShieldAlert size={18} />;
+}
+
+function transparencyDetail(item: { contact_name?: string | null; actor_role?: string | null; purpose?: string | null; status?: string | null; category: string }) {
+  const parts = [
+    item.contact_name ? `Empfänger: ${item.contact_name}` : '',
+    item.actor_role ? `Rolle: ${aalRoleLabel(item.actor_role)}` : '',
+    item.purpose ? `Zweck: ${purposeLabel(item.purpose)}` : '',
+    item.status ? `Status: ${statusLabel(item.status)}` : '',
+  ].filter(Boolean);
+  return parts.join(' · ') || categoryLabel(item.category);
+}
+
+function purposeLabel(value: string) {
+  if (value === 'behavior_notification') return 'Verhaltensmeldung';
+  if (value === 'aal_partner_export') return 'Partnerexport';
+  return value;
+}
+
+function statusLabel(value: string) {
+  if (value === 'sent') return 'gesendet';
+  if (value === 'active') return 'aktiv';
+  if (value === 'revoked') return 'widerrufen';
+  if (value === 'completed') return 'abgeschlossen';
+  if (value.startsWith('skipped')) return 'blockiert';
+  return value;
+}
+
+function categoryLabel(value: string) {
+  if (value === 'export') return 'Export';
+  if (value === 'notification') return 'Benachrichtigung';
+  if (value === 'consent') return 'Freigabe';
+  if (value === 'security') return 'Sicherheit';
+  return value;
 }
 
 function NotificationPreference({ title, description, checked, onChange }: { title: string; description: string; checked: boolean; onChange: (checked: boolean) => void }) {
@@ -1383,6 +1796,7 @@ function emptyContactForm() {
   return {
     name: '',
     relationship: '',
+    actor_role: 'relative' as AalActorRole,
     email: '',
     phone: '',
     telegram_chat_id: '',
@@ -1409,6 +1823,7 @@ function contactPayload(form: ReturnType<typeof emptyContactForm>, available: Re
   return {
     name: form.name.trim(),
     relationship: form.relationship.trim(),
+    actor_role: actorRoleForContact(form.actor_role),
     email: normalizeEmail(form.email),
     phone: form.phone.trim(),
     telegram_chat_id: form.telegram_chat_id.trim(),
@@ -1557,6 +1972,75 @@ function primaryNotificationRecipient(contacts: NonNullable<SenteroSetupStatus['
     relationship: contact.relationship || undefined,
     primary: Boolean(contact.primary_contact),
   };
+}
+
+function actorRoleForContact(value?: string | null): AalActorRole {
+  const role = String(value || '').trim();
+  return aalActorRoles.some((item) => item.value === role) ? role as AalActorRole : 'relative';
+}
+
+function aalRoleLabel(value?: string | null) {
+  const role = actorRoleForContact(value);
+  return aalActorRoles.find((item) => item.value === role)?.label || 'Angehörige';
+}
+
+function activeBehaviorConsent(contactId: number, consents: SenteroConsent[]) {
+  return consents.find((consent) => consent.contact_id === contactId && consent.purpose === 'behavior_notification' && consent.active) || null;
+}
+
+function latestBehaviorConsent(contactId: number, consents: SenteroConsent[]) {
+  return consents.find((consent) => consent.contact_id === contactId && consent.purpose === 'behavior_notification') || null;
+}
+
+function activeExportConsent(contactId: number, consents: SenteroConsent[]) {
+  return consents.find((consent) => consent.contact_id === contactId && consent.purpose === 'aal_partner_export' && consent.active) || null;
+}
+
+function latestExportConsent(contactId: number, consents: SenteroConsent[]) {
+  return consents.find((consent) => consent.contact_id === contactId && consent.purpose === 'aal_partner_export') || null;
+}
+
+function activeExportToken(contactId: number, tokens: SenteroExportToken[]) {
+  return tokens.find((token) => token.contact_id === contactId && token.purpose === 'aal_partner_export' && token.active) || null;
+}
+
+function latestExportToken(contactId: number, tokens: SenteroExportToken[]) {
+  return tokens.find((token) => token.contact_id === contactId && token.purpose === 'aal_partner_export') || null;
+}
+
+function exportDataClassesForContact(actorRole?: string | null) {
+  const role = actorRoleForContact(actorRole);
+  if (role === 'housing_provider') return ['technical'];
+  if (role === 'care_service') return ['personal_behavior', 'health_adjacent', 'emergency'];
+  if (role === 'emergency_service') return ['emergency'];
+  if (role === 'resident' || role === 'admin') return ['technical', 'utility', 'personal_behavior', 'health_adjacent', 'emergency'];
+  return ['personal_behavior', 'health_adjacent', 'emergency'];
+}
+
+function exportExchangeEndpoints() {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  return [
+    { label: 'Tagesstatus', path: '/api/sentero/exchange/daily-status' },
+    { label: 'Ereignisse', path: '/api/sentero/exchange/event-summary' },
+    { label: 'Systemstatus', path: '/api/sentero/exchange/system-status' },
+  ].map((endpoint) => ({ ...endpoint, url: `${origin}${endpoint.path}` }));
+}
+
+function consentDescription(consent: SenteroConsent) {
+  const classes = consent.data_classes.map(dataClassLabel).join(', ');
+  if (consent.revoked_at) return `Widerrufen am ${formatDateTime(consent.revoked_at)}`;
+  if (consent.valid_until) return `${classes} bis ${formatDateTime(consent.valid_until)}`;
+  return classes || 'Verhaltensmeldungen';
+}
+
+function dataClassLabel(value: string) {
+  if (value === 'personal_behavior') return 'Tagesablauf';
+  if (value === 'health_adjacent') return 'AAL-Hinweise';
+  if (value === 'emergency') return 'Notfall';
+  if (value === 'technical') return 'Technik';
+  if (value === 'environmental') return 'Umgebung';
+  if (value === 'utility') return 'Verbrauch';
+  return value;
 }
 
 function ageFromBirthYear(value: string) {

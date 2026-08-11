@@ -98,6 +98,9 @@ PUBLIC_PATHS = {
     "/api/setup/box-network/status",
     "/api/setup/box-network/wifi",
 }
+PUBLIC_PREFIXES = (
+    "/api/sentero/exchange/",
+)
 AUTH_SCHEME_NAME = "HTTPBearer"
 
 
@@ -115,7 +118,7 @@ async def require_sentero_auth(request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
 
-    if path.startswith("/api/") and path not in PUBLIC_PATHS:
+    if path.startswith("/api/") and path not in PUBLIC_PATHS and not any(path.startswith(prefix) for prefix in PUBLIC_PREFIXES):
         try:
             get_services().auth.user_from_request(request, required=True)
         except Exception as exc:
@@ -165,7 +168,11 @@ def custom_openapi() -> dict:
     protected_security = {AUTH_SCHEME_NAME: []}
     for path, operations in schema.get("paths", {}).items():
         normalized_path = path.rstrip("/") or "/"
-        if not normalized_path.startswith("/api/") or normalized_path in PUBLIC_PATHS:
+        if (
+            not normalized_path.startswith("/api/")
+            or normalized_path in PUBLIC_PATHS
+            or any(normalized_path.startswith(prefix) for prefix in PUBLIC_PREFIXES)
+        ):
             continue
         for operation in operations.values():
             if not isinstance(operation, dict):

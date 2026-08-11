@@ -39,6 +39,8 @@ class SmartMeterBehaviorTests(unittest.TestCase):
         self.assertEqual(written, 1)
         self.assertEqual(history[0]["role"], "energy_consumption")
         self.assertEqual(history[0]["state"], "1234.5")
+        self.assertEqual(history[0]["data_class"], "utility")
+        self.assertEqual(history[0]["aggregation_level"], "raw")
 
     def test_utility_usage_summary_detects_low_today_delta(self) -> None:
         agent = SenteroBehaviorAgent.__new__(SenteroBehaviorAgent)

@@ -253,6 +253,7 @@ class SenteroAuthService:
             "email": user.get("email"),
             "display_name": user.get("display_name"),
             "role": user.get("role"),
+            "aal_role": user.get("aal_role"),
             "last_login_at": user.get("last_login_at"),
         }
 

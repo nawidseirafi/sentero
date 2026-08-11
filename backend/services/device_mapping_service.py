@@ -1311,6 +1311,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         "alter table trusted_contacts add column preferred_channels text not null default '[\"email\"]'",
         "alter table trusted_contacts add column notification_enabled integer not null default 1",
         "alter table trusted_contacts add column primary_contact integer not null default 0",
+        "alter table trusted_contacts add column actor_role text not null default 'relative'",
     ]:
         try:
             con.execute(statement)
@@ -1333,8 +1334,31 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         status text not null,
         message_title text,
         error_message text,
+        data_class text not null default 'health_adjacent',
+        aggregation_level text not null default 'summary',
         created_at text not null
     )''')
+    try:
+        con.execute("alter table notification_logs add column data_class text not null default 'health_adjacent'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        con.execute("alter table notification_logs add column aggregation_level text not null default 'summary'")
+    except sqlite3.OperationalError:
+        pass
+    con.execute('''create table if not exists data_consents (
+        id integer primary key autoincrement,
+        contact_id integer not null,
+        recipient_type text not null,
+        purpose text not null,
+        data_classes_json text not null default '[]',
+        valid_until text,
+        revoked_at text,
+        created_at text not null,
+        updated_at text not null,
+        foreign key(contact_id) references trusted_contacts(id)
+    )''')
+    con.execute('create index if not exists idx_data_consents_contact_purpose on data_consents(contact_id, purpose, revoked_at)')
     con.execute('''create table if not exists system_warning_state (
         warning_key text primary key,
         status text not null,
@@ -1350,11 +1374,16 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         password_hash text not null,
         display_name text,
         role text not null default 'viewer',
+        aal_role text not null default 'admin',
         is_active integer not null default 1,
         created_at text not null,
         updated_at text not null,
         last_login_at text
     )''')
+    try:
+        con.execute("alter table sentero_users add column aal_role text not null default 'admin'")
+    except sqlite3.OperationalError:
+        pass
     con.execute('''create table if not exists sentero_sessions (
         id integer primary key autoincrement,
         user_id integer not null,

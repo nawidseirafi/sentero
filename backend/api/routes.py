@@ -14,6 +14,7 @@ TAG_AUTH = "auth"
 TAG_SYSTEM = "system"
 TAG_SETUP = "setup"
 TAG_NOTIFICATIONS = "notifications"
+TAG_CONSENTS = "consents"
 TAG_SENSORS = "sensors"
 TAG_DEVICES = "devices"
 TAG_EVENTS = "events"
@@ -30,6 +31,7 @@ OPENAPI_TAGS = [
     {"name": TAG_DEVICES, "description": "Normalized Sentero devices independent of sensor source."},
     {"name": TAG_EVENTS, "description": "Normalized Sentero sensor events independent of sensor source."},
     {"name": TAG_NOTIFICATIONS, "description": "Notification channels, tests and logs."},
+    {"name": TAG_CONSENTS, "description": "Consent and data sharing controls."},
 ]
 
 router = APIRouter(prefix=API_PREFIX)
@@ -108,6 +110,7 @@ class ConfirmPayload(BaseModel):
 class ContactPayload(BaseModel):
     name: str
     relationship: str | None = None
+    actor_role: str = "relative"
     email: str | None = None
     phone: str | None = None
     telegram_chat_id: str | None = None
@@ -138,6 +141,25 @@ class DeviceAssignRoomPayload(BaseModel):
 class ChannelSettingsPayload(BaseModel):
     enabled: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConsentPayload(BaseModel):
+    contact_id: int
+    recipient_type: str = "relative"
+    purpose: str = "behavior_notification"
+    data_classes: list[str] = Field(default_factory=lambda: ["personal_behavior", "health_adjacent", "emergency"])
+    valid_until: str | None = None
+
+
+class ExportTokenPayload(BaseModel):
+    contact_id: int
+    purpose: str = "aal_partner_export"
+    data_classes: list[str] = Field(default_factory=lambda: ["technical", "utility", "health_adjacent", "emergency"])
+    expires_at: str | None = None
+
+
+class AuditCleanupPayload(BaseModel):
+    days: int = Field(default=180, ge=30, le=3650)
 
 
 class SenteroSetupPayload(BaseModel):
@@ -577,6 +599,94 @@ def notification_test_whatsapp(dev: bool = Query(False)):
 @router.get("/notifications/logs", tags=[TAG_NOTIFICATIONS])
 def notification_logs(limit: int = Query(100, ge=1, le=500)):
     return get_services().notification.logs(limit=limit)
+
+
+@router.get("/consents", tags=[TAG_CONSENTS])
+def consents():
+    return get_services().consent.list()
+
+
+@router.post("/consents", tags=[TAG_CONSENTS])
+def grant_consent(payload: ConsentPayload):
+    try:
+        return get_services().consent.grant(model_data(payload))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/consents/{consent_id}/revoke", tags=[TAG_CONSENTS])
+def revoke_consent(consent_id: int):
+    return get_services().consent.revoke(consent_id)
+
+
+@router.get("/exports/tokens", tags=[TAG_CONSENTS])
+def export_tokens():
+    return get_services().exports.list_tokens()
+
+
+@router.post("/exports/tokens", tags=[TAG_CONSENTS])
+def create_export_token(payload: ExportTokenPayload):
+    try:
+        return get_services().exports.create_token(model_data(payload))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/exports/tokens/{token_id}/revoke", tags=[TAG_CONSENTS])
+def revoke_export_token(token_id: int):
+    return get_services().exports.revoke_token(token_id)
+
+
+@router.get("/transparency", tags=[TAG_CONSENTS])
+def transparency(limit: int = Query(100, ge=1, le=500)):
+    return get_services().audit.transparency(limit=limit)
+
+
+@router.get("/transparency/retention", tags=[TAG_CONSENTS])
+def transparency_retention():
+    return get_services().audit.retention_status()
+
+
+@router.post("/transparency/retention/cleanup", tags=[TAG_CONSENTS])
+def transparency_retention_cleanup(payload: AuditCleanupPayload):
+    return get_services().audit.cleanup(days=payload.days)
+
+
+def export_token_from_request(request: Request) -> str:
+    authorization = str(request.headers.get("authorization") or "").strip()
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return str(request.query_params.get("token") or "").strip()
+
+
+@router.get("/exchange/daily-status", tags=[TAG_CONSENTS])
+def exchange_daily_status(request: Request, period_start: str | None = None, period_end: str | None = None):
+    try:
+        return get_services().exports.export(export_token_from_request(request), "daily-status", period_start=period_start, period_end=period_end)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/exchange/event-summary", tags=[TAG_CONSENTS])
+def exchange_event_summary(request: Request, period_start: str | None = None, period_end: str | None = None):
+    try:
+        return get_services().exports.export(export_token_from_request(request), "event-summary", period_start=period_start, period_end=period_end)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/exchange/system-status", tags=[TAG_CONSENTS])
+def exchange_system_status(request: Request, period_start: str | None = None, period_end: str | None = None):
+    try:
+        return get_services().exports.export(export_token_from_request(request), "system-status", period_start=period_start, period_end=period_end)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/notifications/system/check", tags=[TAG_NOTIFICATIONS])

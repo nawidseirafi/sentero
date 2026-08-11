@@ -12,7 +12,7 @@ class BackendLifecycleTests(unittest.TestCase):
     def test_openapi_does_not_instantiate_backend_services(self) -> None:
         reset_services_for_tests()
 
-        from backend.main import AUTH_SCHEME_NAME, PUBLIC_PATHS, app
+        from backend.main import AUTH_SCHEME_NAME, PUBLIC_PATHS, PUBLIC_PREFIXES, app
 
         app.openapi_schema = None
         schema = app.openapi()
@@ -23,7 +23,7 @@ class BackendLifecycleTests(unittest.TestCase):
 
         for path, operations in schema.get("paths", {}).items():
             normalized_path = path.rstrip("/") or "/"
-            if not normalized_path.startswith("/api/") or normalized_path in PUBLIC_PATHS:
+            if not normalized_path.startswith("/api/") or normalized_path in PUBLIC_PATHS or any(normalized_path.startswith(prefix) for prefix in PUBLIC_PREFIXES):
                 continue
             for method, operation in operations.items():
                 if method.lower() not in {"get", "post", "put", "delete", "patch"}:

@@ -8,6 +8,7 @@ export type SenteroUser = {
   email: string;
   display_name?: string | null;
   role: 'owner' | 'admin' | 'viewer' | string;
+  aal_role?: 'resident' | 'relative' | 'care_service' | 'emergency_service' | 'housing_provider' | 'admin' | string;
   last_login_at?: string | null;
 };
 
@@ -87,6 +88,7 @@ export type SenteroTrustedContact = {
   id: number;
   name: string;
   relationship?: string | null;
+  actor_role?: 'resident' | 'relative' | 'care_service' | 'emergency_service' | 'housing_provider' | 'admin' | string | null;
   email?: string | null;
   phone?: string | null;
   telegram_chat_id?: string | null;
@@ -126,9 +128,68 @@ export type SenteroNotificationChannel = {
   updated_at?: string | null;
 };
 
+export type SenteroConsent = {
+  id: number;
+  contact_id: number;
+  contact_name?: string | null;
+  contact_relationship?: string | null;
+  contact_email?: string | null;
+  recipient_type: string;
+  purpose: string;
+  data_classes: string[];
+  valid_until?: string | null;
+  revoked_at?: string | null;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SenteroExportToken = {
+  id: number;
+  contact_id: number;
+  contact_name?: string | null;
+  contact_email?: string | null;
+  actor_role?: string | null;
+  purpose: string;
+  data_classes: string[];
+  expires_at?: string | null;
+  revoked_at?: string | null;
+  last_used_at?: string | null;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SenteroTransparencyItem = {
+  id: string;
+  category: 'export' | 'notification' | 'consent' | 'security' | string;
+  event_type: string;
+  status: string;
+  summary: string;
+  contact_id?: number | null;
+  contact_name?: string | null;
+  actor_role?: string | null;
+  purpose?: string | null;
+  data_classes: string[];
+  aggregation_level?: string | null;
+  raw_data_included?: boolean;
+  created_at: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type SenteroTransparency = {
+  items: SenteroTransparencyItem[];
+  summary: { total: number; exports: number; notifications: number; consents: number; security: number };
+  retention: {
+    retention_days: number;
+    tables: Array<{ table: string; count: number; oldest?: string | null; newest?: string | null }>;
+  };
+};
+
 export type SenteroContactPayload = {
   name: string;
   relationship?: string;
+  actor_role?: string;
   email?: string;
   phone?: string;
   telegram_chat_id?: string;
@@ -439,7 +500,7 @@ export const api = {
     request<{ ok: boolean }>('/api/sentero/auth/reset-password', { method: 'POST', body: JSON.stringify(payload) }),
   senteroSetupStatus: () => request<SenteroSetupStatus>('/api/sentero/setup/status'),
   senteroBehaviorLatest: () => request<{ assessment: SenteroBehaviorAssessment | null; learning?: SenteroBehaviorLearning }>('/api/sentero/behavior/latest'),
-  senteroBehaviorTimeline: (live = false) => request<{ events: Array<{ event_time: string; room?: string | null; role?: string | null; state?: string | null }>; assessment: SenteroBehaviorAssessment | null }>(`/api/sentero/behavior/timeline${live ? '?live=true' : ''}`),
+  senteroBehaviorTimeline: (live = false) => request<{ events: Array<{ event_time: string; room?: string | null; role?: string | null; state?: string | null; data_class?: string | null; aggregation_level?: string | null }>; assessment: SenteroBehaviorAssessment | null }>(`/api/sentero/behavior/timeline${live ? '?live=true' : ''}`),
   startSenteroSetup: () => request<SenteroSetupStatus>('/api/sentero/setup/start', { method: 'POST' }),
   saveSenteroProfile: (payload: { name?: string; birth_year?: number | null; age?: number | null; notes?: string }) =>
     request<SenteroSetupStatus>('/api/sentero/setup/profile', { method: 'POST', body: JSON.stringify(payload) }),
@@ -488,6 +549,19 @@ export const api = {
   saveSenteroNotifications: (payload: { anomalies: boolean; critical: boolean; daily_summary: boolean }) =>
     request<SenteroSetupStatus>('/api/sentero/setup/notifications', { method: 'POST', body: JSON.stringify(payload) }),
   senteroNotificationChannels: () => request<{ channels: SenteroNotificationChannel[] }>('/api/sentero/notifications/channels'),
+  senteroConsents: () => request<{ consents: SenteroConsent[] }>('/api/sentero/consents'),
+  grantSenteroConsent: (payload: { contact_id: number; recipient_type?: string; purpose?: string; data_classes?: string[]; valid_until?: string | null }) =>
+    request<{ consents: SenteroConsent[] }>('/api/sentero/consents', { method: 'POST', body: JSON.stringify(payload) }),
+  revokeSenteroConsent: (consentId: number) =>
+    request<{ consents: SenteroConsent[] }>(`/api/sentero/consents/${encodeURIComponent(String(consentId))}/revoke`, { method: 'POST' }),
+  senteroExportTokens: () => request<{ tokens: SenteroExportToken[] }>('/api/sentero/exports/tokens'),
+  createSenteroExportToken: (payload: { contact_id: number; purpose?: string; data_classes?: string[]; expires_at?: string | null }) =>
+    request<{ token: string; record: SenteroExportToken }>('/api/sentero/exports/tokens', { method: 'POST', body: JSON.stringify(payload) }),
+  revokeSenteroExportToken: (tokenId: number) =>
+    request<{ tokens: SenteroExportToken[] }>(`/api/sentero/exports/tokens/${encodeURIComponent(String(tokenId))}/revoke`, { method: 'POST' }),
+  senteroTransparency: (limit = 100) => request<SenteroTransparency>(`/api/sentero/transparency?limit=${encodeURIComponent(String(limit))}`),
+  cleanupSenteroTransparency: (days = 180) =>
+    request<{ deleted: Record<string, number>; retention: SenteroTransparency['retention'] }>('/api/sentero/transparency/retention/cleanup', { method: 'POST', body: JSON.stringify({ days }) }),
   saveSenteroNotificationChannel: (channel: 'email' | 'telegram' | 'whatsapp', payload: { enabled: boolean; config: Record<string, unknown> }) =>
     request<{ channels: SenteroNotificationChannel[] }>(`/api/sentero/notifications/channels/${channel}`, { method: 'POST', body: JSON.stringify(payload) }),
   testSenteroNotificationChannel: (channel: 'email' | 'telegram' | 'whatsapp') =>

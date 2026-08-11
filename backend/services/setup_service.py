@@ -4,6 +4,8 @@ import json
 from datetime import datetime
 from typing import Any
 from backend.logging_config import get_logger
+from backend.services.aal_roles import DEFAULT_CONTACT_AAL_ROLE, normalize_aal_role
+from backend.services.consent_service import ConsentService, DEFAULT_NOTIFICATION_RECIPIENT_TYPE
 from .device_mapping_service import DeviceMappingService, now
 
 ROOMS = ['living_room', 'kitchen', 'bathroom', 'bedroom', 'hallway', 'entrance']
@@ -107,6 +109,7 @@ class SenteroSetupService:
         phone = normalize_text(payload.get('phone'))
         telegram_chat_id = normalize_text(payload.get('telegram_chat_id'))
         whatsapp_phone_number = normalize_text(payload.get('whatsapp_phone_number') or payload.get('phone'))
+        actor_role = normalize_aal_role(payload.get('actor_role'), default=DEFAULT_CONTACT_AAL_ROLE)
         primary_contact = int(bool(payload.get('primary_contact', False)))
         validate_contact_channels(channels, email, telegram_chat_id, whatsapp_phone_number)
         if not name:
@@ -120,6 +123,7 @@ class SenteroSetupService:
             if not existing_primary:
                 primary_contact = 1
             existing = con.execute('select id from trusted_contacts where lower(email) = ? and active = 1', (email,)).fetchone() if email else None
+            contact_id: int
             if existing:
                 con.execute(
                     '''update trusted_contacts
@@ -128,14 +132,18 @@ class SenteroSetupService:
                        where id = ?''',
                     (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, timestamp, existing['id']),
                 )
+                con.execute("update trusted_contacts set actor_role = ? where id = ?", (actor_role, existing['id']))
+                contact_id = int(existing['id'])
             else:
-                con.execute(
+                cur = con.execute(
                     '''insert into trusted_contacts
-                       (name, relationship, email, phone, telegram_chat_id, whatsapp_phone_number, preferred_channels, notification_enabled, primary_contact, active, created_at, updated_at)
-                       values (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)''',
-                    (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, timestamp, timestamp),
+                       (name, relationship, email, phone, telegram_chat_id, whatsapp_phone_number, preferred_channels, notification_enabled, primary_contact, actor_role, active, created_at, updated_at)
+                       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)''',
+                    (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, actor_role, timestamp, timestamp),
                 )
+                contact_id = int(cur.lastrowid)
             con.commit()
+        ConsentService(self.mapping).ensure_default_notification_consent(contact_id, recipient_type=actor_role or DEFAULT_NOTIFICATION_RECIPIENT_TYPE)
         logger.info("Trusted contact saved", extra={"component": "wizard", "channels": channels, "primary_contact": bool(primary_contact)})
         return self.set_step('notifications', 'contacts')
 
@@ -147,6 +155,7 @@ class SenteroSetupService:
         phone = normalize_text(payload.get('phone'))
         telegram_chat_id = normalize_text(payload.get('telegram_chat_id'))
         whatsapp_phone_number = normalize_text(payload.get('whatsapp_phone_number') or payload.get('phone'))
+        actor_role = normalize_aal_role(payload.get('actor_role'), default=DEFAULT_CONTACT_AAL_ROLE)
         primary_contact = int(bool(payload.get('primary_contact', False)))
         validate_contact_channels(channels, email, telegram_chat_id, whatsapp_phone_number)
         if not name:
@@ -166,9 +175,9 @@ class SenteroSetupService:
             con.execute(
                 '''update trusted_contacts
                    set name = ?, relationship = ?, email = ?, phone = ?, telegram_chat_id = ?,
-                       whatsapp_phone_number = ?, preferred_channels = ?, notification_enabled = ?, primary_contact = ?, updated_at = ?
+                       whatsapp_phone_number = ?, preferred_channels = ?, notification_enabled = ?, primary_contact = ?, actor_role = ?, updated_at = ?
                    where id = ?''',
-                (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, now(), contact_id),
+                (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, actor_role, now(), contact_id),
             )
             con.commit()
         logger.info("Trusted contact updated", extra={"component": "wizard", "contact_id": contact_id})

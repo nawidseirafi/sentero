@@ -10,6 +10,7 @@ from .config import load_agent_section
 from .services.llm.factory import create_llm_client
 from .services.messaging import MessagingService
 
+from backend.services.data_classification import aggregation_for_data_class, classify_assessment, classify_sensor_event
 from backend.services.device_mapping_service import DeviceMappingService, now
 from backend.logging_config import get_logger
 from backend.services.notification_service import NotificationService
@@ -76,6 +77,10 @@ class SenteroBehaviorAgent:
                     metadata text not null default '{}'
                 )"""
             )
+            self._ensure_column(con, "sentero_sensor_events", "data_class", "text not null default 'technical'")
+            self._ensure_column(con, "sentero_sensor_events", "aggregation_level", "text not null default 'raw'")
+            self._ensure_column(con, "behavior_events", "data_class", "text not null default 'technical'")
+            self._ensure_column(con, "behavior_events", "aggregation_level", "text not null default 'raw'")
             con.execute(
                 """create table if not exists behavior_daily_summary (
                     date text primary key,
@@ -120,6 +125,8 @@ class SenteroBehaviorAgent:
             self._ensure_column(con, "behavior_assessments", "learning_completed", "integer not null default 0")
             self._ensure_column(con, "behavior_assessments", "learning_day", "integer not null default 1")
             self._ensure_column(con, "behavior_assessments", "learning_days", "integer not null default 14")
+            self._ensure_column(con, "behavior_assessments", "data_class", "text not null default 'health_adjacent'")
+            self._ensure_column(con, "behavior_assessments", "aggregation_level", "text not null default 'summary'")
             con.commit()
 
     def _ensure_column(self, con: Any, table: str, column: str, definition: str) -> None:
@@ -251,10 +258,12 @@ class SenteroBehaviorAgent:
                 entity_id = role.get("entity_id")
                 if self._event_already_recorded(con, event_time, role_name, entity_id, state):
                     continue
+                event_type = self._event_type(role)
+                data_class = classify_sensor_event(event_type, role.get("device_class"), role_name)
                 con.execute(
                     """insert into sentero_sensor_events
-                       (event_time, role, room, entity_id, state, device_class, source, created_at)
-                       values (?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (event_time, role, room, entity_id, state, device_class, source, data_class, aggregation_level, created_at)
+                       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         event_time,
                         role_name,
@@ -263,24 +272,28 @@ class SenteroBehaviorAgent:
                         state,
                         role.get("device_class"),
                         role.get("source") or "snapshot",
+                        data_class,
+                        "raw",
                         timestamp,
                     ),
                 )
                 con.execute(
                     """insert into behavior_events
-                       (timestamp, sensor_id, sensor_type, room, event_type, metadata)
-                       values (?, ?, ?, ?, ?, ?)""",
+                       (timestamp, sensor_id, sensor_type, room, event_type, metadata, data_class, aggregation_level)
+                       values (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         event_time,
                         entity_id or role_name,
                         role.get("device_class") or role.get("type") or role.get("domain"),
                         role.get("room"),
-                        self._event_type(role),
+                        event_type,
                         json.dumps({
                             "role": role_name,
                             "state": state,
                             "source": role.get("source") or "snapshot",
                         }, ensure_ascii=False),
+                        data_class,
+                        "raw",
                     ),
                 )
                 written += 1
@@ -457,8 +470,8 @@ class SenteroBehaviorAgent:
             cur = con.execute(
                 """insert into behavior_assessments
                    (assessment_time, status, confidence, summary, findings_json, recommendation, llm_response, created_at,
-                    anomaly_score, learning_completed, learning_day, learning_days)
-                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    anomaly_score, learning_completed, learning_day, learning_days, data_class, aggregation_level)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     timestamp,
                     assessment["status"],
@@ -472,6 +485,8 @@ class SenteroBehaviorAgent:
                     int(bool(assessment.get("learning_completed"))),
                     int(assessment.get("learning_day") or 1),
                     int(assessment.get("learning_days") or self._learning_days()),
+                    classify_assessment(assessment.get("status")),
+                    aggregation_for_data_class(classify_assessment(assessment.get("status"))),
                 ),
             )
             con.commit()
@@ -1287,6 +1302,8 @@ class SenteroBehaviorAgent:
         data = dict(row)
         data["findings"] = self._list_json(data.pop("findings_json", "[]"))
         data["learning_completed"] = bool(data.get("learning_completed"))
+        data["data_class"] = data.get("data_class") or classify_assessment(data.get("status"))
+        data["aggregation_level"] = data.get("aggregation_level") or aggregation_for_data_class(str(data["data_class"]))
         return data
 
     @staticmethod
