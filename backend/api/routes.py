@@ -659,34 +659,28 @@ def export_token_from_request(request: Request) -> str:
     return str(request.query_params.get("token") or "").strip()
 
 
-@router.get("/exchange/daily-status", tags=[TAG_CONSENTS])
+def exchange_export(request: Request, export_type: str, period_start: str | None = None, period_end: str | None = None):
+    try:
+        return get_services().exports.export(export_token_from_request(request), export_type, period_start=period_start, period_end=period_end)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/exchange/v1/daily-status", tags=[TAG_CONSENTS])
 def exchange_daily_status(request: Request, period_start: str | None = None, period_end: str | None = None):
-    try:
-        return get_services().exports.export(export_token_from_request(request), "daily-status", period_start=period_start, period_end=period_end)
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return exchange_export(request, "daily-status", period_start=period_start, period_end=period_end)
 
 
-@router.get("/exchange/event-summary", tags=[TAG_CONSENTS])
+@router.get("/exchange/v1/event-summary", tags=[TAG_CONSENTS])
 def exchange_event_summary(request: Request, period_start: str | None = None, period_end: str | None = None):
-    try:
-        return get_services().exports.export(export_token_from_request(request), "event-summary", period_start=period_start, period_end=period_end)
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return exchange_export(request, "event-summary", period_start=period_start, period_end=period_end)
 
 
-@router.get("/exchange/system-status", tags=[TAG_CONSENTS])
+@router.get("/exchange/v1/system-status", tags=[TAG_CONSENTS])
 def exchange_system_status(request: Request, period_start: str | None = None, period_end: str | None = None):
-    try:
-        return get_services().exports.export(export_token_from_request(request), "system-status", period_start=period_start, period_end=period_end)
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return exchange_export(request, "system-status", period_start=period_start, period_end=period_end)
 
 
 @router.post("/notifications/system/check", tags=[TAG_NOTIFICATIONS])

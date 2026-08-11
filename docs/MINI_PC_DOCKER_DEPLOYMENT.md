@@ -1,6 +1,6 @@
 # Sentero auf Debian Mini-PC mit Docker
 
-Ziel: Sentero laeuft lokal auf einem Mini-PC. Die Sentero-GUI und Admin-APIs bleiben im Heimnetz. Falls Smart-Living-AAL extern angebunden wird, wird nur `/api/sentero/exchange/*` veroeffentlicht.
+Ziel: Sentero laeuft lokal auf einem Mini-PC. Die Sentero-GUI und Admin-APIs bleiben im Heimnetz. Falls Smart-Living-AAL extern angebunden wird, wird nur `/api/sentero/exchange/v1/*` veroeffentlicht.
 
 ## 1. Debian vorbereiten
 
@@ -104,9 +104,9 @@ docker compose --profile external-aal up -d
 
 Extern werden nur diese Pfade geroutet:
 
-- `/api/sentero/exchange/daily-status`
-- `/api/sentero/exchange/event-summary`
-- `/api/sentero/exchange/system-status`
+- `/api/sentero/exchange/v1/daily-status`
+- `/api/sentero/exchange/v1/event-summary`
+- `/api/sentero/exchange/v1/system-status`
 
 Alles andere liefert `404`.
 
@@ -132,7 +132,7 @@ curl -i http://<MINI-PC-LAN-IP>:8080/health
 Externe AAL-Schnittstelle:
 
 ```bash
-curl -i https://aal.example.org/api/sentero/exchange/daily-status \
+curl -i https://aal.example.org/api/sentero/exchange/v1/daily-status \
   -H "Authorization: Bearer <export-token>"
 ```
 

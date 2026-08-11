@@ -67,6 +67,8 @@ docker compose --profile production up --build -d
 
 Docker forces `SENTERO_SENSOR_SOURCE=mqtt` unless `SENTERO_DOCKER_SENSOR_SOURCE` is set explicitly. This keeps local Home Assistant development settings from leaking into the production container.
 
+For Debian Mini-PC deployment and the optional local-only AAL edge proxy, see `docs/MINI_PC_DOCKER_DEPLOYMENT.md`. The external AAL surface is limited to `/api/sentero/exchange/v1/*`; the GUI and admin APIs should stay on the local network.
+
 ## Deployment Build
 
 Create an installable directory and update ZIP artifacts:

@@ -71,7 +71,8 @@ Umgesetzt:
 - Token-Verwaltung bleibt session-geschuetzt; Austausch-Endpunkte akzeptieren nur Export-Bearer-Tokens.
 - Exportfreigabe, Token-Erstellung und Widerruf sind in der Kontakteinstellungen-GUI pro Partner bedienbar.
 - Die GUI zeigt nach Token-Erstellung ein Dialog-Partnerpaket mit Token, Authorization-Header, Export-URLs und optionalen Direktlinks.
-- Externe Sichtbarkeit ist auf die Exchange-Pfade zu begrenzen; die lokale Sentero-GUI und Admin-APIs bleiben nicht oeffentlich. Details: `docs/AAL_EXTERNAL_INTERFACE.md`.
+- Der stabile Partnervertrag ist als `Sentero AAL Exchange Profile v1` dokumentiert. Details: `docs/AAL_EXCHANGE_PROFILE_V1.md`.
+- Externe Sichtbarkeit ist auf die versionierten Exchange-Pfade zu begrenzen; die lokale Sentero-GUI und Admin-APIs bleiben nicht oeffentlich. Details: `docs/AAL_EXTERNAL_INTERFACE.md`.
 - Exportfreigabe setzt aktive Einwilligung fuer Zweck und Datenklassen voraus.
 - Exporte enthalten maschinenlesbare Metadaten: Empfaenger, Zweck, Datenklassen, Zeitraum, Aggregationsniveau und Rohdatenstatus.
 - Erfolgreiche Exporte schreiben Audit-Metadaten in `aal_export_audit`.
@@ -80,7 +81,7 @@ Kontrolle:
 - Exporte enthalten keine Rohdaten, sofern nicht explizit freigegeben.
 - Jeder Export ist auditierbar.
 - Tokens sind widerrufbar und zeitlich begrenzt.
-- Oeffentlich geroutet werden nur `/api/sentero/exchange/*`; alle anderen Pfade werden am Reverse-Proxy oder Router blockiert.
+- Oeffentlich geroutet werden nur `/api/sentero/exchange/v1/*`; alle anderen Pfade werden am Reverse-Proxy oder Router blockiert.
 - Tests pruefen aggregierte Exporte, Audit-Eintrag, Ablauf und Widerruf.
 
 ## 5. Audit und Transparenz

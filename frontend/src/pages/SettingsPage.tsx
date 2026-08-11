@@ -2023,9 +2023,9 @@ function exportDataClassesForContact(actorRole?: string | null) {
 function exportExchangeEndpoints() {
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   return [
-    { label: 'Tagesstatus', path: '/api/sentero/exchange/daily-status' },
-    { label: 'Ereignisse', path: '/api/sentero/exchange/event-summary' },
-    { label: 'Systemstatus', path: '/api/sentero/exchange/system-status' },
+    { label: 'Tagesstatus', path: '/api/sentero/exchange/v1/daily-status' },
+    { label: 'Ereignisse', path: '/api/sentero/exchange/v1/event-summary' },
+    { label: 'Systemstatus', path: '/api/sentero/exchange/v1/system-status' },
   ].map((endpoint) => ({ ...endpoint, url: `${origin}${endpoint.path}` }));
 }
 

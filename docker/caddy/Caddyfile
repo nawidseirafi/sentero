@@ -1,5 +1,5 @@
 {$SENTERO_AAL_SITE} {
-    handle /api/sentero/exchange/* {
+    handle /api/sentero/exchange/v1/* {
         reverse_proxy sentero:8080
     }
 
