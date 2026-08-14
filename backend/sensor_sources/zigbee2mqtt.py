@@ -30,6 +30,26 @@ STATE_KEYS = (
     "bed_presence",
     "state",
 )
+MEASUREMENT_KEYS = (
+    "battery",
+    "battery_low",
+    "linkquality",
+    "signal_quality",
+    "temperature",
+    "humidity",
+    "illuminance",
+    "illuminance_lux",
+    "energy",
+    "energy_consumption",
+    "electricity",
+    "electricity_consumption",
+    "power",
+    "power_usage",
+    "water",
+    "water_consumption",
+    "gas",
+    "gas_consumption",
+)
 
 
 class Zigbee2MqttSensorSource:
@@ -120,7 +140,7 @@ class Zigbee2MqttSensorSource:
         if state_keys:
             for state_key in state_keys:
                 rows.append(self._entity(device, state_key, payload.get(state_key), enriched_payload, timestamp))
-        for key in ("battery", "battery_low", "linkquality", "signal_quality", "temperature", "humidity", "illuminance", "illuminance_lux"):
+        for key in MEASUREMENT_KEYS:
             if key in payload:
                 rows.append(self._entity(device, key, payload.get(key), enriched_payload, timestamp))
         logger.debug(
@@ -141,6 +161,8 @@ class Zigbee2MqttSensorSource:
 
     def _entity(self, device: str, key: str, value: Any, payload: dict[str, Any], timestamp: str) -> dict[str, Any]:
         slug = slugify(device)
+        source = payload.get("source") or self.name
+        device_id = device if source == "mqtt" else slug
         clean_key = "contact" if key == "open" else key
         is_binary = clean_key in BINARY_DEVICE_CLASSES or clean_key == "state" and str(value).lower() in {"on", "off", "true", "false"}
         domain = "button" if clean_key == "action" else "binary_sensor" if is_binary else "sensor"
@@ -155,9 +177,9 @@ class Zigbee2MqttSensorSource:
             "device_class": device_class,
             "unit": "%" if clean_key == "battery" else None,
             "unit_of_measurement": "%" if clean_key == "battery" else None,
-            "device_id": slug,
-            "platform": "zigbee2mqtt",
-            "unique_id": f"zigbee2mqtt_{slug}_{clean_key}",
+            "device_id": device_id,
+            "platform": source,
+            "unique_id": f"{source}_{slug}_{clean_key}",
             "topic": payload.get("topic") or payload.get("source_ref"),
             "source_ref": payload.get("source_ref") or payload.get("topic"),
             "payload_key": clean_key,
@@ -165,15 +187,17 @@ class Zigbee2MqttSensorSource:
             "device_name": device,
             "manufacturer": payload.get("manufacturer") or payload.get("vendor"),
             "model": payload.get("model") or payload.get("model_id"),
-            "identifiers": [["zigbee2mqtt", device]],
+            "identifiers": [[source, device]],
             "last_changed": timestamp,
             "last_updated": timestamp,
-            "source": payload.get("source") or self.name,
+            "source": source,
             "attributes": {key: value, **{k: v for k, v in payload.items() if k not in {key}}},
         }
 
     def _availability_entity(self, device: str, payload: dict[str, Any], enriched_payload: dict[str, Any], timestamp: str) -> dict[str, Any]:
         slug = slugify(device)
+        source = enriched_payload.get("source") or self.name
+        device_id = device if source == "mqtt" else slug
         status = str(payload.get("status") or payload.get("state") or "").strip().lower()
         online = status in {"online", "on", "true", "1", "available"}
         return {
@@ -184,9 +208,9 @@ class Zigbee2MqttSensorSource:
             "device_class": "connectivity",
             "unit": None,
             "unit_of_measurement": None,
-            "device_id": slug,
-            "platform": "mqtt",
-            "unique_id": f"mqtt_{slug}_availability",
+            "device_id": device_id,
+            "platform": source,
+            "unique_id": f"{source}_{slug}_availability",
             "topic": enriched_payload.get("topic"),
             "source_ref": enriched_payload.get("source_ref"),
             "payload_key": "availability",
@@ -194,10 +218,10 @@ class Zigbee2MqttSensorSource:
             "device_name": device,
             "manufacturer": payload.get("manufacturer") or enriched_payload.get("manufacturer"),
             "model": payload.get("model") or enriched_payload.get("model"),
-            "identifiers": [["mqtt", device]],
+            "identifiers": [[source, device]],
             "last_changed": timestamp,
             "last_updated": timestamp,
-            "source": enriched_payload.get("source") or "mqtt",
+            "source": source,
             "attributes": {**payload, "availability": status or None},
         }
 
@@ -214,6 +238,14 @@ class Zigbee2MqttSensorSource:
             return key
         if key == "action":
             return "button"
+        if key in {"energy", "energy_consumption", "electricity", "electricity_consumption"}:
+            return "energy"
+        if key in {"power", "power_usage"}:
+            return "power"
+        if key in {"water", "water_consumption"}:
+            return "water"
+        if key in {"gas", "gas_consumption"}:
+            return "gas"
         return None if is_binary else key
 
     def _topic_prefixes(self) -> list[str]:
@@ -221,6 +253,7 @@ class Zigbee2MqttSensorSource:
             self.topic_prefix,
             os.getenv("SENTERO_ESP32_TOPIC_PREFIX") or config_str("esp32.topic_prefix", ""),
             config_str("mqtt.esp32_topic_prefix", ""),
+            "sentero",
             "c1001",
         ]
         result: list[str] = []
@@ -231,7 +264,16 @@ class Zigbee2MqttSensorSource:
         return result or ["zigbee2mqtt"]
 
     def _source_from_topic(self, topic: str) -> str:
-        return self.name if topic.startswith(f"{self.topic_prefix}/") else "mqtt"
+        esp32_prefixes = {
+            str(os.getenv("SENTERO_ESP32_TOPIC_PREFIX") or config_str("esp32.topic_prefix", "") or "").strip().strip("/"),
+            str(config_str("mqtt.esp32_topic_prefix", "") or "").strip().strip("/"),
+            "sentero",
+            "c1001",
+        }
+        esp32_prefixes.discard("")
+        if any(topic.startswith(f"{prefix}/") for prefix in esp32_prefixes):
+            return "mqtt"
+        return self.name
 
 
 def normalize_state(value: Any) -> str:

@@ -42,6 +42,9 @@ npm install
 npm run dev
 ```
 
+Frontend dependencies such as MUI, Emotion and QR code rendering are managed
+through `frontend/package.json`, not `requirements.txt`.
+
 Open `http://localhost:5173`.
 
 ## Docker
@@ -63,6 +66,8 @@ docker compose --profile production up --build -d
 ```
 
 Docker forces `SENTERO_SENSOR_SOURCE=mqtt` unless `SENTERO_DOCKER_SENSOR_SOURCE` is set explicitly. This keeps local Home Assistant development settings from leaking into the production container.
+
+For Debian Mini-PC deployment and the optional local-only AAL edge proxy, see `docs/MINI_PC_DOCKER_DEPLOYMENT.md`. The external AAL surface is limited to `/api/sentero/exchange/v1/*`; the GUI and admin APIs should stay on the local network.
 
 ## Deployment Build
 

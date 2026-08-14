@@ -23,6 +23,7 @@ const settingsItems: Array<{ tab: SenteroSettingsTab; label: string; icon: typeo
   { tab: 'sensors', label: 'Räume & Sensoren', icon: Home },
   { tab: 'contacts', label: 'Vertraute Personen', icon: Users },
   { tab: 'notifications', label: 'Benachrichtigungen', icon: Bell },
+  { tab: 'transparency', label: 'Transparenz', icon: ShieldCheck },
   { tab: 'network', label: 'Netzwerk', icon: Wifi },
   { tab: 'account', label: 'Konto & Zugriff', icon: KeyRound },
   { tab: 'system', label: 'System', icon: HardDrive },
@@ -84,13 +85,13 @@ function SenteroShell({ route, onNavigate, onLogout, children }: Props) {
           return (
             <button key={item.route} className={route.name === item.route ? 'active' : ''} type="button" onClick={() => onNavigate(item.route)}>
               <Icon size={22} aria-hidden="true" />
-              <span>{item.label}</span>
+
             </button>
           );
         })}
         <button className="sc-mobile-logout" type="button" onClick={onLogout}>
           <LogOut size={22} aria-hidden="true" />
-          <span>Abmelden</span>
+
         </button>
       </nav>
     </main>

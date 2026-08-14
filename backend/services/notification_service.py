@@ -12,6 +12,9 @@ import requests
 from backend.logging_config import get_logger
 from backend.services.messaging import MessagingService
 
+from backend.services.aal_roles import can_access_data_classes
+from backend.services.data_classification import aggregation_for_data_class, classify_notification
+from backend.services.consent_service import DEFAULT_NOTIFICATION_DATA_CLASSES, DEFAULT_NOTIFICATION_PURPOSE, ConsentService
 from backend.services.device_mapping_service import DeviceMappingService, now
 
 logger = get_logger(__name__)
@@ -99,6 +102,7 @@ class WhatsAppNotificationProvider(NotificationProvider):
 class NotificationService:
     def __init__(self, mapping: DeviceMappingService | None = None, messaging: MessagingService | None = None) -> None:
         self.mapping = mapping or DeviceMappingService()
+        self.consent = ConsentService(self.mapping)
         self.providers: dict[str, NotificationProvider] = {
             "email": EmailNotificationProvider(messaging),
             "telegram": TelegramNotificationProvider(),
@@ -153,7 +157,7 @@ class NotificationService:
         limit = min(max(int(limit or 100), 1), 500)
         with self.mapping.connect() as con:
             rows = con.execute("select * from notification_logs order by created_at desc, id desc limit ?", (limit,)).fetchall()
-        return {"logs": [dict(row) for row in rows]}
+        return {"logs": [self._public_log(dict(row)) for row in rows]}
 
     def notify_assessment(self, assessment: dict[str, Any], contacts: list[dict[str, Any]]) -> None:
         severity = str(assessment.get("status") or "green")
@@ -164,6 +168,20 @@ class NotificationService:
         title, email_text, short_text = self._message(assessment)
         for contact in contacts:
             if not bool(contact.get("notification_enabled", 1)):
+                continue
+            if not can_access_data_classes(contact.get("actor_role") or "relative", DEFAULT_NOTIFICATION_DATA_CLASSES, aggregation_level="summary"):
+                self._log(contact.get("id"), "consent", severity, "skipped_role_denied", title, None)
+                logger.info(
+                    "Notification skipped because actor role is not allowed for data classes",
+                    extra={"component": "notification", "contact_id": contact.get("id"), "actor_role": contact.get("actor_role")},
+                )
+                continue
+            if not self.consent.has_active_consent(contact.get("id"), DEFAULT_NOTIFICATION_PURPOSE, DEFAULT_NOTIFICATION_DATA_CLASSES):
+                self._log(contact.get("id"), "consent", severity, "skipped_no_consent", title, None)
+                logger.info(
+                    "Notification skipped because no active consent exists",
+                    extra={"component": "notification", "contact_id": contact.get("id"), "purpose": DEFAULT_NOTIFICATION_PURPOSE},
+                )
                 continue
             channels = self._channels_for_contact(contact, severity)
             for channel in channels:
@@ -455,13 +473,21 @@ class NotificationService:
             con.commit()
 
     def _log(self, contact_id: Any, channel: str, severity: str, status: str, title: str, error: str | None) -> None:
+        data_class = classify_notification(severity, channel)
         with self.mapping.connect() as con:
             con.execute(
-                """insert into notification_logs (contact_id, channel, severity, status, message_title, error_message, created_at)
-                   values (?, ?, ?, ?, ?, ?, ?)""",
-                (contact_id, channel, severity, status, title, error, now()),
+                """insert into notification_logs
+                   (contact_id, channel, severity, status, message_title, error_message, data_class, aggregation_level, created_at)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (contact_id, channel, severity, status, title, error, data_class, aggregation_for_data_class(data_class), now()),
             )
             con.commit()
+
+    def _public_log(self, row: dict[str, Any]) -> dict[str, Any]:
+        data_class = row.get("data_class") or classify_notification(row.get("severity"), row.get("channel"))
+        row["data_class"] = data_class
+        row["aggregation_level"] = row.get("aggregation_level") or aggregation_for_data_class(str(data_class))
+        return row
 
     def _validate_channel(self, channel: str) -> None:
         if channel not in CHANNELS:

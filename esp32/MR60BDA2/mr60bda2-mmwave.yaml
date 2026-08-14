@@ -1,0 +1,129 @@
+substitutions:
+  firmware_manifest_url: "https://sentero.github.io/mr60bda2-mmwave/manifest.json"
+
+esphome:
+  name: mr60bda2-mmwave
+  friendly_name: mr60bda2-mmwave
+  name_add_mac_suffix: true
+  project:
+    name: "sentero.mr60bda2_mmwave"
+    version: "1.0.0"
+  includes:
+    - mr60bda2_bridge.h
+    - sentero_discovery.h
+    - sentero_captive_portal.h
+    - sentero_portal_logo.h
+  libraries:
+    - bblanchon/ArduinoJson@^6.21.5
+  on_boot:
+    priority: 260
+    then:
+      - lambda: |-
+          sentero_captive_portal_setup();
+
+# Das MR60BDA2-Kit kommt mit XIAO ESP32C6, nicht mehr ESP32-C3 wie beim
+# C1001-Aufbau. framework: esp-idf ist erforderlich, u.a. weil
+# sentero_discovery.h direkt gegen esp_http_server/httpd_req_t programmiert
+# (AsyncWebHandler-Bridge fuer web_server_base) - das gibt es nur im
+# ESP-IDF-Backend, nicht im Arduino-Backend von ESPHome.
+esp32:
+  board: esp32-c6-devkitc-1
+  variant: esp32c6
+  framework:
+    type: esp-idf
+
+logger:
+  level: INFO
+
+web_server:
+  port: 80
+
+api:
+
+mqtt:
+  broker: 127.0.0.1
+  discovery: false
+  enable_on_boot: false
+  reboot_timeout: 0s
+
+ota:
+  - platform: esphome
+
+http_request:
+  verify_ssl: true
+  timeout: 10s
+  buffer_size_rx: 2048
+
+wifi:
+  reboot_timeout: 0s
+  ap:
+    ssid: "Sentero-mmWave"
+    password: "senteroSetup"
+    ap_timeout: 0s
+
+captive_portal:
+
+# Wichtig: parity NONE und stop_bits 1 passen zum MR60BDA2-UART.
+# Pin-Belegung ggf. an deine tatsaechliche XIAO-ESP32C6<->Radar-Verkabelung
+# anpassen, falls das Kit sie nicht schon werksseitig fest verdrahtet hat.
+uart:
+  id: mr60bda2_uart
+  tx_pin: GPIO16
+  rx_pin: GPIO17
+  baud_rate: 115200
+  rx_buffer_size: 1024
+  parity: NONE
+  stop_bits: 1
+
+binary_sensor:
+  - platform: gpio
+    id: mr60bda2_factory_reset_gpio
+    pin:
+      number: GPIO9
+      mode: INPUT_PULLUP
+      inverted: true
+    internal: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - logger.log:
+            level: WARN
+            format: "Factory-Reset-Taster gedrueckt"
+        - delay: 5s
+        - if:
+            condition:
+              binary_sensor.is_on: mr60bda2_factory_reset_gpio
+            then:
+              - logger.log:
+                  level: WARN
+                  format: "Factory-Reset-Taster 5s gehalten"
+              - lambda: |-
+                  sentero_factory_reset();
+              - delay: 200ms
+              - button.press: mr60bda2_factory_reset
+
+button:
+  - platform: factory_reset
+    name: "MR60BDA2 Werkseinstellungen"
+    id: mr60bda2_factory_reset
+    entity_category: config
+
+interval:
+  # UART haeufig lesen, damit MR60BDA2-Frames den ESP32-Puffer nicht fuellen.
+  # Der Bridge-Code parst nur eingehende Frames und sendet hier keine aktiven Sensor-Commands.
+  - interval: 50ms
+    then:
+      - lambda: |-
+          mr60bda2_update(id(mr60bda2_uart));
+
+  - interval: 2s
+    then:
+      - lambda: |-
+          sentero_discovery_loop();
+
+  - interval: 200ms
+    then:
+      - lambda: |-
+          sentero_provisioning_loop();

@@ -29,6 +29,9 @@ esp32:
 logger:
   level: INFO
 
+web_server:
+  port: 80
+
 api:
 
 mqtt:
@@ -48,8 +51,8 @@ http_request:
 wifi:
   reboot_timeout: 0s
   ap:
-    ssid: "C1001 mmWave Setup"
-    password: "c1001setup"
+    ssid: "Sentero-mmWave"
+    password: "senteroSetup"
     ap_timeout: 0s
 
 captive_portal:
@@ -59,7 +62,7 @@ uart:
   tx_pin: GPIO21
   rx_pin: GPIO20
   baud_rate: 115200
-  rx_buffer_size: 512
+  rx_buffer_size: 2048
 
 binary_sensor:
   - platform: template
@@ -241,7 +244,9 @@ number:
           c1001_set_fall_sensitivity(x);
 
 interval:
-  - interval: 500ms
+  # UART haeufig lesen, damit passive C1001-Frames den ESP32-Puffer nicht fuellen.
+  # Aktive Sensor-Abfragen bleiben in c1001_bridge.h auf 2s gedrosselt.
+  - interval: 50ms
     then:
       - lambda: |-
           c1001_update(id(c1001_uart), id(c1001_presence), id(c1001_fall),

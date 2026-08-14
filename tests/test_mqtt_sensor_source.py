@@ -624,7 +624,7 @@ class MqttSensorSourceTests(unittest.TestCase):
             manager.register(found["sensor"]["id"], started["discovery_id"], room_id="entrance")
             mqtt.messages = []
             result = mapping.test_role("main_door")
-            role = mapping.roles(include_state=True)[0]
+            role = mapping.roles(dev=True, include_state=True)[0]
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["mode"], "state_check")
@@ -738,10 +738,68 @@ class MqttSensorSourceTests(unittest.TestCase):
             mapping.mqtt = mqtt
             mapping.sensor_source.mqtt = mqtt
             upsert_esp32_presence_role(mapping, device_id)
-            role = mapping.roles(include_state=True)[0]
+            role = mapping.roles(dev=True, include_state=True)[0]
 
         self.assertEqual(role["power_source"], "usb")
         self.assertIsNone(role["battery_level"])
+
+    def test_mqtt_presence_sensor_exposes_c1001_telemetry(self) -> None:
+        device_id = "c1001-test-01"
+        mqtt = SnapshotMqtt([
+            FakeMessage(f"sentero/{device_id}/state", {
+                "device_id": device_id,
+                "presence": True,
+                "fall_detected": False,
+                "motion": "Still",
+                "power_source": "usb",
+                "signal_quality": 88,
+            }),
+            FakeMessage(f"sentero/{device_id}/availability", {
+                "device_id": device_id,
+                "status": "online",
+            }),
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"SENTERO_SENSOR_SOURCE": "mqtt"}, clear=False):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            upsert_esp32_presence_role(mapping, device_id)
+            role = mapping.roles(include_state=True)[0]
+
+        self.assertIs(role["presence"], True)
+        self.assertIs(role["fall_detected"], False)
+        self.assertEqual(role["motion"], "Still")
+
+    def test_mqtt_uuid_presence_availability_marks_sensor_reachable(self) -> None:
+        device_id = "3be1ddd5-ddd6-45a2-a445-274be35449a9"
+        mqtt = SnapshotMqtt(esp32_presence_messages(device_id, availability="online"))
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"SENTERO_SENSOR_SOURCE": "mqtt"}, clear=False):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            upsert_esp32_presence_role(mapping, device_id)
+            role = mapping.roles(include_state=True)[0]
+
+        self.assertEqual(role["device_id"], device_id)
+        self.assertTrue(role["reachable"])
+
+    def test_mqtt_uuid_presence_ignores_old_retained_c1001_state(self) -> None:
+        device_id = "3be1ddd5-ddd6-45a2-a445-274be35449a9"
+        old_device_id = "c1001-b16c33e0"
+        mqtt = SnapshotMqtt([
+            *esp32_presence_messages(old_device_id, availability="offline"),
+            *esp32_presence_messages(device_id, availability="online"),
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"SENTERO_SENSOR_SOURCE": "mqtt"}, clear=False):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            upsert_esp32_presence_role(mapping, device_id)
+            role = mapping.roles(dev=True, include_state=True)[0]
+
+        self.assertEqual(role["device_id"], device_id)
+        self.assertIn(device_id.replace("-", "_"), role["resolved_entity_id"])
+        self.assertTrue(role["reachable"])
 
     def test_delete_esp32_presence_sensor_sends_factory_reset_before_local_delete(self) -> None:
         device_id = "c1001-test-01"
@@ -759,7 +817,7 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertIsNone(stored)
         self.assertEqual(mqtt.requests[0][0], f"sentero/{device_id}/command")
         self.assertEqual(mqtt.requests[0][1], f"sentero/{device_id}/status")
-        self.assertEqual(mqtt.requests[0][2], {"command": "factory_reset", "reason": "removed_from_sentero"})
+        self.assertEqual(mqtt.requests[0][2], {"command": "factory_reset", "enabled": "true"})
 
     def test_delete_esp32_presence_sensor_timeout_keeps_local_mapping(self) -> None:
         device_id = "c1001-test-01"

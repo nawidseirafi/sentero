@@ -1,11 +1,31 @@
 import { useEffect, useMemo, useState } from 'react';
 import type React from 'react';
-import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, DoorClosed, DoorOpen, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
-import { api, type BoxNetworkStatus, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus } from '@shared/api/client';
+import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, Copy, DoorClosed, DoorOpen, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, ShieldCheck, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
+import { api, type BoxNetworkStatus, type SenteroConsent, type SenteroExportToken, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroTransparency } from '@shared/api/client';
 import { UpdatePanel } from '../components/UpdatePanel';
 import { useSenteroAuth } from '../auth/SenteroAuthContext';
 import type { SenteroSettingsTab } from '../routes/routes';
 import { senteroRouteToPath } from '../routes/routes';
+import PersonIcon from '@mui/icons-material/Person';
+import PersonOutlineIcon from '@mui/icons-material/PersonOff';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlined';
+import DirectionsRunIcon from '@mui/icons-material/DirectionsRun';
+import AccessibilityNewIcon from '@mui/icons-material/AccessibilityNew';
+import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutlined';
+
+type MeterAddType = 'electricity_meter' | 'water_meter' | 'gas_meter';
+type AalActorRole = 'resident' | 'relative' | 'care_service' | 'emergency_service' | 'housing_provider' | 'admin';
+
+const aalActorRoles: Array<{ value: AalActorRole; label: string }> = [
+  { value: 'relative', label: 'Angehörige' },
+  { value: 'care_service', label: 'Pflegedienst' },
+  { value: 'emergency_service', label: 'Notfalldienst' },
+  { value: 'housing_provider', label: 'Wohnungsanbieter' },
+  { value: 'resident', label: 'Bewohner' },
+  { value: 'admin', label: 'Administrator' },
+];
 
 const roomLabels: Record<string, string> = {
   living_room: 'Wohnzimmer',
@@ -22,6 +42,7 @@ const settingsTabs: Array<{ tab: SenteroSettingsTab; label: string; shortLabel: 
   { tab: 'network', label: 'Netzwerk', shortLabel: 'Netz', icon: Wifi },
   { tab: 'contacts', label: 'Vertraute Personen', shortLabel: 'Personen', icon: Users },
   { tab: 'notifications', label: 'Benachrichtigungen', shortLabel: 'Benachr.', icon: Bell },
+  { tab: 'transparency', label: 'Transparenz', shortLabel: 'Daten', icon: ShieldCheck },
   { tab: 'account', label: 'Konto & Zugriff', shortLabel: 'Konto', icon: KeyRound },
   { tab: 'system', label: 'System', shortLabel: 'System', icon: HardDrive },
 ];
@@ -49,7 +70,15 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '', new_password_confirm: '' });
   const [accountEditing, setAccountEditing] = useState(false);
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  const [ledStates, setLedStates] = useState<Record<string, boolean>>({});
+  const [ledBusyRole, setLedBusyRole] = useState<string | null>(null);
   const [channels, setChannels] = useState<SenteroNotificationChannel[]>([]);
+  const [consents, setConsents] = useState<SenteroConsent[]>([]);
+  const [exportTokens, setExportTokens] = useState<SenteroExportToken[]>([]);
+  const [newExportToken, setNewExportToken] = useState<{ contactId: number; token: string } | null>(null);
+  const [exportDialogContactId, setExportDialogContactId] = useState<number | null>(null);
+  const [transparency, setTransparency] = useState<SenteroTransparency | null>(null);
+  const [meterDiscovery, setMeterDiscovery] = useState<{ type: MeterAddType; status: 'idle' | 'searching' | 'found' | 'missing'; message: string; remainingSeconds?: number } | null>(null);
   const [setupChannel, setSetupChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
   const [helpChannel, setHelpChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
   const [channelForms, setChannelForms] = useState({
@@ -72,7 +101,10 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       loading = true;
       try {
         const nextSensors = await api.senteroSensorRoles(true);
-        if (active) setSensors(nextSensors.sensor_roles);
+        if (active) {
+          setSensors(nextSensors.sensor_roles);
+          hydrateLedStates(nextSensors.sensor_roles);
+        }
       } catch {
         // Keep the last known sensor state visible during transient refresh failures.
       } finally {
@@ -94,16 +126,23 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
   async function load() {
     try {
-      const [nextStatus, nextSensors, nextChannels, nextNetwork, nextBoxNetwork] = await Promise.all([
+      const [nextStatus, nextSensors, nextChannels, nextConsents, nextExportTokens, nextTransparency, nextNetwork, nextBoxNetwork] = await Promise.all([
         api.senteroSetupStatus(),
         api.senteroSensorRoles(true),
         api.senteroNotificationChannels(),
+        api.senteroConsents(),
+        api.senteroExportTokens(),
+        api.senteroTransparency(),
         api.senteroSensorNetwork(),
         api.boxNetworkStatus(),
       ]);
       setStatus(nextStatus);
       setSensors(nextSensors.sensor_roles);
+      hydrateLedStates(nextSensors.sensor_roles);
       setChannels(nextChannels.channels);
+      setConsents(nextConsents.consents);
+      setExportTokens(nextExportTokens.tokens);
+      setTransparency(nextTransparency);
       setNetworkStatus(nextNetwork);
       setNetworkForm({
         wifi_ssid: nextNetwork.wifi_ssid || '',
@@ -132,6 +171,57 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Einstellungen konnten nicht geladen werden.');
     }
+  }
+
+  async function addMeter(type: MeterAddType) {
+    const meta = meterMeta(type);
+    setError('');
+    setSaved('');
+    setMeterDiscovery({ type, status: 'searching', message: `${meta.label} wird gesucht.`, remainingSeconds: 180 });
+    try {
+      const started = await api.startSenteroSensorDiscovery({
+        sensor_type: type,
+        room_id: 'home',
+        role: meta.role,
+        duration: 180,
+      });
+      if (!started.discovery_id) throw new Error(started.message || 'Zähler konnte nicht gesucht werden.');
+      await pollMeterDiscovery(type, started.discovery_id, Date.now());
+    } catch (err) {
+      setMeterDiscovery({ type, status: 'missing', message: err instanceof Error ? err.message : `${meta.label} konnte nicht verbunden werden.` });
+    }
+  }
+
+  async function pollMeterDiscovery(type: MeterAddType, discoveryId: number, startedAt: number): Promise<void> {
+    const meta = meterMeta(type);
+    const result = await api.senteroDiscoveredSensors(discoveryId, false);
+    if (result.status === 'found' && result.sensor) {
+      await api.registerSenteroSensor(result.sensor.id, { discovery_id: discoveryId, name: meta.label, room_id: 'home' });
+      setMeterDiscovery({ type, status: 'found', message: `${meta.label} wurde verbunden.`, remainingSeconds: 0 });
+      setSaved(`${meta.label} wurde verbunden.`);
+      await load();
+      return;
+    }
+    const remainingSeconds = result.remaining_seconds ?? Math.max(0, 180 - Math.round((Date.now() - startedAt) / 1000));
+    if (remainingSeconds <= 0 || result.status === 'not_found') {
+      await api.cancelSenteroSensorDiscovery(discoveryId).catch(() => undefined);
+      setMeterDiscovery({ type, status: 'missing', message: `${meta.label} wurde nicht gefunden.`, remainingSeconds: 0 });
+      return;
+    }
+    setMeterDiscovery({ type, status: 'searching', message: `${meta.label} wird gesucht.`, remainingSeconds });
+    await wait(2000);
+    return pollMeterDiscovery(type, discoveryId, startedAt);
+  }
+
+  function hydrateLedStates(sensorRoles: SenteroSensorRole[]) {
+    setLedStates((current) => {
+      const next = { ...current };
+      for (const sensor of sensorRoles) {
+        const value = ledEnabledFromSensor(sensor);
+        if (value != null) next[sensor.role] = value;
+      }
+      return next;
+    });
   }
 
   const rooms = useMemo(() => {
@@ -271,10 +361,122 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     }
   }
 
+  async function grantContactConsent(contactId: number) {
+    try {
+      const result = await api.grantSenteroConsent({
+        contact_id: contactId,
+        recipient_type: actorRoleForContact(status?.trusted_contacts?.find((contact) => contact.id === contactId)?.actor_role),
+        purpose: 'behavior_notification',
+        data_classes: ['personal_behavior', 'health_adjacent', 'emergency'],
+      });
+      setConsents(result.consents);
+      toast('Freigabe aktiv');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Freigabe konnte nicht gespeichert werden.');
+    }
+  }
+
+  async function revokeContactConsent(consentId: number) {
+    if (!window.confirm('Freigabe für Verhaltensmeldungen widerrufen?')) return;
+    try {
+      const result = await api.revokeSenteroConsent(consentId);
+      setConsents(result.consents);
+      toast('Freigabe widerrufen');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Freigabe konnte nicht widerrufen werden.');
+    }
+  }
+
+  async function grantExportConsent(contactId: number) {
+    try {
+      const result = await api.grantSenteroConsent({
+        contact_id: contactId,
+        recipient_type: actorRoleForContact(status?.trusted_contacts?.find((contact) => contact.id === contactId)?.actor_role),
+        purpose: 'aal_partner_export',
+        data_classes: exportDataClassesForContact(status?.trusted_contacts?.find((contact) => contact.id === contactId)?.actor_role),
+      });
+      setConsents(result.consents);
+      toast('Export freigegeben');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export-Freigabe konnte nicht gespeichert werden.');
+    }
+  }
+
+  async function revokeExportConsent(consentId: number) {
+    if (!window.confirm('Export-Freigabe widerrufen? Aktive Tokens sollten danach ebenfalls widerrufen werden.')) return;
+    try {
+      const result = await api.revokeSenteroConsent(consentId);
+      setConsents(result.consents);
+      toast('Export-Freigabe widerrufen');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export-Freigabe konnte nicht widerrufen werden.');
+    }
+  }
+
+  async function createExportToken(contactId: number) {
+    try {
+      const contact = status?.trusted_contacts?.find((entry) => entry.id === contactId);
+      const result = await api.createSenteroExportToken({
+        contact_id: contactId,
+        purpose: 'aal_partner_export',
+        data_classes: exportDataClassesForContact(contact?.actor_role),
+      });
+      setExportTokens((tokens) => [result.record, ...tokens.filter((token) => token.id !== result.record.id)]);
+      setNewExportToken({ contactId, token: result.token });
+      setExportDialogContactId(contactId);
+      toast('Export-Token erstellt');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export-Token konnte nicht erstellt werden.');
+    }
+  }
+
+  async function revokeExportToken(tokenId: number) {
+    if (!window.confirm('Export-Token widerrufen? Der Partner kann ihn danach nicht mehr nutzen.')) return;
+    try {
+      const revokedContactId = exportTokens.find((token) => token.id === tokenId)?.contact_id || null;
+      const result = await api.revokeSenteroExportToken(tokenId);
+      setExportTokens(result.tokens);
+      setNewExportToken((value) => value && revokedContactId === value.contactId ? null : value);
+      toast('Export-Token widerrufen');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export-Token konnte nicht widerrufen werden.');
+    }
+  }
+
+  async function copyExportToken(token: string) {
+    try {
+      await navigator.clipboard.writeText(token);
+      toast('Token kopiert');
+    } catch {
+      setError('Token konnte nicht automatisch kopiert werden.');
+    }
+  }
+
+  async function cleanupTransparency() {
+    const days = transparency?.retention.retention_days || 180;
+    if (!window.confirm(`Audit- und Transparenzdaten älter als ${days} Tage löschen?`)) return;
+    try {
+      await api.cleanupSenteroTransparency(days);
+      const refreshed = await api.senteroTransparency();
+      setTransparency(refreshed);
+      toast('Alte Transparenzdaten gelöscht');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Transparenzdaten konnten nicht gelöscht werden.');
+    }
+  }
+
   function startEditContact(contact: {
     id: number;
     name: string;
     relationship?: string | null;
+    actor_role?: string | null;
     email?: string | null;
     phone?: string | null;
     telegram_chat_id?: string | null;
@@ -287,6 +489,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     setEditContactForm({
       name: contact.name,
       relationship: contact.relationship || '',
+      actor_role: actorRoleForContact(contact.actor_role),
       email: contact.email || '',
       phone: contact.phone || '',
       telegram_chat_id: contact.telegram_chat_id || '',
@@ -499,7 +702,41 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     }
   }
 
+  async function toggleSensorLeds(sensor: SenteroSensorRole) {
+    if (!sensorSupportsLedControl(sensor)) {
+      setError('Dieser Sensor unterstützt keine LED-Steuerung.');
+      return;
+    }
+    const currentEnabled = ledEnabled(sensor, ledStates);
+    const enabled = !currentEnabled;
+    setLedBusyRole(sensor.role);
+    try {
+      const result = await api.commandSenteroSensorRole(sensor.role, {
+        command: 'configure',
+        settings: {
+          hp_led: enabled,
+          fall_led: enabled,
+        },
+      });
+      if (!result.ok) {
+        setError(result.message || 'LEDs konnten nicht geschaltet werden.');
+        return;
+      }
+      const confirmed = ledEnabledFromCommandResult(result);
+      setLedStates((current) => ({ ...current, [sensor.role]: confirmed ?? enabled }));
+      toast(enabled ? 'LEDs eingeschaltet' : 'LEDs ausgeschaltet');
+      setError('');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'LEDs konnten nicht geschaltet werden.');
+    } finally {
+      setLedBusyRole(null);
+    }
+  }
+
   const activeTabMeta = settingsTabs.find((item) => item.tab === activeTab);
+  const exportDialogToken = newExportToken && exportDialogContactId === newExportToken.contactId ? newExportToken.token : null;
+  const exportDialogContact = exportDialogContactId ? status?.trusted_contacts?.find((contact) => contact.id === exportDialogContactId) || null : null;
 
   function mobileNavigateTab(tab: SenteroSettingsTab) {
     setMobileShowList(false);
@@ -548,7 +785,6 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       {/* Tab-Inhalte – auf Mobile ausgeblendet wenn Liste sichtbar */}
       <div className={mobileShowList ? 'sc-settings-content sc-mobile-hidden' : 'sc-settings-content'}>
 
-
       {activeTab === 'profile' && (
         <section className="sc-panel sc-settings-panel">
           <div className="sc-section-title">
@@ -573,6 +809,16 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         <section className="sc-panel sc-settings-panel">
           <div className="sc-section-title"><h2>Räume & Sensoren</h2><button type="button" onClick={() => window.location.assign('/sentero/setup')}><Plus size={20} /> Sensor hinzufügen</button></div>
           <div className="sc-inline-add">
+            <button type="button" onClick={() => void addMeter('electricity_meter')} disabled={meterDiscovery?.status === 'searching'}><Plug size={18} /> Stromzähler suchen</button>
+            <button type="button" onClick={() => void addMeter('water_meter')} disabled={meterDiscovery?.status === 'searching'}><Plus size={18} /> Wasserzähler suchen</button>
+            <button type="button" onClick={() => void addMeter('gas_meter')} disabled={meterDiscovery?.status === 'searching'}><Plus size={18} /> Gaszähler suchen</button>
+          </div>
+          {meterDiscovery && (
+            <p className={`sc-muted-note ${meterDiscovery.status}`}>
+              {meterDiscovery.message}{meterDiscovery.status === 'searching' && typeof meterDiscovery.remainingSeconds === 'number' ? ` (${Math.ceil(meterDiscovery.remainingSeconds)}s)` : ''}
+            </p>
+          )}
+          <div className="sc-inline-add">
             <input value={roomDraft} onChange={(event) => setRoomDraft(event.target.value)} placeholder="Raum hinzufügen" />
             <button type="button" onClick={() => void addRoom()}><Plus size={20} /> Raum hinzufügen</button>
           </div>
@@ -587,7 +833,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                       <strong>{roomLabels[room] || room}</strong>
                       <small>{roomSensors.length} Sensoren verbunden</small>
                     </div>
-                    <button className="sc-room-delete" type="button" onClick={(event) => { event.preventDefault(); void deleteRoom(room); }}><Trash2 size={18} /> Löschen</button>
+                    <button className="sc-room-delete" type="button" onClick={(event) => { event.preventDefault(); void deleteRoom(room); }}><Trash2 size={18} /></button>
                   </summary>
                   <div className="sc-sensor-settings-list">
                     {roomSensors.length === 0 && <p className="sc-muted-note">Für diesen Raum ist noch kein Sensor verbunden.</p>}
@@ -600,6 +846,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                           </div>
                           <div className="sc-sensor-health">
                             {isDoorContactSensor(sensor) && <DoorContactStatus sensor={sensor} />}
+                            {isEsp32PresenceSensor(sensor) && <C1001Telemetry sensor={sensor} />}
+                            {isSmartMeterSensor(sensor) && <span className="battery"><Plug size={17} /> {formatMeterValue(sensor)}</span>}
                             <span className={sensor.reachable === false ? 'offline' : sensor.reachable == null ? 'unknown' : 'online'}>
                               {sensor.reachable === false ? <WifiOff size={17} /> : <CheckCircle2 size={17} />}
                               {sensor.reachable === false ? 'Nicht erreichbar' : sensor.reachable == null ? 'In HA vorhanden' : 'Erreichbar'}
@@ -615,9 +863,22 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                           </div>
                         </div>
                         <div className="sc-sensor-settings-actions">
-                          <button type="button" onClick={() => void renameSensor(sensor)}><Pencil size={18} /> Name</button>
-                          <button type="button" onClick={() => void testSensor(sensor.role)}><Wifi size={18} /> Test</button>
-                          <button type="button" onClick={() => void deleteSensor(sensor)}><Trash2 size={18} /> Löschen</button>
+                          {isEsp32PresenceSensor(sensor) && sensorSupportsLedControl(sensor) && (
+                            <button
+                              className={`led-dot-btn ${ledEnabled(sensor, ledStates) ? 'led-on' : 'led-off'}`}
+                              type="button"
+                              onClick={() => void toggleSensorLeds(sensor)}
+                              disabled={ledBusyRole === sensor.role || sensor.reachable === false}
+                              title={ledEnabled(sensor, ledStates) ? 'LEDs ausschalten' : 'LEDs einschalten'}
+                              aria-label={ledEnabled(sensor, ledStates) ? 'LEDs ausschalten' : 'LEDs einschalten'}
+                              aria-pressed={ledEnabled(sensor, ledStates)}
+                            >
+                              <span aria-hidden="true" />
+                            </button>
+                          )}
+                          <button type="button" onClick={() => void renameSensor(sensor)}><Pencil size={18} /> </button>
+                          <button type="button" onClick={() => void testSensor(sensor.role)}><Wifi size={18} /> </button>
+                          <button type="button" onClick={() => void deleteSensor(sensor)}><Trash2 size={18} /> </button>
                         </div>
                       </div>
                     ))}
@@ -663,32 +924,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                   <input type="password" value={boxNetworkForm.password} onChange={(event) => setBoxNetworkForm((value) => ({ ...value, password: event.target.value }))} placeholder={boxNetworkStatus?.wifi_configured ? 'Gespeichert' : 'Passwort'} />
                 </label>
               </div>
-              <p className="sc-network-note">Im Development werden diese Daten nur gespeichert. Die Netzwerkverbindung dieses Rechners wird nicht verändert.</p>
+
               <footer className="sc-account-actions">
                 <button className="sc-soft-action primary" type="button" onClick={() => void saveBoxNetwork()}><Save size={18} /> Verbinden</button>
-              </footer>
-            </div>
-
-            <div className="sc-network-card">
-              <div className="sc-network-card-head">
-                <div>
-                  <h3>Sensoren</h3>
-                  <p>Diese Angaben nutzt Sentero, um WLAN-Sensoren automatisch mit Ihrem Zuhause zu verbinden.</p>
-                </div>
-              </div>
-              <div className="sc-form-grid">
-                <label>
-                  WLAN-Name
-                  <input value={networkForm.wifi_ssid} onChange={(event) => setNetworkForm((value) => ({ ...value, wifi_ssid: event.target.value }))} placeholder="Mein WLAN" />
-                </label>
-                <label>
-                  WLAN-Passwort
-                  <input type="password" value={networkForm.wifi_password} onChange={(event) => setNetworkForm((value) => ({ ...value, wifi_password: event.target.value }))} placeholder={networkStatus?.wifi_password_set ? 'Gespeichert' : 'Passwort'} />
-                </label>
-              </div>
-              <footer className="sc-account-actions">
-                <button className="sc-soft-action" type="button" onClick={() => void testNetwork()}><Wifi size={18} /> Testen</button>
-                <button className="sc-soft-action primary" type="button" onClick={() => void saveNetwork()}><Save size={18} /> Speichern</button>
               </footer>
             </div>
           </div>
@@ -713,6 +951,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
               <div className="sc-form-grid">
                 <label>Name<input value={contactForm.name} onChange={(event) => setContactForm((value) => ({ ...value, name: event.target.value }))} /></label>
                 <label>Beziehung<input value={contactForm.relationship} onChange={(event) => setContactForm((value) => ({ ...value, relationship: event.target.value }))} /></label>
+                <label>AAL-Rolle<select value={contactForm.actor_role} onChange={(event) => setContactForm((value) => ({ ...value, actor_role: actorRoleForContact(event.target.value) }))}>{aalActorRoles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
                 {channelSelected(contactForm.preferred_channels, 'email', availableChannels) && <label>E-Mail<input type="email" value={contactForm.email} onChange={(event) => setContactForm((value) => ({ ...value, email: event.target.value }))} /></label>}
                 {channelSelected(contactForm.preferred_channels, 'telegram', availableChannels) && <label>Telegram Chat ID<input value={contactForm.telegram_chat_id} onChange={(event) => setContactForm((value) => ({ ...value, telegram_chat_id: event.target.value }))} /></label>}
                 {channelSelected(contactForm.preferred_channels, 'whatsapp', availableChannels) && <label>WhatsApp Telefonnummer<input value={contactForm.whatsapp_phone_number} onChange={(event) => setContactForm((value) => ({ ...value, whatsapp_phone_number: event.target.value, phone: event.target.value }))} /></label>}
@@ -729,6 +968,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                     <div className="sc-contact-edit-grid">
                       <label>Name<input value={editContactForm.name} onChange={(event) => setEditContactForm((value) => ({ ...value, name: event.target.value }))} /></label>
                       <label>Beziehung<input value={editContactForm.relationship} onChange={(event) => setEditContactForm((value) => ({ ...value, relationship: event.target.value }))} /></label>
+                      <label>AAL-Rolle<select value={editContactForm.actor_role} onChange={(event) => setEditContactForm((value) => ({ ...value, actor_role: actorRoleForContact(event.target.value) }))}>{aalActorRoles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
                       {channelSelected(editContactForm.preferred_channels, 'email', availableChannels) && <label>E-Mail<input type="email" value={editContactForm.email} onChange={(event) => setEditContactForm((value) => ({ ...value, email: event.target.value }))} /></label>}
                       {channelSelected(editContactForm.preferred_channels, 'telegram', availableChannels) && <label>Telegram Chat ID<input value={editContactForm.telegram_chat_id} onChange={(event) => setEditContactForm((value) => ({ ...value, telegram_chat_id: event.target.value }))} /></label>}
                       {channelSelected(editContactForm.preferred_channels, 'whatsapp', availableChannels) && <label>WhatsApp Telefonnummer<input value={editContactForm.whatsapp_phone_number} onChange={(event) => setEditContactForm((value) => ({ ...value, whatsapp_phone_number: event.target.value, phone: event.target.value }))} /></label>}
@@ -744,11 +984,28 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                     <span className="sc-avatar">{contact.name[0]}</span>
                     <h3>{contact.name}</h3>
                     <p>{contact.relationship || 'Kontakt'}</p>
+                    <small className="sc-contact-role">{aalRoleLabel(contact.actor_role)}</small>
                     <small>{contact.email || 'Keine E-Mail hinterlegt'}</small>
                     <div className="sc-contact-channel-list">{normalizeChannels(contact.preferred_channels).map((channel) => <span key={channel}>{channelLabel(channel)}</span>)}</div>
+                    <ContactDataSharingControl
+                      behaviorConsent={activeBehaviorConsent(contact.id, consents)}
+                      revokedBehaviorConsent={latestBehaviorConsent(contact.id, consents)}
+                      exportConsent={activeExportConsent(contact.id, consents)}
+                      revokedExportConsent={latestExportConsent(contact.id, consents)}
+                      token={activeExportToken(contact.id, exportTokens)}
+                      latestToken={latestExportToken(contact.id, exportTokens)}
+                      newToken={newExportToken?.contactId === contact.id ? newExportToken.token : null}
+                      onGrantBehavior={() => void grantContactConsent(contact.id)}
+                      onRevokeBehavior={(consentId) => void revokeContactConsent(consentId)}
+                      onGrantExport={() => void grantExportConsent(contact.id)}
+                      onRevokeExportConsent={(consentId) => void revokeExportConsent(consentId)}
+                      onCreateToken={() => void createExportToken(contact.id)}
+                      onRevokeToken={(tokenId) => void revokeExportToken(tokenId)}
+                      onOpenPackage={() => setExportDialogContactId(contact.id)}
+                    />
                     <footer>
-                      <button type="button" onClick={() => startEditContact(contact)}><Pencil size={18} /> Bearbeiten</button>
-                      <button type="button" onClick={() => void deleteContact(contact.id)}><Trash2 size={18} /> Löschen</button>
+                      <button type="button" onClick={() => startEditContact(contact)}><Pencil size={18} /> </button>
+                      <button type="button" onClick={() => void deleteContact(contact.id)}><Trash2 size={18} /> </button>
                     </footer>
                   </>
                 )}
@@ -816,6 +1073,55 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         </section>
       )}
 
+      {activeTab === 'transparency' && (
+        <section className="sc-panel sc-settings-panel sc-transparency-panel">
+          <div className="sc-settings-hero">
+            <div className="sc-section-title">
+              <h2>Transparenz</h2>
+            </div>
+            <p>Sehen Sie, wann Sentero Daten genutzt, geteilt oder Freigaben geändert hat.</p>
+          </div>
+
+          <section className="sc-transparency-summary" aria-label="Transparenzübersicht">
+            <TransparencyMetric label="Einträge" value={String(transparency?.summary.total || 0)} />
+            <TransparencyMetric label="Exporte" value={String(transparency?.summary.exports || 0)} />
+            <TransparencyMetric label="Benachrichtigungen" value={String(transparency?.summary.notifications || 0)} />
+            <TransparencyMetric label="Freigaben" value={String(transparency?.summary.consents || 0)} />
+          </section>
+
+          <section className="sc-transparency-retention">
+            <div>
+              <strong>Aufbewahrung</strong>
+              <small>{transparency?.retention.retention_days || 180} Tage fuer Audit-, Export- und Benachrichtigungslogs</small>
+            </div>
+            <button type="button" onClick={() => void cleanupTransparency()}><Trash2 size={18} /> Alte Daten löschen</button>
+          </section>
+
+          <section className="sc-transparency-list" aria-label="Datenverwendung">
+            {(transparency?.items || []).map((item) => (
+              <article className={`sc-transparency-item ${item.category}`} key={item.id}>
+                <span aria-hidden="true">{transparencyIcon(item.category)}</span>
+                <div>
+                  <header>
+                    <strong>{item.summary}</strong>
+                    <time>{formatDateTime(item.created_at)}</time>
+                  </header>
+                  <p>{transparencyDetail(item)}</p>
+                  <small>{item.data_classes.map(dataClassLabel).join(', ') || 'Metadaten'} · {item.aggregation_level || 'summary'} · {item.raw_data_included ? 'Rohdaten' : 'keine Rohdaten'}</small>
+                </div>
+              </article>
+            ))}
+            {!transparency?.items.length && (
+              <div className="sc-history-empty">
+                <ShieldCheck size={24} />
+                <strong>Noch keine Transparenzeinträge</strong>
+                <p>Neue Exporte, Benachrichtigungen und Freigaben erscheinen hier automatisch.</p>
+              </div>
+            )}
+          </section>
+        </section>
+      )}
+
       {activeTab === 'account' && (
         <section className="sc-panel sc-settings-panel sc-account-panel">
           <div className="sc-settings-hero">
@@ -839,7 +1145,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                   <div className="sc-account-details">
                     <p><span>Name</span><strong>{user?.display_name || accountForm.display_name || 'Nicht hinterlegt'}</strong></p>
                     <p><span>E-Mail-Adresse</span><strong>{user?.email || accountForm.email || 'Nicht hinterlegt'}</strong></p>
-                    <p><span>Rolle</span><strong>{user?.role === 'owner' ? 'Inhaber-Konto' : user?.role === 'admin' ? 'Admin-Konto' : 'Ansichtskonto'}</strong></p>
+                    <p><span>Technische Rolle</span><strong>{user?.role === 'owner' ? 'Inhaber-Konto' : user?.role === 'admin' ? 'Admin-Konto' : 'Ansichtskonto'}</strong></p>
+                    <p><span>AAL-Rolle</span><strong>{aalRoleLabel(user?.aal_role || 'admin')}</strong></p>
                   </div>
                   <button className="sc-soft-action" type="button" onClick={() => setAccountEditing(true)}><Pencil size={18} /> Konto bearbeiten</button>
                 </>
@@ -919,6 +1226,15 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
           </div>
         </section>
       )}
+
+      {exportDialogToken && (
+        <PartnerExportDialog
+          contactName={exportDialogContact?.name || 'Partner'}
+          token={exportDialogToken}
+          onClose={() => setExportDialogContactId(null)}
+          onCopy={(value) => void copyExportToken(value)}
+        />
+      )}
       </div>
     </section>
   );
@@ -931,6 +1247,208 @@ function EmptyState({ text, action }: { text: string; action: string }) {
       <button type="button" onClick={() => window.location.assign('/sentero/setup')}>{action}</button>
     </div>
   );
+}
+
+function ContactDataSharingControl({
+  behaviorConsent,
+  revokedBehaviorConsent,
+  exportConsent,
+  revokedExportConsent,
+  token,
+  latestToken,
+  newToken,
+  onGrantBehavior,
+  onRevokeBehavior,
+  onGrantExport,
+  onRevokeExportConsent,
+  onCreateToken,
+  onRevokeToken,
+  onOpenPackage,
+}: {
+  behaviorConsent?: SenteroConsent | null;
+  revokedBehaviorConsent?: SenteroConsent | null;
+  exportConsent?: SenteroConsent | null;
+  revokedExportConsent?: SenteroConsent | null;
+  token?: SenteroExportToken | null;
+  latestToken?: SenteroExportToken | null;
+  newToken?: string | null;
+  onGrantBehavior: () => void;
+  onRevokeBehavior: (consentId: number) => void;
+  onGrantExport: () => void;
+  onRevokeExportConsent: (consentId: number) => void;
+  onCreateToken: () => void;
+  onRevokeToken: (tokenId: number) => void;
+  onOpenPackage: () => void;
+}) {
+  const currentBehavior = behaviorConsent || revokedBehaviorConsent || null;
+  const currentExport = exportConsent || revokedExportConsent || null;
+  const currentToken = token || latestToken || null;
+  const activeBehavior = Boolean(behaviorConsent);
+  const activeExport = Boolean(exportConsent);
+  const activeToken = Boolean(token);
+  return (
+    <section className="sc-contact-sharing" aria-label="Datenfreigaben">
+      <header>
+        <span><ShieldCheck size={18} /></span>
+        <strong>Datenfreigaben</strong>
+      </header>
+      <SharingRow
+        active={activeBehavior}
+        icon={activeBehavior ? <ShieldCheck size={16} /> : <ShieldAlert size={16} />}
+        title="Meldungen"
+        detail={currentBehavior ? consentDescription(currentBehavior) : 'Verhaltensmeldungen gesperrt'}
+        action={activeBehavior && behaviorConsent
+          ? <button type="button" onClick={() => onRevokeBehavior(behaviorConsent.id)}>Widerrufen</button>
+          : <button type="button" onClick={onGrantBehavior}>Freigeben</button>}
+      />
+      <SharingRow
+        active={activeExport}
+        icon={activeToken ? <KeyRound size={16} /> : activeExport ? <ShieldCheck size={16} /> : <ShieldAlert size={16} />}
+        title="Partnerexport"
+        detail={exportDetail(currentExport, currentToken, newToken)}
+        action={(
+          <div className="sc-sharing-actions">
+            {!activeExport && <button type="button" onClick={onGrantExport}>Freigeben</button>}
+            {activeExport && !activeToken && <button type="button" onClick={onCreateToken}>Token</button>}
+            {newToken && <button type="button" onClick={onOpenPackage}>Paket</button>}
+            {activeExport && exportConsent && <button type="button" onClick={() => onRevokeExportConsent(exportConsent.id)}>Widerrufen</button>}
+            {activeToken && token && <button type="button" onClick={() => onRevokeToken(token.id)}>Token widerrufen</button>}
+          </div>
+        )}
+      />
+    </section>
+  );
+}
+
+function SharingRow({ active, icon, title, detail, action }: { active: boolean; icon: React.ReactNode; title: string; detail: string; action: React.ReactNode }) {
+  return (
+    <div className={`sc-sharing-row ${active ? 'active' : 'inactive'}`}>
+      <span>{icon}</span>
+      <div>
+        <strong>{title}</strong>
+        <small>{detail}</small>
+      </div>
+      {action}
+    </div>
+  );
+}
+
+function exportDetail(consent?: SenteroConsent | null, token?: SenteroExportToken | null, newToken?: string | null) {
+  if (newToken) return 'Partnerpaket bereit. Token nur in dieser Sitzung sichtbar.';
+  if (token?.revoked_at) return `Token widerrufen am ${formatDateTime(token.revoked_at)}`;
+  if (token?.active) return `Token aktiv bis ${formatDateTime(token.expires_at)}`;
+  if (consent) return consentDescription(consent);
+  return 'Kein Partnerexport freigegeben';
+}
+
+function PartnerExportDialog({
+  contactName,
+  token,
+  onClose,
+  onCopy,
+}: {
+  contactName: string;
+  token: string;
+  onClose: () => void;
+  onCopy: (value: string) => void;
+}) {
+  const headerValue = `Authorization: Bearer ${token}`;
+  return (
+    <div className="sc-modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="sc-channel-modal sc-partner-export-modal" role="dialog" aria-modal="true" aria-label="Partnerzugang" onMouseDown={(event) => event.stopPropagation()}>
+        <header>
+          <span><KeyRound size={22} /></span>
+          <div>
+            <h3>Partnerzugang</h3>
+            <p>{contactName} kann die freigegebenen Exporte mit diesem Token abrufen.</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Dialog schließen"><X size={20} /></button>
+        </header>
+
+        <div className="sc-partner-export-warning">
+          <ShieldAlert size={18} />
+          <span>Der Token wird nur einmal vollständig angezeigt. Danach bleiben nur Ablaufdatum und Widerruf sichtbar.</span>
+        </div>
+
+        <section className="sc-partner-export-section">
+          <div className="sc-partner-export-row">
+            <span>Token</span>
+            <code>{token}</code>
+            <button type="button" onClick={() => onCopy(token)}><Copy size={16} /> Kopieren</button>
+          </div>
+          <div className="sc-partner-export-row">
+            <span>Header</span>
+            <code>{headerValue}</code>
+            <button type="button" onClick={() => onCopy(headerValue)}><Copy size={16} /> Kopieren</button>
+          </div>
+        </section>
+
+        <section className="sc-partner-export-section">
+          <h4>Export-Endpunkte</h4>
+          {exportExchangeEndpoints().map((endpoint) => (
+            <div className="sc-partner-export-row" key={endpoint.path}>
+              <span>{endpoint.label}</span>
+              <code>{endpoint.url}</code>
+              <button type="button" onClick={() => onCopy(`${endpoint.url}?token=${encodeURIComponent(token)}`)}><Copy size={16} /> Direktlink</button>
+            </div>
+          ))}
+        </section>
+
+        <footer>
+          <button type="button" onClick={onClose}>Schließen</button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function TransparencyMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <article>
+      <small>{label}</small>
+      <strong>{value}</strong>
+    </article>
+  );
+}
+
+function transparencyIcon(category: string) {
+  if (category === 'export') return <KeyRound size={18} />;
+  if (category === 'notification') return <Bell size={18} />;
+  if (category === 'consent') return <ShieldCheck size={18} />;
+  return <ShieldAlert size={18} />;
+}
+
+function transparencyDetail(item: { contact_name?: string | null; actor_role?: string | null; purpose?: string | null; status?: string | null; category: string }) {
+  const parts = [
+    item.contact_name ? `Empfänger: ${item.contact_name}` : '',
+    item.actor_role ? `Rolle: ${aalRoleLabel(item.actor_role)}` : '',
+    item.purpose ? `Zweck: ${purposeLabel(item.purpose)}` : '',
+    item.status ? `Status: ${statusLabel(item.status)}` : '',
+  ].filter(Boolean);
+  return parts.join(' · ') || categoryLabel(item.category);
+}
+
+function purposeLabel(value: string) {
+  if (value === 'behavior_notification') return 'Verhaltensmeldung';
+  if (value === 'aal_partner_export') return 'Partnerexport';
+  return value;
+}
+
+function statusLabel(value: string) {
+  if (value === 'sent') return 'gesendet';
+  if (value === 'active') return 'aktiv';
+  if (value === 'revoked') return 'widerrufen';
+  if (value === 'completed') return 'abgeschlossen';
+  if (value.startsWith('skipped')) return 'blockiert';
+  return value;
+}
+
+function categoryLabel(value: string) {
+  if (value === 'export') return 'Export';
+  if (value === 'notification') return 'Benachrichtigung';
+  if (value === 'consent') return 'Freigabe';
+  if (value === 'security') return 'Sicherheit';
+  return value;
 }
 
 function NotificationPreference({ title, description, checked, onChange }: { title: string; description: string; checked: boolean; onChange: (checked: boolean) => void }) {
@@ -1123,13 +1641,82 @@ function DoorContactStatus({ sensor }: { sensor: SenteroSensorRole }) {
     </div>
   );
 }
+function formatFallDetected(sensor: SenteroSensorRole) {
+  return sensor.fall_detected ? 'Sturz erkannt' : 'Kein Sturz';
+}
+
+function formatMotion(sensor: SenteroSensorRole) {
+  switch (sensor.motion) {
+    case 'Active':
+      return 'Aktive Bewegung';
+    case 'Still':
+      return 'Ruhig / regungslos';
+    case 'None':
+      return 'Keine Bewegung';
+    default:
+      return 'Unbekannt';
+  }
+}
+
+function motionIcon(sensor: SenteroSensorRole) {
+  switch (sensor.motion) {
+    case 'Active':
+      return <DirectionsRunIcon fontSize="small" />;
+    case 'Still':
+      return <AccessibilityNewIcon fontSize="small" />;
+    case 'None':
+      return <RadioButtonUncheckedIcon fontSize="small" />;
+    default:
+      return <HelpOutlineIcon fontSize="small" />;
+  }
+}
+function C1001Telemetry({ sensor }: { sensor: SenteroSensorRole }) {
+  return (
+    <>
+      <span className={sensor.presence ? 'presence active' : 'presence inactive'}>
+        {sensor.presence ? <PersonIcon fontSize="small" /> : <PersonOutlineIcon fontSize="small" />}
+        {sensor.presence ? 'Anwesend' : 'Abwesend'}
+      </span>
+      <span className={sensor.fall_detected ? 'fall detected' : 'fall clear'}>
+        {sensor.fall_detected ? <WarningAmberIcon fontSize="small" /> : <CheckCircleOutlineIcon fontSize="small" />}
+        {formatFallDetected(sensor)}
+      </span>
+      <span className={`motion motion-${(sensor.motion || 'unknown').toLowerCase()}`}>
+        {motionIcon(sensor)}
+        {formatMotion(sensor)}
+      </span>
+    </>
+  );
+}
 
 function sensorType(sensor: SenteroSensorRole) {
+  if (isSmartMeterSensor(sensor)) return meterLabelFromRole(sensor.role);
   if (isDoorContactSensor(sensor)) return 'Türkontakt';
   if (isEsp32PresenceSensor(sensor)) return 'Präsenzsensor';
   if (String(sensor.device_class || '') === 'vibration') return 'Vibrationssensor';
   if (String(sensor.domain || '') === 'lock') return 'Türsensor';
   return 'Bewegung';
+}
+
+function isSmartMeterSensor(sensor: SenteroSensorRole) {
+  const role = String(sensor.role || '').toLowerCase();
+  const dc = String(sensor.device_class || '').toLowerCase();
+  return role.endsWith('_energy') || role.endsWith('_power') || role.endsWith('_water') || role.endsWith('_gas') || ['energy', 'power', 'water', 'gas'].includes(dc);
+}
+
+function meterLabelFromRole(role: string) {
+  if (role.endsWith('_water')) return 'Wasserzähler';
+  if (role.endsWith('_gas')) return 'Gaszähler';
+  return 'Stromzähler';
+}
+
+function formatMeterValue(sensor: SenteroSensorRole) {
+  const value = sensor.state ?? 'unbekannt';
+  const dc = String(sensor.device_class || '').toLowerCase();
+  if (dc === 'power') return `${value} W`;
+  if (dc === 'water' || sensor.role.endsWith('_water')) return `${value} m³`;
+  if (dc === 'gas' || sensor.role.endsWith('_gas')) return `${value} m³`;
+  return `${value} kWh`;
 }
 
 function isEsp32PresenceSensor(sensor: SenteroSensorRole) {
@@ -1138,6 +1725,11 @@ function isEsp32PresenceSensor(sensor: SenteroSensorRole) {
     String(sensor.device_class || '').toLowerCase() === 'presence' ||
     String(sensor.source_ref || '').includes('/state')
   );
+}
+
+function sensorSupportsLedControl(sensor: SenteroSensorRole) {
+  const settings = Array.isArray(sensor.writable_settings) ? sensor.writable_settings.map((item) => String(item)) : [];
+  return settings.includes('hp_led') || settings.includes('fall_led') || sensor.hp_led != null || sensor.fall_led != null || sensor.led_status?.hp_led != null || sensor.led_status?.fall_led != null;
 }
 
 function isDoorContactSensor(sensor: SenteroSensorRole) {
@@ -1169,6 +1761,36 @@ function sensorPowerLabel(sensor: SenteroSensorRole) {
   return '';
 }
 
+function formatBoolean(value?: boolean | null) {
+  if (value == null) return 'unbekannt';
+  return value ? 'true' : 'false';
+}
+
+function ledEnabled(sensor: SenteroSensorRole, localStates: Record<string, boolean>) {
+  return localStates[sensor.role] ?? ledEnabledFromSensor(sensor) ?? false;
+}
+
+function ledEnabledFromSensor(sensor: SenteroSensorRole) {
+  if (sensor.led_status?.all_on != null) return Boolean(sensor.led_status.all_on);
+  if (sensor.hp_led != null && sensor.fall_led != null) return Boolean(sensor.hp_led && sensor.fall_led);
+  if (sensor.led_status?.any_on != null) return Boolean(sensor.led_status.any_on);
+  if (sensor.hp_led != null) return Boolean(sensor.hp_led);
+  if (sensor.fall_led != null) return Boolean(sensor.fall_led);
+  return null;
+}
+
+function ledEnabledFromCommandResult(result: { hp_led?: boolean | null; fall_led?: boolean | null; led_status?: SenteroSensorRole['led_status']; response?: Record<string, unknown> }) {
+  if (result.led_status?.all_on != null) return Boolean(result.led_status.all_on);
+  if (result.hp_led != null && result.fall_led != null) return Boolean(result.hp_led && result.fall_led);
+  const response = result.response || {};
+  const responseLedStatus = response.led_status && typeof response.led_status === 'object' ? response.led_status as { all_on?: unknown; any_on?: unknown } : null;
+  if (responseLedStatus?.all_on != null) return Boolean(responseLedStatus.all_on);
+  const hpLed = typeof response.hp_led === 'boolean' ? response.hp_led : null;
+  const fallLed = typeof response.fall_led === 'boolean' ? response.fall_led : null;
+  if (hpLed != null && fallLed != null) return hpLed && fallLed;
+  return null;
+}
+
 function normalizeEmail(value: string) {
   return value.trim().toLowerCase();
 }
@@ -1177,6 +1799,7 @@ function emptyContactForm() {
   return {
     name: '',
     relationship: '',
+    actor_role: 'relative' as AalActorRole,
     email: '',
     phone: '',
     telegram_chat_id: '',
@@ -1203,6 +1826,7 @@ function contactPayload(form: ReturnType<typeof emptyContactForm>, available: Re
   return {
     name: form.name.trim(),
     relationship: form.relationship.trim(),
+    actor_role: actorRoleForContact(form.actor_role),
     email: normalizeEmail(form.email),
     phone: form.phone.trim(),
     telegram_chat_id: form.telegram_chat_id.trim(),
@@ -1353,6 +1977,75 @@ function primaryNotificationRecipient(contacts: NonNullable<SenteroSetupStatus['
   };
 }
 
+function actorRoleForContact(value?: string | null): AalActorRole {
+  const role = String(value || '').trim();
+  return aalActorRoles.some((item) => item.value === role) ? role as AalActorRole : 'relative';
+}
+
+function aalRoleLabel(value?: string | null) {
+  const role = actorRoleForContact(value);
+  return aalActorRoles.find((item) => item.value === role)?.label || 'Angehörige';
+}
+
+function activeBehaviorConsent(contactId: number, consents: SenteroConsent[]) {
+  return consents.find((consent) => consent.contact_id === contactId && consent.purpose === 'behavior_notification' && consent.active) || null;
+}
+
+function latestBehaviorConsent(contactId: number, consents: SenteroConsent[]) {
+  return consents.find((consent) => consent.contact_id === contactId && consent.purpose === 'behavior_notification') || null;
+}
+
+function activeExportConsent(contactId: number, consents: SenteroConsent[]) {
+  return consents.find((consent) => consent.contact_id === contactId && consent.purpose === 'aal_partner_export' && consent.active) || null;
+}
+
+function latestExportConsent(contactId: number, consents: SenteroConsent[]) {
+  return consents.find((consent) => consent.contact_id === contactId && consent.purpose === 'aal_partner_export') || null;
+}
+
+function activeExportToken(contactId: number, tokens: SenteroExportToken[]) {
+  return tokens.find((token) => token.contact_id === contactId && token.purpose === 'aal_partner_export' && token.active) || null;
+}
+
+function latestExportToken(contactId: number, tokens: SenteroExportToken[]) {
+  return tokens.find((token) => token.contact_id === contactId && token.purpose === 'aal_partner_export') || null;
+}
+
+function exportDataClassesForContact(actorRole?: string | null) {
+  const role = actorRoleForContact(actorRole);
+  if (role === 'housing_provider') return ['technical'];
+  if (role === 'care_service') return ['personal_behavior', 'health_adjacent', 'emergency'];
+  if (role === 'emergency_service') return ['emergency'];
+  if (role === 'resident' || role === 'admin') return ['technical', 'utility', 'personal_behavior', 'health_adjacent', 'emergency'];
+  return ['personal_behavior', 'health_adjacent', 'emergency'];
+}
+
+function exportExchangeEndpoints() {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  return [
+    { label: 'Tagesstatus', path: '/api/sentero/exchange/v1/daily-status' },
+    { label: 'Ereignisse', path: '/api/sentero/exchange/v1/event-summary' },
+    { label: 'Systemstatus', path: '/api/sentero/exchange/v1/system-status' },
+  ].map((endpoint) => ({ ...endpoint, url: `${origin}${endpoint.path}` }));
+}
+
+function consentDescription(consent: SenteroConsent) {
+  const classes = consent.data_classes.map(dataClassLabel).join(', ');
+  if (consent.revoked_at) return `Widerrufen am ${formatDateTime(consent.revoked_at)}`;
+  if (consent.valid_until) return `${classes} bis ${formatDateTime(consent.valid_until)}`;
+  return classes || 'Verhaltensmeldungen';
+}
+
+function dataClassLabel(value: string) {
+  if (value === 'personal_behavior') return 'Tagesablauf';
+  if (value === 'health_adjacent') return 'AAL-Hinweise';
+  if (value === 'emergency') return 'Notfall';
+  if (value === 'technical') return 'Technik';
+  if (value === 'environmental') return 'Umgebung';
+  if (value === 'utility') return 'Verbrauch';
+  return value;
+}
+
 function ageFromBirthYear(value: string) {
   const year = Number.parseInt(value, 10);
   const currentYear = new Date().getFullYear();
@@ -1379,4 +2072,14 @@ function formatRelativeDuration(value?: string | null) {
   if (hours < 24) return `${hours} Std.`;
   const days = Math.round(hours / 24);
   return `${days} Tg.`;
+}
+
+function meterMeta(type: MeterAddType) {
+  if (type === 'water_meter') return { label: 'Wasserzähler', role: 'home_water' };
+  if (type === 'gas_meter') return { label: 'Gaszähler', role: 'home_gas' };
+  return { label: 'Stromzähler', role: 'home_energy' };
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }

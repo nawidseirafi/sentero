@@ -56,7 +56,7 @@ class SensorManager:
             "mode": source,
             "status_label": "Bereit" if bool(home_status.get("sensor_ready")) else "Wartet auf Sensorverbindung",
             "network": network,
-            "supported_sensor_types": ["door_contact", "presence_sensor", "motion_sensor", "button"],
+            "supported_sensor_types": ["door_contact", "presence_sensor", "motion_sensor", "button", "smart_meter", "electricity_meter", "water_meter", "gas_meter"],
         }
 
     def start_discovery(self, sensor_type: str, room_id: str | None = None, role: str | None = None, duration: int = 180) -> dict[str, Any]:
@@ -232,6 +232,12 @@ def normalize_sensor_type(value: str) -> str:
         return "presence_sensor"
     if text in {"button"}:
         return "button"
+    if text in {"smart_meter", "meter", "electricity_meter", "energy_meter", "power_meter", "strom", "stromzaehler", "stromzähler"}:
+        return "electricity_meter"
+    if text in {"water_meter", "water", "wasser", "wasserzaehler", "wasserzähler"}:
+        return "water_meter"
+    if text in {"gas_meter", "gas", "gaszaehler", "gaszähler"}:
+        return "gas_meter"
     return "presence_sensor"
 
 
@@ -241,6 +247,12 @@ def role_for_sensor(sensor_type: str, room_id: str | None) -> str:
         return "main_door" if room in {"entrance", "hallway"} else f"{room}_door"
     if sensor_type == "button":
         return f"{room}_button"
+    if sensor_type == "electricity_meter":
+        return f"{room}_energy"
+    if sensor_type == "water_meter":
+        return f"{room}_water"
+    if sensor_type == "gas_meter":
+        return f"{room}_gas"
     return f"{room}_presence"
 
 
@@ -258,6 +270,12 @@ def product_message(sensor_type: str, result: dict[str, Any]) -> str:
         return "Bitte versetzen Sie den Sensor in den Verbindungsmodus."
     if sensor_type == "door_contact":
         return "Türsensor wird gesucht. Bitte Pairing-Taste drücken."
+    if sensor_type == "electricity_meter":
+        return "Stromzähler wird gesucht. Bitte Zähler koppeln oder einen neuen Messwert auslösen."
+    if sensor_type == "water_meter":
+        return "Wasserzähler wird gesucht. Bitte Zähler koppeln oder einen neuen Messwert auslösen."
+    if sensor_type == "gas_meter":
+        return "Gaszähler wird gesucht. Bitte Zähler koppeln oder einen neuen Messwert auslösen."
     return "Sensor wird gesucht. Bitte einschalten oder Pairing-Taste drücken."
 
 
@@ -289,6 +307,12 @@ def public_type_from_device_class(device_class: str) -> str:
         return "presence_sensor"
     if device_class == "button":
         return "button"
+    if device_class in {"energy", "power"}:
+        return "electricity_meter"
+    if device_class == "water":
+        return "water_meter"
+    if device_class == "gas":
+        return "gas_meter"
     return "sensor"
 
 
@@ -301,6 +325,12 @@ def public_type_from_mqtt_candidate(candidate: dict[str, Any]) -> str:
         return "presence_sensor"
     if device_class == "button" or payload_key in {"action", "button"}:
         return "button"
+    if device_class in {"energy", "power"} or payload_key in {"energy", "energy_consumption", "electricity", "electricity_consumption", "power", "power_usage"}:
+        return "electricity_meter"
+    if device_class == "water" or payload_key in {"water", "water_consumption"}:
+        return "water_meter"
+    if device_class == "gas" or payload_key in {"gas", "gas_consumption"}:
+        return "gas_meter"
     return "sensor"
 
 
@@ -315,6 +345,12 @@ def public_type_from_role(role: str) -> str:
         return "door_contact"
     if "button" in role:
         return "button"
+    if any(term in role for term in ["energy", "power", "electricity"]):
+        return "electricity_meter"
+    if "water" in role:
+        return "water_meter"
+    if "gas" in role:
+        return "gas_meter"
     return "presence_sensor"
 
 

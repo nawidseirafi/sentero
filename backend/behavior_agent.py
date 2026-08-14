@@ -10,6 +10,7 @@ from .config import load_agent_section
 from .services.llm.factory import create_llm_client
 from .services.messaging import MessagingService
 
+from backend.services.data_classification import aggregation_for_data_class, classify_assessment, classify_sensor_event
 from backend.services.device_mapping_service import DeviceMappingService, now
 from backend.logging_config import get_logger
 from backend.services.notification_service import NotificationService
@@ -76,6 +77,10 @@ class SenteroBehaviorAgent:
                     metadata text not null default '{}'
                 )"""
             )
+            self._ensure_column(con, "sentero_sensor_events", "data_class", "text not null default 'technical'")
+            self._ensure_column(con, "sentero_sensor_events", "aggregation_level", "text not null default 'raw'")
+            self._ensure_column(con, "behavior_events", "data_class", "text not null default 'technical'")
+            self._ensure_column(con, "behavior_events", "aggregation_level", "text not null default 'raw'")
             con.execute(
                 """create table if not exists behavior_daily_summary (
                     date text primary key,
@@ -120,6 +125,8 @@ class SenteroBehaviorAgent:
             self._ensure_column(con, "behavior_assessments", "learning_completed", "integer not null default 0")
             self._ensure_column(con, "behavior_assessments", "learning_day", "integer not null default 1")
             self._ensure_column(con, "behavior_assessments", "learning_days", "integer not null default 14")
+            self._ensure_column(con, "behavior_assessments", "data_class", "text not null default 'health_adjacent'")
+            self._ensure_column(con, "behavior_assessments", "aggregation_level", "text not null default 'summary'")
             con.commit()
 
     def _ensure_column(self, con: Any, table: str, column: str, definition: str) -> None:
@@ -198,14 +205,27 @@ class SenteroBehaviorAgent:
             rows = con.execute("select * from behavior_assessments order by assessment_time desc, id desc limit ?", (limit,)).fetchall()
         return [self._row_to_assessment(row) for row in rows]
 
-    def timeline_today(self) -> dict[str, Any]:
+    def timeline_today(self, live_snapshot: bool = False) -> dict[str, Any]:
+        if live_snapshot:
+            self.record_current_snapshot()
         start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         events = [event for event in self._history(days=1) if self._parse_time(event.get("event_time")) >= start]
+        if events:
+            self._upsert_daily_summary(events, dry_run=False)
         logger.debug("Behavior timeline built", extra={"component": "behavior", "event_count": len(events)})
         return {
             "events": events,
             "assessment": self.latest(),
         }
+
+    def record_current_snapshot(self) -> int:
+        sensor_snapshot = self.mapping.roles(dev=True, include_state=True)
+        try:
+            ha_snapshot = self.mapping.snapshot()
+        except Exception:
+            logger.exception("Behavior live snapshot unavailable", extra={"component": "behavior"})
+            ha_snapshot = []
+        return self._record_snapshot(sensor_snapshot, ha_snapshot)
 
     def _profile(self) -> dict[str, Any]:
         with self.mapping.connect() as con:
@@ -220,45 +240,60 @@ class SenteroBehaviorAgent:
             rows = con.execute("select * from trusted_contacts where active = 1 order by id").fetchall()
         return [dict(row) for row in rows]
 
-    def _record_snapshot(self, roles: list[dict[str, Any]], ha_snapshot: list[dict[str, Any]] | None = None) -> None:
+    def _record_snapshot(self, roles: list[dict[str, Any]], ha_snapshot: list[dict[str, Any]] | None = None) -> int:
         timestamp = now()
-        extra_events = self._fp300_snapshot_events(roles, ha_snapshot or [], timestamp)
+        snapshot_rows = ha_snapshot or []
+        extra_events = [
+            *self._fp300_snapshot_events(roles, snapshot_rows, timestamp),
+            *self._smart_meter_snapshot_events(snapshot_rows, timestamp),
+        ]
         written = 0
         with self.mapping.connect() as con:
             for role in [*roles, *extra_events]:
                 state = role.get("state")
                 if state in (None, "", "unknown", "unavailable"):
                     continue
+                event_time = role.get("last_changed") or role.get("last_updated") or timestamp
+                role_name = role.get("role")
+                entity_id = role.get("entity_id")
+                if self._event_already_recorded(con, event_time, role_name, entity_id, state):
+                    continue
+                event_type = self._event_type(role)
+                data_class = classify_sensor_event(event_type, role.get("device_class"), role_name)
                 con.execute(
                     """insert into sentero_sensor_events
-                       (event_time, role, room, entity_id, state, device_class, source, created_at)
-                       values (?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (event_time, role, room, entity_id, state, device_class, source, data_class, aggregation_level, created_at)
+                       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        role.get("last_changed") or role.get("last_updated") or timestamp,
-                        role.get("role"),
+                        event_time,
+                        role_name,
                         role.get("room"),
-                        role.get("entity_id"),
+                        entity_id,
                         state,
                         role.get("device_class"),
                         role.get("source") or "snapshot",
+                        data_class,
+                        "raw",
                         timestamp,
                     ),
                 )
                 con.execute(
                     """insert into behavior_events
-                       (timestamp, sensor_id, sensor_type, room, event_type, metadata)
-                       values (?, ?, ?, ?, ?, ?)""",
+                       (timestamp, sensor_id, sensor_type, room, event_type, metadata, data_class, aggregation_level)
+                       values (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        role.get("last_changed") or role.get("last_updated") or timestamp,
-                        role.get("entity_id") or role.get("role"),
+                        event_time,
+                        entity_id or role_name,
                         role.get("device_class") or role.get("type") or role.get("domain"),
                         role.get("room"),
-                        self._event_type(role),
+                        event_type,
                         json.dumps({
-                            "role": role.get("role"),
+                            "role": role_name,
                             "state": state,
                             "source": role.get("source") or "snapshot",
                         }, ensure_ascii=False),
+                        data_class,
+                        "raw",
                     ),
                 )
                 written += 1
@@ -267,6 +302,19 @@ class SenteroBehaviorAgent:
             "Behavior snapshot recorded",
             extra={"component": "behavior", "role_count": len(roles), "extra_event_count": len(extra_events), "written_events": written},
         )
+        return written
+
+    def _event_already_recorded(self, con: Any, event_time: Any, role: Any, entity_id: Any, state: Any) -> bool:
+        row = con.execute(
+            """select id from sentero_sensor_events
+               where event_time = ?
+                 and coalesce(role, '') = coalesce(?, '')
+                 and coalesce(entity_id, '') = coalesce(?, '')
+                 and state = ?
+               limit 1""",
+            (event_time, role, entity_id, state),
+        ).fetchone()
+        return row is not None
 
     def _history(self, days: int) -> list[dict[str, Any]]:
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
@@ -292,6 +340,7 @@ class SenteroBehaviorAgent:
         today_events = [event for event in history if self._parse_time(event.get("event_time")).date() == today]
         previous_events = [event for event in history if self._parse_time(event.get("event_time")).date() != today]
         learning = behavior_profile.get("learning") or {}
+        utility_usage = self._utility_usage_summary(history)
         return {
             "learning_completed": bool(learning.get("completed")),
             "learning": learning,
@@ -318,11 +367,12 @@ class SenteroBehaviorAgent:
             "trusted_contacts": [{"name": item.get("name"), "relationship": item.get("relationship"), "email": item.get("email")} for item in contacts],
             "daily_profile": self._daily_profile(previous_events),
             "current_day": self._day_summary(today_events),
+            "utility_usage": utility_usage,
             "sensor_context": {
                 "configured_sensors": len(sensor_snapshot),
                 "rooms": sorted({str(item.get("room")) for item in sensor_snapshot if item.get("room")}),
             },
-            "deviations": {**self._deviations(today_events, previous_events, sensor_snapshot), **deviations},
+            "deviations": {**self._deviations(today_events, previous_events, sensor_snapshot), "low_utility_usage_today": utility_usage.get("low_usage_today"), **deviations},
             "safety_rules": {
                 "no_medical_diagnosis": True,
                 "no_emergency_calls": True,
@@ -386,6 +436,8 @@ class SenteroBehaviorAgent:
             findings.append("In der Nacht wurde ungewöhnliche Aktivität erkannt.")
         if deviations.get("door_usage_change"):
             findings.append("Die Türnutzung wich vom gewohnten Muster ab.")
+        if deviations.get("low_utility_usage_today"):
+            findings.append("Strom-, Wasser- oder Gasverbrauch lagen heute deutlich unter dem bisherigen Muster.")
         if deviations.get("no_activity_today"):
             findings.append("Heute wurde bisher keine Sensoraktivität erkannt.")
         if deviations.get("inactive_hours", 0) >= 8:
@@ -418,8 +470,8 @@ class SenteroBehaviorAgent:
             cur = con.execute(
                 """insert into behavior_assessments
                    (assessment_time, status, confidence, summary, findings_json, recommendation, llm_response, created_at,
-                    anomaly_score, learning_completed, learning_day, learning_days)
-                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    anomaly_score, learning_completed, learning_day, learning_days, data_class, aggregation_level)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     timestamp,
                     assessment["status"],
@@ -433,6 +485,8 @@ class SenteroBehaviorAgent:
                     int(bool(assessment.get("learning_completed"))),
                     int(assessment.get("learning_day") or 1),
                     int(assessment.get("learning_days") or self._learning_days()),
+                    classify_assessment(assessment.get("status")),
+                    aggregation_for_data_class(classify_assessment(assessment.get("status"))),
                 ),
             )
             con.commit()
@@ -490,6 +544,16 @@ class SenteroBehaviorAgent:
             value = 14
         return max(7, min(value, 30))
 
+    def _learning_min_usable_days(self, learning_days: int) -> int:
+        config = load_agent_section("sentero")
+        behavior = config.get("behavior") if isinstance(config.get("behavior"), dict) else {}
+        raw = behavior.get("min_usable_days", config.get("min_usable_days", 7))
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 7
+        return max(1, min(value, learning_days))
+
     def _behavior_profile_row(self) -> dict[str, Any]:
         self.ensure_schema()
         with self.mapping.connect() as con:
@@ -543,19 +607,26 @@ class SenteroBehaviorAgent:
     def _update_behavior_profile(self, dry_run: bool = False) -> dict[str, Any]:
         row = self._behavior_profile_row()
         learning_days = self._learning_days()
+        required_usable_days = self._learning_min_usable_days(learning_days)
         started = self._parse_time(row.get("learning_started_at"))
         learning_day = max(1, min(learning_days, (datetime.now(timezone.utc).date() - started.date()).days + 1))
         with self.mapping.connect() as con:
             rows = con.execute("select * from behavior_daily_summary order by date asc").fetchall()
-        summaries = [self._summary_row_to_dict(item) for item in rows]
-        completed = bool(row.get("learning_completed")) or learning_day >= learning_days
+        summaries = [
+            item for item in (self._summary_row_to_dict(row) for row in rows)
+            if self._summary_date(item) >= started.date()
+        ]
         usable = [item for item in summaries if item.get("active_minutes") or item.get("first_activity")]
+        usable_days = len(usable)
+        calendar_complete = learning_day >= learning_days
+        data_complete = usable_days >= required_usable_days
+        completed = calendar_complete and data_complete
         average_wakeup = self._average_time([item.get("wakeup_time") for item in usable])
         average_sleep = self._average_time([item.get("last_activity") for item in usable])
         average_active = round(sum(float(item.get("active_minutes") or 0) for item in usable) / len(usable), 2) if usable else 0
         room_usage = self._average_room_usage(usable)
         door_usage = self._normal_door_usage(usable)
-        completed_at = row.get("learning_completed_at") or (now() if completed else None)
+        completed_at = row.get("learning_completed_at") if completed and row.get("learning_completed_at") else (now() if completed else None)
         if not dry_run:
             with self.mapping.connect() as con:
                 con.execute(
@@ -592,9 +663,21 @@ class SenteroBehaviorAgent:
                 "completed": completed,
                 "day": learning_day,
                 "days": learning_days,
+                "usable_days": usable_days,
+                "required_usable_days": required_usable_days,
+                "calendar_complete": calendar_complete,
+                "data_complete": data_complete,
                 "remaining_days": max(0, learning_days - learning_day),
+                "remaining_usable_days": max(0, required_usable_days - usable_days),
             },
         }
+
+    def _summary_date(self, summary: dict[str, Any]) -> date:
+        value = str(summary.get("date") or "")
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return date.min
 
     def _behavior_deviations(self, summary: dict[str, Any], profile: dict[str, Any], roles: list[dict[str, Any]]) -> dict[str, Any]:
         learning = profile.get("learning") or {}
@@ -650,7 +733,10 @@ class SenteroBehaviorAgent:
         return assessment
 
     def _build_daily_summary(self, day: date, events: list[dict[str, Any]]) -> dict[str, Any]:
-        parsed = sorted((self._parse_time(event.get("event_time")), event) for event in events)
+        parsed = sorted(
+            ((self._parse_time(event.get("event_time")), event) for event in events),
+            key=lambda item: item[0],
+        )
         activity_times = [event_time for event_time, event in parsed if self._is_activity_event(event)]
         room_usage = Counter(str(event.get("room") or "unknown") for _, event in parsed if self._is_activity_event(event))
         first = activity_times[0] if activity_times else None
@@ -888,6 +974,98 @@ class SenteroBehaviorAgent:
                 })
         return events
 
+    def _smart_meter_snapshot_events(self, snapshot: list[dict[str, Any]], timestamp: str) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for item in snapshot:
+            event_type = self._smart_meter_event_type(item)
+            if not event_type:
+                continue
+            state = item.get("state")
+            if self._number(state) is None:
+                continue
+            events.append({
+                "role": event_type,
+                "room": item.get("room") or item.get("area_id"),
+                "entity_id": item.get("entity_id") or item.get("source_ref") or item.get("unique_id"),
+                "state": state,
+                "device_class": item.get("device_class"),
+                "source": "smart_meter_snapshot",
+                "last_changed": item.get("last_changed") or item.get("changed_at") or timestamp,
+                "last_updated": item.get("last_updated") or timestamp,
+            })
+        return events
+
+    def _smart_meter_event_type(self, item: dict[str, Any]) -> str | None:
+        dc = self._device_class(item)
+        payload_key = str(item.get("payload_key") or "").strip().lower()
+        text = self._entity_text(item)
+        if dc == "energy" or payload_key in {"energy", "energy_consumption", "electricity", "electricity_consumption"}:
+            return "energy_consumption"
+        if dc == "power" or payload_key in {"power", "power_usage"}:
+            return "power_usage"
+        if dc == "water" or payload_key in {"water", "water_consumption"}:
+            return "water_consumption"
+        if dc == "gas" or payload_key in {"gas", "gas_consumption"}:
+            return "gas_consumption"
+        if any(term in text for term in ["energy", "electricity", "stromzaehler", "stromzähler", "kwh"]):
+            return "energy_consumption"
+        if any(term in text for term in ["power", "leistung", "watt"]):
+            return "power_usage"
+        if any(term in text for term in ["water", "wasserzaehler", "wasserzähler"]):
+            return "water_consumption"
+        if any(term in text for term in ["gas", "gaszaehler", "gaszähler"]):
+            return "gas_consumption"
+        return None
+
+    def _utility_usage_summary(self, history: list[dict[str, Any]]) -> dict[str, Any]:
+        meter_events = [event for event in history if str(event.get("role") or "") in {"energy_consumption", "power_usage", "water_consumption", "gas_consumption"}]
+        today = datetime.now(timezone.utc).date()
+        by_type: dict[str, dict[date, list[tuple[datetime, float]]]] = defaultdict(lambda: defaultdict(list))
+        latest: dict[str, dict[str, Any]] = {}
+        for event in meter_events:
+            value = self._number(event.get("state"))
+            if value is None:
+                continue
+            event_time = self._parse_time(event.get("event_time"))
+            event_type = str(event.get("role") or "")
+            by_type[event_type][event_time.date()].append((event_time, value))
+            latest[event_type] = {
+                "event_type": event_type,
+                "value": value,
+                "entity_id": event.get("entity_id"),
+                "room": event.get("room"),
+                "event_time": event_time.isoformat(timespec="seconds"),
+            }
+
+        summaries = []
+        low_usage_today = False
+        for event_type, by_day in sorted(by_type.items()):
+            today_delta = self._meter_delta(by_day.get(today, []))
+            previous_deltas = [self._meter_delta(values) for day, values in by_day.items() if day != today]
+            previous_deltas = [value for value in previous_deltas if value is not None and value > 0]
+            historical_average = round(sum(previous_deltas) / len(previous_deltas), 3) if previous_deltas else None
+            low_usage = bool(today_delta is not None and historical_average and historical_average > 0 and today_delta <= historical_average * 0.3)
+            low_usage_today = low_usage_today or low_usage
+            summaries.append({
+                "event_type": event_type,
+                "today_delta": today_delta,
+                "historical_daily_average": historical_average,
+                "low_usage_today": low_usage,
+                "latest": latest.get(event_type),
+            })
+        return {
+            "meters_configured": bool(summaries),
+            "low_usage_today": low_usage_today,
+            "meters": summaries,
+        }
+
+    def _meter_delta(self, values: list[tuple[datetime, float]]) -> float | None:
+        if len(values) < 2:
+            return None
+        ordered = sorted(values, key=lambda item: item[0])
+        delta = ordered[-1][1] - ordered[0][1]
+        return round(delta, 3) if delta >= 0 else None
+
     def _fp300_analysis(
         self,
         roles: list[dict[str, Any]],
@@ -1124,6 +1302,8 @@ class SenteroBehaviorAgent:
         data = dict(row)
         data["findings"] = self._list_json(data.pop("findings_json", "[]"))
         data["learning_completed"] = bool(data.get("learning_completed"))
+        data["data_class"] = data.get("data_class") or classify_assessment(data.get("status"))
+        data["aggregation_level"] = data.get("aggregation_level") or aggregation_for_data_class(str(data["data_class"]))
         return data
 
     @staticmethod

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,6 +79,40 @@ class Esp32DiscoveryTests(unittest.TestCase):
         self.assertIsNotNone(first)
         self.assertIsNotNone(second)
         self.assertEqual(first_seen.last_seen_at, second_seen.last_seen_at)
+
+    def test_stale_pending_sensor_is_not_returned_to_wizard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            service = Esp32DiscoveryService(mapping)
+            stale_seen_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(timespec="seconds")
+            with mapping.connect() as con:
+                con.execute(
+                    """insert into esp32_pending_sensors
+                       (device_id, ip_address, http_port, model, firmware, sensor_type,
+                        capabilities_json, raw_payload_json, first_seen_at, last_seen_at, status)
+                       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')""",
+                    (
+                        "c1001-test-02",
+                        "192.168.178.143",
+                        8088,
+                        "C1001",
+                        "1.0.0",
+                        "presence_radar",
+                        '["presence"]',
+                        "{}",
+                        stale_seen_at,
+                        stale_seen_at,
+                    ),
+                )
+                con.commit()
+
+            pending = service.pending()
+            latest = service.latest_pending()
+            selected = service.get_pending("c1001-test-02")
+
+        self.assertEqual(pending, [])
+        self.assertIsNone(latest)
+        self.assertIsNone(selected)
 
 
 if __name__ == "__main__":

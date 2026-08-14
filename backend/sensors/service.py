@@ -6,6 +6,7 @@ from typing import Any
 
 from backend.logging_config import get_logger
 from backend.sensors.normalizer import normalize_snapshot
+from backend.services.data_classification import aggregation_for_data_class, classify_sensor_event
 from backend.services.device_mapping_service import ROOM_LABELS, DeviceMappingService, sensor_source_mode
 
 logger = get_logger(__name__)
@@ -70,6 +71,7 @@ class SenteroSensorService:
         low_batteries = sum(1 for device in devices if isinstance(device.battery, int) and device.battery < 30)
         active_rooms = len({event.room_id for event in events if event.room_id and event.value in {"active", "open", "suspected", "detected"}})
         last_activity = max((event.occurred_at for event in events), default=None)
+        smart_meter_events = [event for event in events if event.event_type in {"energy_consumption", "power_usage", "water_consumption", "gas_consumption"}]
         dashboard = {
             "summary": {
                 "status": "learning",
@@ -79,8 +81,10 @@ class SenteroSensorService:
                 "open_doors": open_doors,
                 "fall_alerts": fall_alerts,
                 "low_batteries": low_batteries,
+                "smart_meter_readings": len(smart_meter_events),
             },
             "rooms": public_rooms,
+            "utility_usage": self._utility_usage(smart_meter_events),
             "alerts": self._alerts(devices, events),
         }
         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -134,6 +138,26 @@ class SenteroSensorService:
             if event.event_type == "fall_detection" and event.value == "suspected":
                 alerts.append({"type": "fall_suspected", "severity": "critical", "title": "Sturzverdacht", "device_id": event.device_id})
         return alerts
+
+    def _utility_usage(self, events) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+        latest: dict[str, dict[str, Any]] = {}
+        for event in sorted(events, key=lambda item: item.occurred_at):
+            latest[event.event_type] = {
+                "event_type": event.event_type,
+                "device_id": event.device_id,
+                "room_id": event.room_id,
+                "value": event.value,
+                "occurred_at": event.occurred_at,
+                "source": event.source,
+                "data_class": classify_sensor_event(event.event_type),
+                "aggregation_level": aggregation_for_data_class(classify_sensor_event(event.event_type)),
+            }
+        return {
+            "readings": list(latest.values()),
+            "has_energy": "energy_consumption" in latest or "power_usage" in latest,
+            "has_water": "water_consumption" in latest,
+            "has_gas": "gas_consumption" in latest,
+        }
 
 
 def as_device(device, include_internal: bool = False) -> dict[str, Any]:  # type: ignore[no-untyped-def]

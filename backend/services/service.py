@@ -56,5 +56,10 @@ class SenteroService:
     def behavior_history(self, limit: int = 20) -> list[dict[str, Any]]:
         return self.behavior.history(limit=limit)
 
-    def behavior_timeline_today(self) -> dict[str, Any]:
-        return self.behavior.timeline_today()
+    def behavior_timeline_today(self, live_snapshot: bool = False) -> dict[str, Any]:
+        return self.behavior.timeline_today(live_snapshot=live_snapshot)
+
+    def record_behavior_snapshot(self) -> int:
+        if not self.mapping.roles(dev=True, include_state=False):
+            return 0
+        return self.behavior.record_current_snapshot()

@@ -1,10 +1,11 @@
-import { Check, Loader2, Radio, Search, ShieldCheck, Wifi } from 'lucide-react';
+import { Check, Loader2, Radio, Search, ShieldCheck } from 'lucide-react';
 import type { SenteroDiscoveredSensor } from '@shared/api/client';
+import { SetupWifiQr } from './SetupWifiQr';
 
 export type SensorBinding = {
   id: string;
   roomId: string;
-  type: 'motion' | 'door';
+  type: 'motion' | 'door' | 'electricity_meter' | 'water_meter' | 'gas_meter';
   sensorId: string;
   name: string;
   status: 'idle' | 'searching' | 'connected' | 'missing' | 'skipped';
@@ -36,20 +37,27 @@ export function SensorWizard({ sensors, discovery, devMode, connected, total, ro
     acc[sensor.roomId] = [...(acc[sensor.roomId] || []), sensor];
     return acc;
   }, {});
+  const allConnected = total > 0 && connected >= total;
+  const progressLabel = total === 1 ? 'Sensor verbunden' : 'Sensoren verbunden';
 
   return (
     <section className="sc-sensor-step">
       <div className="sc-zigbee-intro">
-        <span><Radio size={24} /></span>
-        <div>
-          <h3>Sensor verbinden</h3>
-         <p>
-           Klicken Sie auf <strong>„Sensor suchen“</strong>.<br/>
-           <b>Präsenzsensoren</b> müssen zunächst mit Ihrem Heim-WLAN verbunden werden. Danach erkennt Sentero sie automatisch.<br/>
-           <b>Türsensoren</b> werden während der Suche hinzugefügt. Halten Sie dazu die Pairing-Taste 3–5 Sekunden gedrückt.
-         </p>
+        <span className="sc-zigbee-intro-icon"><Radio size={24} /></span>
+        <div className="sc-zigbee-intro-copy">
+          <div className="sc-zigbee-intro-title">
+            <h3>Sensoren verbinden</h3>
+            <p>Starten Sie die Suche und verbinden Sie jeden Sensor im passenden Raum.</p>
+          </div>
+          <div className="sc-zigbee-intro-notes">
+            <span><strong>Präsenzsensoren</strong> vorher per Setup-Hotspot ins Heim-WLAN bringen.</span>
+            <span><strong>Türsensoren</strong> während der Suche 3-5 Sekunden in den Pairing-Modus setzen.</span>
+          </div>
         </div>
-        <strong>{connected}/{total} Sensor verbunden</strong>
+        <div className={`sc-zigbee-progress ${allConnected ? 'complete' : ''}`}>
+          <strong>{connected}/{total}</strong>
+          <span>{progressLabel}</span>
+        </div>
       </div>
 
       {Object.entries(grouped).map(([roomId, items]) => (
@@ -81,10 +89,8 @@ function SensorRow({ sensor, state, devMode, onChange, onSearch, onSkip }: {
   onSkip: (sensor: SensorBinding) => void;
 }) {
   const presence = isPresenceBinding(sensor);
-  const label = presence ? 'Präsenzsensor' : 'Türsensor';
-  const help = presence
-    ? 'Präsenzsensor einschalten. Sentero verbindet ihn automatisch.'
-    : 'Erkennt, ob eine Tür oder ein Fenster geöffnet wurde.';
+  const label = sensorLabel(sensor);
+  const help = sensorHelp(sensor);
 
   return (
     <div className={`sc-sensor-row ${sensor.status === 'connected' ? 'is-connected' : ''}`}>
@@ -93,10 +99,14 @@ function SensorRow({ sensor, state, devMode, onChange, onSearch, onSkip }: {
         <strong>{sensor.name || label}</strong>
         <small>{help}</small>
         {presence && (
-          <div className="sc-sensor-preflight">
-            <Wifi size={17} />
-            <span>Bitte verbinden Sie den Sensor zuerst mit Ihrem Heimnetz. Danach kann Sentero ihn hier finden.</span>
-          </div>
+          sensor.status === 'connected' ? (
+              <span/>
+          ) : (
+            <div className="sc-sensor-preflight">
+              <SetupWifiQr compact details={false} />
+              <span>Setup-Hotspot scannen, Captive Portal öffnen und den Sensor mit Ihrem Heimnetz verbinden. Danach kann Sentero ihn hier finden.</span>
+            </div>
+          )
         )}
         <input
           value={sensor.name}
@@ -131,5 +141,21 @@ function SensorStatus({ status, remainingSeconds }: { status: SensorBinding['sta
 function isPresenceBinding(sensor: SensorBinding) {
   const type = String(sensor.type || '').toLowerCase();
   const id = String(sensor.id || '').toLowerCase();
-  return type !== 'door' || id.endsWith('_presence') || id.endsWith('_motion');
+  return type === 'motion' || id.endsWith('_presence') || id.endsWith('_motion');
+}
+
+function sensorLabel(sensor: SensorBinding) {
+  if (sensor.type === 'door') return 'Türsensor';
+  if (sensor.type === 'electricity_meter') return 'Stromzähler';
+  if (sensor.type === 'water_meter') return 'Wasserzähler';
+  if (sensor.type === 'gas_meter') return 'Gaszähler';
+  return 'Präsenzsensor';
+}
+
+function sensorHelp(sensor: SensorBinding) {
+  if (sensor.type === 'door') return 'Erkennt, ob eine Tür oder ein Fenster geöffnet wurde.';
+  if (sensor.type === 'electricity_meter') return 'Liefert Stromverbrauch oder aktuelle Leistung als zusätzlichen Aktivitätshinweis.';
+  if (sensor.type === 'water_meter') return 'Liefert Wasserverbrauch als zusätzlichen Aktivitätshinweis.';
+  if (sensor.type === 'gas_meter') return 'Liefert Gasverbrauch als zusätzlichen Aktivitätshinweis.';
+  return 'Erkennt, ob sich eine Person im Raum bewegt oder anwesend ist.';
 }

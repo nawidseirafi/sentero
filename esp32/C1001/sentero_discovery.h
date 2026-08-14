@@ -3,9 +3,11 @@
 #include "c1001_bridge.h"
 #include "esphome.h"
 #include "esphome/components/wifi/wifi_component.h"
+#include "esphome/components/web_server_base/web_server_base.h"
 #include <ArduinoJson.h>
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_wifi.h"
 #include "mqtt_client.h"
 #include "nvs.h"
@@ -18,7 +20,7 @@ static constexpr const char *SENTERO_LOG_TAG = "sentero";
 static constexpr const char *SENTERO_MANUFACTURER = "Sentero";
 static constexpr const char *SENTERO_DEVICE_MODEL = "C1001";
 static constexpr const char *SENTERO_SENSOR_TYPE = "presence_radar";
-static constexpr const char *SENTERO_FIRMWARE_VERSION = "1.0.0";
+static constexpr const char *SENTERO_FIRMWARE_VERSION = "1.0.1";
 
 inline bool sentero_nvs_get_bool(const char *key, bool fallback = false) {
   nvs_handle_t handle;
@@ -61,18 +63,57 @@ inline void sentero_nvs_put_string(nvs_handle_t handle, const char *key, const c
   nvs_set_str(handle, key, value == nullptr ? "" : value);
 }
 
-inline String sentero_default_device_id() {
+inline String sentero_uuid_from_bytes(const uint8_t bytes[16]) {
+  char uuid[37];
+  snprintf(uuid, sizeof(uuid),
+           "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+           bytes[0], bytes[1], bytes[2], bytes[3],
+           bytes[4], bytes[5],
+           bytes[6], bytes[7],
+           bytes[8], bytes[9],
+           bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
+  return String(uuid);
+}
+
+inline String sentero_mac_fallback_uuid() {
   uint8_t mac[6];
   get_mac_address_raw(mac);
 
-  char device_id[24];
-  snprintf(device_id, sizeof(device_id), "c1001-%02x%02x%02x%02x",
-           mac[2], mac[3], mac[4], mac[5]);
-  return String(device_id);
+  uint8_t bytes[16] = {
+    mac[0], mac[1], mac[2], mac[3],
+    mac[4], mac[5], 0xc1, 0x01,
+    0x50, 0x01, 0xc1, 0x00,
+    0x00, 0x00, mac[4], mac[5],
+  };
+  bytes[6] = (bytes[6] & 0x0F) | 0x50;
+  bytes[8] = (bytes[8] & 0x3F) | 0x80;
+  return sentero_uuid_from_bytes(bytes);
 }
 
-inline bool sentero_is_placeholder_device_id(const String &device_id) {
-  return device_id.length() == 0 || device_id == "c1001-a1b2c3d4";
+inline String sentero_default_device_id() {
+  String stored = sentero_nvs_get_string("device_uuid", "");
+  stored.trim();
+  if (stored.length() == 36) return stored;
+
+  uint8_t bytes[16];
+  esp_fill_random(bytes, sizeof(bytes));
+  bytes[6] = (bytes[6] & 0x0F) | 0x40;
+  bytes[8] = (bytes[8] & 0x3F) | 0x80;
+  String uuid = sentero_uuid_from_bytes(bytes);
+
+  nvs_handle_t handle;
+  if (nvs_open(SENTERO_NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+    sentero_nvs_put_string(handle, "device_uuid", uuid.c_str());
+    nvs_commit(handle);
+    nvs_close(handle);
+    return uuid;
+  }
+
+  return sentero_mac_fallback_uuid();
+}
+
+inline bool sentero_is_missing_device_id(const String &device_id) {
+  return device_id.length() == 0;
 }
 
 class SenteroDiscovery {
@@ -133,15 +174,39 @@ class SenteroDiscovery {
   }
 };
 
-class SenteroProvisioning {
+class SenteroProvisioning : public AsyncWebHandler {
  public:
   void loop() {
-    start_http_once_();
+    register_handler_once_();
     mqtt_loop_();
 
     if (restart_at_ms_ != 0 && millis() >= restart_at_ms_) {
       ESP.restart();
     }
+  }
+
+  // AsyncWebHandler overrides: /api/provision wird auf demselben
+  // web_server_base-Server registriert wie der Captive Portal (Port 80),
+  // statt einen eigenen httpd-Server zu starten (der mit dem Captive-
+  // Portal-Server um Port 80 konkurrieren wuerde).
+  bool canHandle(AsyncWebServerRequest *request) const override {
+#ifdef USE_ESP32
+    char url_buf[AsyncWebServerRequest::URL_BUF_SIZE];
+    StringRef url = request->url_to(url_buf);
+#else
+    const auto &url = request->url();
+#endif
+    return request->method() == HTTP_POST && url == ESPHOME_F("/api/provision");
+  }
+
+  // Wichtig: ESPHomes web_server_idf ruft AsyncWebHandler::handleBody()
+  // fuer POST-Requests NIE auf (das existiert nur aus API-Kompatibilitaet
+  // zur Arduino-Variante). Fuer alles ausser Content-Type
+  // application/x-www-form-urlencoded / multipart/form-data liefert es die
+  // Anfrage wie ein GET aus, ohne den Body zu lesen. Fuer unser JSON lesen
+  // wir den Body deshalb hier selbst ueber den rohen httpd_req_t*.
+  void handleRequest(AsyncWebServerRequest *request) override {
+    process_provision_(request);
   }
 
   void factory_reset() {
@@ -151,7 +216,8 @@ class SenteroProvisioning {
   }
 
  private:
-  httpd_handle_t server_{nullptr};
+  static constexpr size_t MAX_BODY_SIZE = 4096;
+  bool registered_{false};
   esp_mqtt_client_handle_t mqtt_{nullptr};
   bool mqtt_connected_{false};
   bool mqtt_configured_{false};
@@ -171,6 +237,8 @@ class SenteroProvisioning {
     String device_id;
     String friendly_name;
     String room_id;
+    bool hp_led{false};
+    bool fall_led{false};
     String mqtt_host;
     uint16_t mqtt_port{1883};
     String mqtt_username;
@@ -179,59 +247,58 @@ class SenteroProvisioning {
   };
 
   static constexpr uint32_t STATE_CHANGE_MIN_INTERVAL_MS = 1000;
-  static constexpr uint32_t STATE_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+  static constexpr uint32_t STATE_HEARTBEAT_INTERVAL_MS = 30 * 1000;
   static constexpr uint32_t AVAILABILITY_INTERVAL_MS = 60 * 1000;
 
-  void start_http_once_() {
-    if (server_ != nullptr) return;
-    if (sentero_nvs_get_bool("provisioned", false)) return;
-    if (!esphome::wifi::global_wifi_component->is_connected()) return;
+  void register_handler_once_() {
+    if (registered_) return;
+    auto *base = esphome::web_server_base::global_web_server_base;
+    if (base == nullptr) return;
 
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.server_port = 80;
-    config.max_uri_handlers = 4;
-    if (httpd_start(&server_, &config) != ESP_OK) {
-      server_ = nullptr;
+    base->add_handler_without_auth(this);
+    registered_ = true;
+    ESP_LOGI(SENTERO_LOG_TAG, "Sentero provisioning API registriert (/api/provision)");
+  }
+
+  void process_provision_(AsyncWebServerRequest *request) {
+    // Ein bereits provisioniertes Geraet darf nicht von einem zweiten Client
+    // umprovisioniert werden. Das geht erst wieder nach einem Factory Reset
+    // (z.B. per MQTT-Kommando {"command":"factory_reset"}), das den
+    // "provisioned"-Flag im NVS loescht.
+    if (sentero_nvs_get_bool("provisioned", false)) {
+      send_json_(request, 409, "{\"success\":false,\"error\":\"already_provisioned\"}");
       return;
     }
 
-    httpd_uri_t provision_uri;
-    memset(&provision_uri, 0, sizeof(provision_uri));
-    provision_uri.uri = "/api/provision";
-    provision_uri.method = HTTP_POST;
-    provision_uri.handler = &SenteroProvisioning::provision_handler_;
-    provision_uri.user_ctx = this;
-    httpd_register_uri_handler(server_, &provision_uri);
-  }
+    httpd_req_t *req = *request;
+    if (req->content_len == 0 || req->content_len > MAX_BODY_SIZE) {
+      send_json_(request, 400, "{\"success\":false,\"error\":\"body_too_large\"}");
+      return;
+    }
 
-  static esp_err_t provision_handler_(httpd_req_t *req) {
-    return static_cast<SenteroProvisioning *>(req->user_ctx)->handle_provision_(req);
-  }
-
-  esp_err_t handle_provision_(httpd_req_t *req) {
     std::string body;
     body.resize(req->content_len);
-    int received_total = 0;
+    size_t received_total = 0;
     while (received_total < req->content_len) {
       const int received = httpd_req_recv(req, &body[received_total], req->content_len - received_total);
       if (received <= 0) {
-        send_json_(req, "400 Bad Request", "{\"success\":false,\"error\":\"request_read_failed\"}");
-        return ESP_FAIL;
+        send_json_(request, 400, "{\"success\":false,\"error\":\"request_read_failed\"}");
+        return;
       }
-      received_total += received;
+      received_total += static_cast<size_t>(received);
     }
 
     StaticJsonDocument<2048> doc;
     DeserializationError error = deserializeJson(doc, body);
     if (error) {
-      send_json_(req, "400 Bad Request", "{\"success\":false,\"error\":\"invalid_json\"}");
-      return ESP_OK;
+      send_json_(request, 400, "{\"success\":false,\"error\":\"invalid_json\"}");
+      return;
     }
 
     const int protocol = doc["protocol"] | 1;
     if (protocol < 1 || protocol > 2) {
-      send_json_(req, "400 Bad Request", "{\"success\":false,\"error\":\"unsupported_protocol\"}");
-      return ESP_OK;
+      send_json_(request, 400, "{\"success\":false,\"error\":\"unsupported_protocol\"}");
+      return;
     }
 
     JsonObject mqtt = doc["mqtt"];
@@ -246,7 +313,7 @@ class SenteroProvisioning {
     String device_id = device["device_id"] | "";
     if (device_id.length() == 0) device_id = doc["device_id"] | "";
     device_id.trim();
-    if (sentero_is_placeholder_device_id(device_id)) device_id = sentero_default_device_id();
+    if (sentero_is_missing_device_id(device_id)) device_id = sentero_default_device_id();
     const char *friendly_name = device["friendly_name"] | "";
     if (strlen(friendly_name) == 0) friendly_name = device["display_name"] | "";
     if (strlen(friendly_name) == 0) friendly_name = doc["friendly_name"] | "";
@@ -266,14 +333,14 @@ class SenteroProvisioning {
     uint16_t mqtt_port = mqtt["port"] | 0;
     if (mqtt_port == 0) mqtt_port = doc["mqtt_port"] | 1883;
     if (strlen(mqtt_host) == 0) {
-      send_json_(req, "400 Bad Request", "{\"success\":false,\"error\":\"missing_required_fields\"}");
-      return ESP_OK;
+      send_json_(request, 400, "{\"success\":false,\"error\":\"missing_required_fields\"}");
+      return;
     }
 
     nvs_handle_t prefs;
     if (nvs_open(SENTERO_NVS_NAMESPACE, NVS_READWRITE, &prefs) != ESP_OK) {
-      send_json_(req, "500 Internal Server Error", "{\"success\":false,\"error\":\"nvs_open_failed\"}");
-      return ESP_OK;
+      send_json_(request, 500, "{\"success\":false,\"error\":\"nvs_open_failed\"}");
+      return;
     }
     nvs_set_u8(prefs, "provisioned", 1);
     sentero_nvs_put_string(prefs, "wifi_ssid", wifi_ssid);
@@ -303,13 +370,12 @@ class SenteroProvisioning {
 
     apply_wifi_config_(wifi_ssid, wifi_password);
 
-    char response[180];
+    char response[200];
     snprintf(response, sizeof(response),
-             "{\"success\":true,\"device_id\":\"%s\",\"model\":\"%s\",\"firmware\":\"%s\"}",
+             "{\"ok\":true,\"success\":true,\"device_id\":\"%s\",\"model\":\"%s\",\"firmware\":\"%s\"}",
              device_id.c_str(), SENTERO_DEVICE_MODEL, SENTERO_FIRMWARE_VERSION);
-    send_json_(req, "200 OK", response);
+    send_json_(request, 200, response);
     restart_at_ms_ = millis() + 1500;
-    return ESP_OK;
   }
 
   void apply_wifi_config_(const char *ssid, const char *password) {
@@ -328,10 +394,8 @@ class SenteroProvisioning {
     }
   }
 
-  void send_json_(httpd_req_t *req, const char *status, const char *body) {
-    httpd_resp_set_status(req, status);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, body);
+  void send_json_(AsyncWebServerRequest *request, int status, const char *body) {
+    request->send(status, ESPHOME_F("application/json"), body);
   }
 
   void mqtt_loop_() {
@@ -346,6 +410,8 @@ class SenteroProvisioning {
     }
 
     if (!mqtt_connected_) return;
+
+    apply_desired_led_state_(config);
 
     const uint32_t now = millis();
     if (now - last_availability_publish_ms_ >= AVAILABILITY_INTERVAL_MS) {
@@ -437,6 +503,8 @@ class SenteroProvisioning {
     config.device_id = sentero_nvs_get_string("device_id", "");
     config.friendly_name = sentero_nvs_get_string("friendly", "");
     config.room_id = sentero_nvs_get_string("room_id", "");
+    config.hp_led = sentero_nvs_get_bool("hp_led", false);
+    config.fall_led = sentero_nvs_get_bool("fall_led", false);
     config.mqtt_host = sentero_nvs_get_string("mqtt_host", "");
     config.mqtt_port = sentero_nvs_get_u16("mqtt_port", 1883);
     config.mqtt_username = sentero_nvs_get_string("mqtt_user", "");
@@ -451,14 +519,40 @@ class SenteroProvisioning {
     return provisioned && config.device_id.length() > 0 && config.mqtt_host.length() > 0;
   }
 
+  bool store_led_preference_(const char *key, bool value) {
+    nvs_handle_t prefs;
+    if (nvs_open(SENTERO_NVS_NAMESPACE, NVS_READWRITE, &prefs) != ESP_OK) return false;
+    const esp_err_t set_result = nvs_set_u8(prefs, key, value ? 1 : 0);
+    const esp_err_t commit_result = nvs_commit(prefs);
+    nvs_close(prefs);
+    return set_result == ESP_OK && commit_result == ESP_OK;
+  }
+
+  void apply_desired_led_state_(const Config &config) {
+    const C1001Snapshot sensor = c1001_get_snapshot();
+    if (!sensor.ready) return;
+    bool changed = false;
+    if (!sensor.hp_led_known || sensor.hp_led != config.hp_led) {
+      changed = c1001_set_hp_led(config.hp_led) || changed;
+    }
+    if (!sensor.fall_led_known || sensor.fall_led != config.fall_led) {
+      changed = c1001_set_fall_led(config.fall_led) || changed;
+    }
+    if (changed) {
+      last_state_publish_ms_ = 0;
+      last_state_signature_ = "";
+    }
+  }
+
   String topic_(const Config &config, const char *suffix) {
     return config.topic_prefix + "/" + config.device_id + "/" + suffix;
   }
 
   String availability_payload_(const Config &config, const char *status) {
-    StaticJsonDocument<160> doc;
+    StaticJsonDocument<192> doc;
     doc["device_id"] = config.device_id;
     doc["status"] = status;
+    doc["firmware"] = SENTERO_FIRMWARE_VERSION;
     String payload;
     serializeJson(doc, payload);
     return payload;
@@ -472,7 +566,7 @@ class SenteroProvisioning {
   void publish_state_(const Config &config) {
     const C1001Snapshot sensor = c1001_get_snapshot();
 
-    StaticJsonDocument<1536> doc;
+    StaticJsonDocument<1792> doc;
     const String display_name = config.friendly_name.length() > 0
         ? config.friendly_name
         : String("C1001 Praesenz");
@@ -482,6 +576,7 @@ class SenteroProvisioning {
     doc["manufacturer"] = SENTERO_MANUFACTURER;
     doc["model"] = SENTERO_DEVICE_MODEL;
     doc["firmware"] = SENTERO_FIRMWARE_VERSION;
+    doc["status"] = "online";
     JsonArray capabilities = doc.createNestedArray("capabilities");
     capabilities.add("presence");
     capabilities.add("motion");
@@ -490,14 +585,37 @@ class SenteroProvisioning {
     doc["presence"] = sensor.presence;
     doc["fall_detected"] = sensor.fall_detected;
     doc["motion"] = sensor.motion;
+    doc["presence_raw"] = sensor.presence_raw;
+    doc["motion_raw"] = sensor.motion_raw;
+    doc["fall_raw"] = sensor.fall_raw;
     doc["moving_range"] = sensor.moving_range;
     doc["work_mode"] = sensor.work_mode;
     doc["sensor_ready"] = sensor.ready;
     doc["sensor_status"] = sensor.status;
     doc["setup_attempts"] = sensor.setup_attempts;
+    doc["poll_count"] = sensor.poll_count;
+    doc["poll_ok_count"] = sensor.poll_ok_count;
+    doc["poll_error_count"] = sensor.poll_error_count;
+    doc["read_errors"] = sensor.read_errors;
+    doc["stuck_active_resets"] = sensor.stuck_active_resets;
+    doc["stuck_presence_resets"] = sensor.stuck_presence_resets;
+    doc["stuck_inactive_resets"] = sensor.stuck_inactive_resets;
     doc["last_sensor_update_ms"] = sensor.last_update_ms;
+    doc["last_value_change_ms"] = sensor.last_value_change_ms;
+    doc["last_poll_ms"] = sensor.last_poll_ms;
+    doc["last_poll_ok_ms"] = sensor.last_poll_ok_ms;
+    doc["last_frame_ms"] = sensor.last_frame_ms;
     doc["power_source"] = "usb";
     doc["signal_quality"] = signal_quality_();
+    JsonObject led_status = doc.createNestedObject("led_status");
+    if (sensor.hp_led_known) led_status["hp_led"] = sensor.hp_led;
+    else led_status["hp_led"] = nullptr;
+    if (sensor.fall_led_known) led_status["fall_led"] = sensor.fall_led;
+    else led_status["fall_led"] = nullptr;
+    if (sensor.hp_led_known && sensor.fall_led_known) led_status["all_on"] = sensor.hp_led && sensor.fall_led;
+    else led_status["all_on"] = nullptr;
+    if (sensor.hp_led_known || sensor.fall_led_known) led_status["any_on"] = (sensor.hp_led_known && sensor.hp_led) || (sensor.fall_led_known && sensor.fall_led);
+    else led_status["any_on"] = nullptr;
     doc["command_topic"] = topic_(config, "command");
     JsonArray writable_settings = doc.createNestedArray("writable_settings");
     writable_settings.add("hp_led");
@@ -520,14 +638,25 @@ class SenteroProvisioning {
 
   String state_signature_(const C1001Snapshot &sensor) {
     char signature[180];
-    snprintf(signature, sizeof(signature), "%u|%u|%s|%u|%u|%u|%s",
+    snprintf(signature, sizeof(signature), "%u|%u|%s|%u|%u|%u|%u|%u|%u|%s|%u|%u|%u|%u|%u|%u|%u|%u",
              sensor.ready ? 1 : 0,
              sensor.presence ? 1 : 0,
              sensor.motion == nullptr ? "" : sensor.motion,
+             sensor.presence_raw,
+             sensor.motion_raw,
+             sensor.fall_raw,
              sensor.moving_range,
              sensor.work_mode,
              sensor.fall_detected ? 1 : 0,
-             sensor.status == nullptr ? "" : sensor.status);
+             sensor.status == nullptr ? "" : sensor.status,
+             sensor.poll_count,
+             sensor.read_errors,
+             sensor.stuck_active_resets,
+             sensor.stuck_presence_resets,
+             sensor.stuck_inactive_resets,
+             sensor.last_value_change_ms,
+             sensor.hp_led_known ? (sensor.hp_led ? 1 : 0) : 2,
+             sensor.fall_led_known ? (sensor.fall_led ? 1 : 0) : 2);
     return String(signature);
   }
 
@@ -547,12 +676,22 @@ class SenteroProvisioning {
   }
 
   void publish_command_status_(const Config &config, const char *command, bool ok, const char *message) {
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<384> doc;
+    const C1001Snapshot sensor = c1001_get_snapshot();
     doc["device_id"] = config.device_id;
     doc["status"] = ok ? "command_accepted" : "command_rejected";
     doc["command"] = command == nullptr ? "" : command;
     doc["ok"] = ok;
     doc["message"] = message == nullptr ? "" : message;
+    JsonObject led_status = doc.createNestedObject("led_status");
+    if (sensor.hp_led_known) led_status["hp_led"] = sensor.hp_led;
+    else led_status["hp_led"] = nullptr;
+    if (sensor.fall_led_known) led_status["fall_led"] = sensor.fall_led;
+    else led_status["fall_led"] = nullptr;
+    if (sensor.hp_led_known && sensor.fall_led_known) led_status["all_on"] = sensor.hp_led && sensor.fall_led;
+    else led_status["all_on"] = nullptr;
+    if (sensor.hp_led_known || sensor.fall_led_known) led_status["any_on"] = (sensor.hp_led_known && sensor.hp_led) || (sensor.fall_led_known && sensor.fall_led);
+    else led_status["any_on"] = nullptr;
 
     String payload;
     serializeJson(doc, payload);
@@ -608,15 +747,26 @@ class SenteroProvisioning {
   }
 
   bool apply_bool_command_(const Config &config, JsonObjectConst root, const char *command,
-                           void (*setter)(bool)) {
+                           bool (*setter)(bool), const char *preference_key = nullptr) {
     bool enabled = false;
     if (!bool_arg_(root, enabled)) {
       publish_command_status_(config, command, false, "missing_or_invalid_boolean");
       return true;
     }
 
-    setter(enabled);
+    if (!setter(enabled)) {
+      publish_command_status_(config, command, false, "sensor_command_failed");
+      return true;
+    }
+    if (preference_key != nullptr && !store_led_preference_(preference_key, enabled)) {
+      publish_command_status_(config, command, false, "nvs_commit_failed");
+      return true;
+    }
     publish_command_status_(config, command, true, enabled ? "enabled" : "disabled");
+    Config updated_config;
+    publish_state_(load_config_(updated_config) ? updated_config : config);
+    last_state_publish_ms_ = millis();
+    last_state_signature_ = state_signature_(c1001_get_snapshot());
     return true;
   }
 
@@ -641,6 +791,8 @@ class SenteroProvisioning {
   bool apply_configure_command_(const Config &config, JsonObjectConst root, const char *command) {
     JsonVariantConst settings_value = root["settings"];
     JsonObjectConst settings = settings_value.is<JsonObjectConst>() ? settings_value.as<JsonObjectConst>() : root;
+    JsonVariantConst device_value = root["device"];
+    JsonObjectConst device = device_value.is<JsonObjectConst>() ? device_value.as<JsonObjectConst>() : JsonObjectConst();
 
     bool hp_led = false;
     bool fall_led = false;
@@ -656,6 +808,43 @@ class SenteroProvisioning {
     const bool has_unmanned_time = read_number_(settings["unmanned_time"], unmanned_time);
     const bool has_residence_time = read_number_(settings["residence_time"], residence_time);
     const bool has_fall_sensitivity = read_number_(settings["fall_sensitivity"], fall_sensitivity);
+    const bool has_friendly_name =
+        !device["friendly_name"].isNull() || !device["display_name"].isNull() ||
+        !settings["friendly_name"].isNull() || !settings["display_name"].isNull() || !settings["name"].isNull() ||
+        !root["friendly_name"].isNull() || !root["display_name"].isNull() || !root["name"].isNull();
+    const bool has_room_id =
+        !device["room_id"].isNull() || !settings["room_id"].isNull() || !settings["room_hint"].isNull() ||
+        !root["room_id"].isNull() || !root["room_hint"].isNull();
+    String friendly_name;
+    String room_id;
+
+    if (has_friendly_name) {
+      friendly_name = device["friendly_name"] | "";
+      if (friendly_name.length() == 0) friendly_name = device["display_name"] | "";
+      if (friendly_name.length() == 0) friendly_name = settings["friendly_name"] | "";
+      if (friendly_name.length() == 0) friendly_name = settings["display_name"] | "";
+      if (friendly_name.length() == 0) friendly_name = settings["name"] | "";
+      if (friendly_name.length() == 0) friendly_name = root["friendly_name"] | "";
+      if (friendly_name.length() == 0) friendly_name = root["display_name"] | "";
+      if (friendly_name.length() == 0) friendly_name = root["name"] | "";
+      friendly_name.trim();
+      if (friendly_name.length() == 0 || friendly_name.length() > 64) {
+        publish_command_status_(config, command, false, "invalid_friendly_name");
+        return true;
+      }
+    }
+    if (has_room_id) {
+      room_id = device["room_id"] | "";
+      if (room_id.length() == 0) room_id = settings["room_id"] | "";
+      if (room_id.length() == 0) room_id = settings["room_hint"] | "";
+      if (room_id.length() == 0) room_id = root["room_id"] | "";
+      if (room_id.length() == 0) room_id = root["room_hint"] | "";
+      room_id.trim();
+      if (room_id.length() > 64) {
+        publish_command_status_(config, command, false, "invalid_room_id");
+        return true;
+      }
+    }
 
     if (!settings["hp_led"].isNull() && !has_hp_led) {
       publish_command_status_(config, command, false, "invalid_hp_led");
@@ -686,19 +875,59 @@ class SenteroProvisioning {
       return true;
     }
     if (!has_hp_led && !has_fall_led && !has_install_height && !has_fall_time &&
-        !has_unmanned_time && !has_residence_time && !has_fall_sensitivity) {
+        !has_unmanned_time && !has_residence_time && !has_fall_sensitivity &&
+        !has_friendly_name && !has_room_id) {
       publish_command_status_(config, command, false, "no_known_settings");
       return true;
     }
 
-    if (has_hp_led) c1001_set_hp_led(hp_led);
-    if (has_fall_led) c1001_set_fall_led(fall_led);
+    nvs_handle_t prefs;
+    bool prefs_open = false;
+    if (has_friendly_name || has_room_id || has_hp_led || has_fall_led) {
+      if (nvs_open(SENTERO_NVS_NAMESPACE, NVS_READWRITE, &prefs) != ESP_OK) {
+        publish_command_status_(config, command, false, "nvs_open_failed");
+        return true;
+      }
+      prefs_open = true;
+    }
+
+    if (has_hp_led && !c1001_set_hp_led(hp_led)) {
+      if (prefs_open) nvs_close(prefs);
+      publish_command_status_(config, command, false, "hp_led_command_failed");
+      return true;
+    }
+    if (has_fall_led && !c1001_set_fall_led(fall_led)) {
+      if (prefs_open) nvs_close(prefs);
+      publish_command_status_(config, command, false, "fall_led_command_failed");
+      return true;
+    }
     if (has_install_height) c1001_set_install_height(install_height);
     if (has_fall_time) c1001_set_fall_time(fall_time);
     if (has_unmanned_time) c1001_set_unmanned_time(unmanned_time);
     if (has_residence_time) c1001_set_residence_time(residence_time);
     if (has_fall_sensitivity) c1001_set_fall_sensitivity(fall_sensitivity);
-    publish_command_status_(config, command, true, "settings_applied");
+    if (has_hp_led) nvs_set_u8(prefs, "hp_led", hp_led ? 1 : 0);
+    if (has_fall_led) nvs_set_u8(prefs, "fall_led", fall_led ? 1 : 0);
+    if (has_friendly_name) sentero_nvs_put_string(prefs, "friendly", friendly_name.c_str());
+    if (has_room_id) sentero_nvs_put_string(prefs, "room_id", room_id.c_str());
+    if (prefs_open) {
+      esp_err_t commit_result = nvs_commit(prefs);
+      nvs_close(prefs);
+      if (commit_result != ESP_OK) {
+        publish_command_status_(config, command, false, "nvs_commit_failed");
+        return true;
+      }
+    }
+
+    publish_command_status_(config, command, true, "configuration_applied");
+    if (has_hp_led || has_fall_led || has_friendly_name || has_room_id) {
+      Config updated_config;
+      if (load_config_(updated_config)) {
+        publish_state_(updated_config);
+        last_state_publish_ms_ = millis();
+        last_state_signature_ = state_signature_(c1001_get_snapshot());
+      }
+    }
     return true;
   }
 
@@ -724,7 +953,7 @@ class SenteroProvisioning {
       publish_command_status_(config, "", false, "missing_command");
       return;
     }
-    if (command == "factory_reset") {
+    if (command == "factory_reset" || command == "factory_resetting") {
       factory_reset_(&config);
       return;
     }
@@ -734,11 +963,11 @@ class SenteroProvisioning {
       return;
     }
     if (command == "set_hp_led" || command == "hp_led") {
-      apply_bool_command_(config, root, command_c, c1001_set_hp_led);
+      apply_bool_command_(config, root, command_c, c1001_set_hp_led, "hp_led");
       return;
     }
     if (command == "set_fall_led" || command == "fall_led") {
-      apply_bool_command_(config, root, command_c, c1001_set_fall_led);
+      apply_bool_command_(config, root, command_c, c1001_set_fall_led, "fall_led");
       return;
     }
     if (command == "set_install_height" || command == "install_height") {
@@ -771,6 +1000,11 @@ class SenteroProvisioning {
 
   void factory_reset_(const Config *config) {
     ESP_LOGW(SENTERO_LOG_TAG, "Factory Reset: Sentero Provisioning-Daten werden geloescht");
+    String preserved_uuid = sentero_nvs_get_string("device_uuid", "");
+    preserved_uuid.trim();
+    if (preserved_uuid.length() != 36 && config != nullptr && config->device_id.length() == 36) {
+      preserved_uuid = config->device_id;
+    }
 
     if (config != nullptr) {
       StaticJsonDocument<160> status;
@@ -786,6 +1020,9 @@ class SenteroProvisioning {
     nvs_handle_t prefs;
     if (nvs_open(SENTERO_NVS_NAMESPACE, NVS_READWRITE, &prefs) == ESP_OK) {
       nvs_erase_all(prefs);
+      if (preserved_uuid.length() == 36) {
+        sentero_nvs_put_string(prefs, "device_uuid", preserved_uuid.c_str());
+      }
       nvs_commit(prefs);
       nvs_close(prefs);
     }

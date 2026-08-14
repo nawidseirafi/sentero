@@ -21,6 +21,19 @@ DISCOVERY_TIMEOUT_SECONDS = 180
 DISCOVERY_CONFIDENCE_THRESHOLD = 50
 PRESENCE_CLASSES = {'occupancy', 'motion', 'presence'}
 CONTACT_CLASSES = {'door', 'window', 'opening', 'contact'}
+SMART_METER_CLASSES = {'energy', 'power', 'water', 'gas'}
+SMART_METER_KEYS = {
+    'energy',
+    'energy_consumption',
+    'electricity',
+    'electricity_consumption',
+    'power',
+    'power_usage',
+    'water',
+    'water_consumption',
+    'gas',
+    'gas_consumption',
+}
 logger = get_logger(__name__)
 ROOM_TERMS = {
     'living_room': ['wohnzimmer', 'living', 'living_room'],
@@ -520,7 +533,7 @@ class DeviceMappingService:
     def send_factory_reset_command(self, device_id: str):
         command_topic = esp32_command_topic(device_id)
         status_topic = esp32_status_topic(device_id)
-        payload = {'command': 'factory_reset', 'reason': 'removed_from_sentero'}
+        payload = {'command': 'factory_reset', 'enabled': 'true'}
         try:
             return self.mqtt.request_response(
                 command_topic,
@@ -541,6 +554,69 @@ class DeviceMappingService:
             logger.warning("Factory Reset nicht bestätigt", extra={"component": "device_mapping", "provider": "mqtt", "device_id": device_id})
             raise TimeoutError('factory_reset_not_confirmed')
         return payload if isinstance(payload, dict) else {'status': str(payload)}
+
+    def send_role_command(self, role: str, payload: dict[str, Any]) -> dict[str, Any]:
+        mapped = self.get_role(role, dev=True)
+        if not mapped:
+            raise ValueError('sensor role not found')
+        device_id = str(mapped.get('device_id') or '').strip()
+        if not device_id:
+            raise RuntimeError('Sensor konnte nicht eindeutig identifiziert werden.')
+        source = str(mapped.get('source') or '').strip()
+        if source != 'mqtt':
+            raise RuntimeError('Dieser Sensor unterstützt keine direkten MQTT-Kommandos.')
+        command = str(payload.get('command') or '').strip()
+        if not command:
+            raise RuntimeError('Sensor-Kommando fehlt.')
+        state = self._attach_state([mapped])[0]
+        if state.get('reachable') is False:
+            raise RuntimeError('Sensor ist derzeit nicht erreichbar.')
+
+        command_topic = esp32_command_topic(device_id)
+        status_topic = esp32_status_topic(device_id)
+        try:
+            message = self.mqtt.request_response(
+                command_topic,
+                status_topic,
+                payload,
+                timeout=5.0,
+                response_filter=lambda response, wanted=device_id, wanted_command=command: esp32_command_ack_matches(response, wanted, wanted_command),
+            )
+        except TimeoutError as exc:
+            logger.warning("Sensor-Kommando nicht bestätigt", extra={"component": "device_mapping", "provider": "mqtt", "device_id": device_id, "command": command})
+            raise RuntimeError('Sensor hat das Kommando nicht bestätigt.') from exc
+        except Exception:
+            logger.exception("Sensor-Kommando fehlgeschlagen", extra={"component": "device_mapping", "provider": "mqtt", "device_id": device_id, "topic": command_topic, "command": command})
+            raise
+
+        response = message.payload if isinstance(message.payload, dict) else {'status': str(message.payload)}
+        ok = bool(response.get('ok', response.get('status') == 'command_accepted'))
+        return {
+            'ok': ok,
+            'role': role,
+            'device_id': device_id,
+            'topic': command_topic,
+            'response': response,
+            'hp_led': response.get('hp_led'),
+            'fall_led': response.get('fall_led'),
+            'led_status': response.get('led_status') if isinstance(response.get('led_status'), dict) else None,
+            'message': response.get('message') or ('Kommando ausgeführt' if ok else 'Kommando abgelehnt'),
+        }
+
+    def _sync_esp32_role_name(self, role: str, mapped: dict[str, Any], name: str) -> dict[str, Any] | None:
+        source = str(mapped.get('source') or '').strip()
+        if source != 'mqtt':
+            return None
+        device_id = str(mapped.get('device_id') or '').strip()
+        if not device_id:
+            return None
+        return self.send_role_command(role, {
+            'command': 'configure',
+            'friendly_name': name,
+            'device': {
+                'friendly_name': name,
+            },
+        })
 
     def rename_role(self, role: str, name: str) -> dict[str, Any]:
         clean_name = str(name or '').strip()
@@ -564,6 +640,20 @@ class DeviceMappingService:
                 (clean_name, timestamp, role),
             )
             con.commit()
+        device_sync = None
+        try:
+            device_sync = self._sync_esp32_role_name(role, mapped, clean_name)
+        except Exception as exc:
+            device_sync = {'ok': False, 'message': str(exc)}
+            logger.warning(
+                "ESP32 sensor name sync failed role=%s entity=%s name=%s error=%s",
+                role,
+                entity_id,
+                clean_name,
+                exc,
+            )
+        if device_sync is not None:
+            metadata = {**(metadata or {}), 'device_sync': device_sync}
         logger.info(
             "Sentero sensor renamed role=%s entity=%s name=%s metadata=%s",
             role,
@@ -740,9 +830,10 @@ class DeviceMappingService:
             availability = find_mqtt_availability_state({**row, **(state or {})}, states)
             if availability is not None:
                 reachable = availability
-            battery_entity = find_battery_entity({**row, **(state or {})}, states)
+            battery_entity = find_battery_entity(dict(row), states) or find_battery_entity(state or {}, states)
             battery_level = parse_battery(battery_entity.get('state')) if battery_entity else battery_level_from_state(state)
             power_source = power_source_from_state(state)
+            c1001_telemetry = c1001_telemetry_from_state(state)
             logger.debug(
                 "Sensor health resolved",
                 extra={
@@ -755,6 +846,9 @@ class DeviceMappingService:
                     "battery_entity": battery_entity.get('entity_id') if battery_entity else None,
                     "battery_level": battery_level,
                     "power_source": power_source,
+                    "presence": c1001_telemetry.get('presence'),
+                    "fall_detected": c1001_telemetry.get('fall_detected'),
+                    "motion": c1001_telemetry.get('motion'),
                 },
             )
             result.append({
@@ -775,6 +869,13 @@ class DeviceMappingService:
                 'last_updated': state.get('last_updated') if state else None,
                 'battery_level': battery_level,
                 'power_source': power_source,
+                'presence': c1001_telemetry.get('presence'),
+                'fall_detected': c1001_telemetry.get('fall_detected'),
+                'motion': c1001_telemetry.get('motion'),
+                'hp_led': c1001_telemetry.get('hp_led'),
+                'fall_led': c1001_telemetry.get('fall_led'),
+                'led_status': c1001_telemetry.get('led_status'),
+                'writable_settings': c1001_telemetry.get('writable_settings'),
             })
         return result
 
@@ -1210,6 +1311,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         "alter table trusted_contacts add column preferred_channels text not null default '[\"email\"]'",
         "alter table trusted_contacts add column notification_enabled integer not null default 1",
         "alter table trusted_contacts add column primary_contact integer not null default 0",
+        "alter table trusted_contacts add column actor_role text not null default 'relative'",
     ]:
         try:
             con.execute(statement)
@@ -1232,8 +1334,31 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         status text not null,
         message_title text,
         error_message text,
+        data_class text not null default 'health_adjacent',
+        aggregation_level text not null default 'summary',
         created_at text not null
     )''')
+    try:
+        con.execute("alter table notification_logs add column data_class text not null default 'health_adjacent'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        con.execute("alter table notification_logs add column aggregation_level text not null default 'summary'")
+    except sqlite3.OperationalError:
+        pass
+    con.execute('''create table if not exists data_consents (
+        id integer primary key autoincrement,
+        contact_id integer not null,
+        recipient_type text not null,
+        purpose text not null,
+        data_classes_json text not null default '[]',
+        valid_until text,
+        revoked_at text,
+        created_at text not null,
+        updated_at text not null,
+        foreign key(contact_id) references trusted_contacts(id)
+    )''')
+    con.execute('create index if not exists idx_data_consents_contact_purpose on data_consents(contact_id, purpose, revoked_at)')
     con.execute('''create table if not exists system_warning_state (
         warning_key text primary key,
         status text not null,
@@ -1249,11 +1374,16 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         password_hash text not null,
         display_name text,
         role text not null default 'viewer',
+        aal_role text not null default 'admin',
         is_active integer not null default 1,
         created_at text not null,
         updated_at text not null,
         last_login_at text
     )''')
+    try:
+        con.execute("alter table sentero_users add column aal_role text not null default 'admin'")
+    except sqlite3.OperationalError:
+        pass
     con.execute('''create table if not exists sentero_sessions (
         id integer primary key autoincrement,
         user_id integer not null,
@@ -1400,6 +1530,8 @@ def domain_matches(role: str, domain: Any) -> bool:
         return str(domain or '') in {'binary_sensor', 'sensor', 'lock', 'switch'}
     if role_is_button(role):
         return str(domain or '') in {'button', 'sensor'}
+    if role_is_smart_meter(role):
+        return str(domain or '') == 'sensor'
     return bool(domain)
 
 
@@ -1429,6 +1561,12 @@ def role_candidate_matches(role: str, item: dict[str, Any], allow_missing_device
     domain = str(item.get('domain') or '')
     device_class = item.get('device_class')
     has_device_class = bool(str(device_class or '').strip())
+    if role_is_smart_meter(role):
+        return (
+            domain == 'sensor'
+            and (allow_device_class_mismatch or class_matches(role, device_class) or smart_meter_candidate_matches(role, item))
+            and (allow_missing_device_class or has_device_class or smart_meter_candidate_matches(role, item))
+        )
     if role_is_button(role):
         return domain in {'button', 'sensor'} and (
             str(device_class or '').lower() == 'button'
@@ -1457,6 +1595,14 @@ def class_matches(role: str, device_class: Any) -> bool:
         return dc in CONTACT_CLASSES
     if role_is_button(role):
         return dc == 'button'
+    if role_is_smart_meter(role):
+        if role_is_electricity_meter(role):
+            return dc in {'energy', 'power'}
+        if 'water' in normalize(role):
+            return dc == 'water'
+        if 'gas' in normalize(role):
+            return dc == 'gas'
+        return dc in SMART_METER_CLASSES
     return False
 
 
@@ -1529,6 +1675,13 @@ def candidate_entity_priority(role: str, item: dict[str, Any]) -> int:
             return 40
         if any(term in haystack for term in ['button', 'action', 'knopf', 'taster']):
             return 25
+    if role_is_smart_meter(role):
+        if domain != 'sensor':
+            return -80
+        if class_matches(role, device_class):
+            return 45
+        if smart_meter_candidate_matches(role, item):
+            return 35
     return 0
 
 
@@ -1585,6 +1738,8 @@ def role_state_matches(role: str, item: dict[str, Any]) -> bool:
     domain = str(item.get('domain') or str(item.get('entity_id') or '').split('.', 1)[0])
     if role_is_button(role):
         return domain == 'button' or str(item.get('device_class') or '').lower() == 'button' or str(item.get('payload_key') or '').lower() in {'action', 'button'}
+    if role_is_smart_meter(role):
+        return role_candidate_matches(role, item, allow_missing_device_class=True, allow_device_class_mismatch=False)
     if domain in {'button', 'update', 'number', 'select'}:
         return False
     haystack = normalize(' '.join(str(item.get(key) or '') for key in ['entity_id', 'friendly_name', 'original_name', 'device_name']))
@@ -1609,6 +1764,11 @@ def role_state_priority(role: str, item: dict[str, Any]) -> int:
             score += 25
         if device_class in CONTACT_CLASSES:
             score += 20
+    if role_is_smart_meter(role):
+        if any(term in entity_id for term in ['energy', 'electricity', 'strom', 'power', 'water', 'wasser', 'gas']):
+            score += 25
+        if device_class in SMART_METER_CLASSES:
+            score += 25
     return score
 
 
@@ -1674,6 +1834,47 @@ def power_source_from_state(state: dict[str, Any] | None) -> str | None:
     return None
 
 
+def c1001_telemetry_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
+    if not state:
+        return {'presence': None, 'fall_detected': None, 'motion': None, 'hp_led': None, 'fall_led': None, 'led_status': None, 'writable_settings': None}
+    attrs = state.get('attributes') if isinstance(state.get('attributes'), dict) else {}
+    presence = parse_bool_value(first_present(state, attrs, 'presence'))
+    if presence is None and str(state.get('payload_key') or '').strip().lower() == 'presence':
+        presence = parse_bool_value(state.get('state'))
+    fall_detected = parse_bool_value(first_present(state, attrs, 'fall_detected'))
+    motion = first_present(state, attrs, 'motion')
+    if motion is not None:
+        motion = str(motion)
+    hp_led = parse_bool_value(first_present(state, attrs, 'hp_led'))
+    fall_led = parse_bool_value(first_present(state, attrs, 'fall_led'))
+    raw_led_status = first_present(state, attrs, 'led_status')
+    raw_writable_settings = first_present(state, attrs, 'writable_settings')
+    writable_settings = [str(item) for item in raw_writable_settings] if isinstance(raw_writable_settings, list) else None
+    led_status = raw_led_status if isinstance(raw_led_status, dict) else None
+    if led_status:
+        if hp_led is None:
+            hp_led = parse_bool_value(led_status.get('hp_led'))
+        if fall_led is None:
+            fall_led = parse_bool_value(led_status.get('fall_led'))
+    if hp_led is not None or fall_led is not None:
+        led_status = {
+            **(led_status or {}),
+            'hp_led': hp_led,
+            'fall_led': fall_led,
+            'all_on': bool(hp_led and fall_led),
+            'any_on': bool(hp_led or fall_led),
+        }
+    return {'presence': presence, 'fall_detected': fall_detected, 'motion': motion, 'hp_led': hp_led, 'fall_led': fall_led, 'led_status': led_status, 'writable_settings': writable_settings}
+
+
+def first_present(item: dict[str, Any], attrs: dict[str, Any], key: str) -> Any:
+    if key in item and item.get(key) is not None:
+        return item.get(key)
+    if key in attrs and attrs.get(key) is not None:
+        return attrs.get(key)
+    return None
+
+
 def find_mqtt_availability_state(role: dict[str, Any], states: list[dict[str, Any]]) -> bool | None:
     source = str(role.get('source') or role.get('platform') or '').strip().lower()
     if source not in {'zigbee2mqtt', 'mqtt'} and not (role.get('topic') or role.get('source_ref') or role.get('entity_id')):
@@ -1722,6 +1923,20 @@ def esp32_factory_reset_ack_matches(payload: Any, device_id: str) -> bool:
     return status == 'factory_resetting' and (not ack_device or ack_device == str(device_id).strip())
 
 
+def esp32_command_ack_matches(payload: Any, device_id: str, command: str) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    status = str(payload.get('status') or '').strip().lower()
+    if status not in {'command_accepted', 'command_rejected'}:
+        return False
+    ack_device = str(payload.get('device_id') or payload.get('deviceId') or '').strip()
+    if ack_device and ack_device != str(device_id).strip():
+        return False
+    ack_command = str(payload.get('command') or '').strip().lower().replace('-', '_')
+    wanted_command = str(command or '').strip().lower().replace('-', '_')
+    return not ack_command or ack_command == wanted_command
+
+
 def mqtt_identity_values(item: dict[str, Any]) -> set[str]:
     values: set[str] = set()
     for key in ('entity_id', 'source_ref', 'topic', 'device_id', 'unique_id', 'original_name', 'device_name', 'friendly_name'):
@@ -1733,7 +1948,7 @@ def mqtt_identity_values(item: dict[str, Any]) -> set[str]:
         values.add(slug_identity(raw))
         if '/' in raw:
             tail = raw.rsplit('/', 1)[-1].strip()
-            if tail:
+            if tail and tail.lower() not in {'state', 'availability', 'status', 'command'}:
                 values.add(tail)
                 values.add(tail.lower())
                 values.add(slug_identity(tail))
@@ -1765,6 +1980,31 @@ def role_is_contact(role: str) -> bool:
 def role_is_button(role: str) -> bool:
     value = str(role or '')
     return value.endswith('_button') or value == 'button'
+
+
+def role_is_smart_meter(role: str) -> bool:
+    value = normalize(str(role or ''))
+    return value.endswith(('_energy', '_power', '_water', '_gas', '_meter')) or any(term in value for term in ['electricity_meter', 'smart_meter', 'stromzaehler', 'wasserzaehler', 'gaszaehler'])
+
+
+def role_is_electricity_meter(role: str) -> bool:
+    value = normalize(str(role or ''))
+    return any(term in value for term in ['energy', 'power', 'electricity', 'smart_meter', 'strom'])
+
+
+def smart_meter_candidate_matches(role: str, item: dict[str, Any]) -> bool:
+    haystack = normalize(' '.join(str(item.get(key) or '') for key in ['entity_id', 'friendly_name', 'original_name', 'device_name', 'model', 'payload_key']))
+    device_class = str(item.get('device_class') or '').lower()
+    payload_key = str(item.get('payload_key') or '').lower()
+    keys = {device_class, payload_key}
+    if role_is_electricity_meter(role):
+        return bool(keys.intersection({'energy', 'power', 'energy_consumption', 'electricity', 'electricity_consumption', 'power_usage'})) or any(term in haystack for term in ['energy', 'electricity', 'strom', 'power', 'kwh', 'watt'])
+    normalized_role = normalize(role)
+    if 'water' in normalized_role or 'wasser' in normalized_role:
+        return 'water' in keys or 'water_consumption' in keys or any(term in haystack for term in ['water', 'wasser'])
+    if 'gas' in normalized_role:
+        return 'gas' in keys or 'gas_consumption' in keys or 'gas' in haystack
+    return bool(keys.intersection(SMART_METER_CLASSES | SMART_METER_KEYS)) or any(term in haystack for term in ['energy', 'electricity', 'strom', 'power', 'water', 'wasser', 'gas'])
 
 
 def candidate_id_matches(item: dict[str, Any], selected_id: str) -> bool:
@@ -2017,6 +2257,13 @@ def public_role(data: dict[str, Any]) -> dict[str, Any]:
         'last_updated': data.get('last_updated'),
         'battery_level': data.get('battery_level'),
         'power_source': data.get('power_source'),
+        'presence': data.get('presence'),
+        'fall_detected': data.get('fall_detected'),
+        'motion': data.get('motion'),
+        'hp_led': data.get('hp_led'),
+        'fall_led': data.get('fall_led'),
+        'led_status': data.get('led_status'),
+        'writable_settings': data.get('writable_settings'),
         'device_class': data.get('device_class'),
         'domain': data.get('domain'),
         'source': data.get('source'),
@@ -2035,7 +2282,7 @@ def find_battery_level(role: dict[str, Any], states: list[dict[str, Any]]) -> in
 def find_battery_entity(role: dict[str, Any], states: list[dict[str, Any]]) -> dict[str, Any] | None:
     device_id = str(role.get('device_id') or '').strip()
     role_entity = str(role.get('entity_id') or '')
-    role_prefix = role_entity.rsplit('_', 1)[0] if '_' in role_entity else role_entity
+    role_prefixes = battery_lookup_prefixes(role_entity)
     role_identities = mqtt_identity_values(role)
     for state in states:
         entity_id = str(state.get('entity_id') or '')
@@ -2047,10 +2294,45 @@ def find_battery_entity(role: dict[str, Any], states: list[dict[str, Any]]) -> d
         if role_identities.intersection(mqtt_identity_values(state)):
             if parse_battery(state.get('state')) is not None:
                 return state
-        if role_prefix and entity_id.startswith(role_prefix):
+        if any(entity_id.startswith(prefix) for prefix in role_prefixes):
             if parse_battery(state.get('state')) is not None:
                 return state
     return None
+
+
+def battery_lookup_prefixes(entity_id: str) -> list[str]:
+    text = str(entity_id or '').strip()
+    if not text:
+        return []
+    domain, _, object_id = text.partition('.')
+    base = object_id or text
+    for suffix in (
+        '_contact',
+        '_door',
+        '_opening',
+        '_presence',
+        '_occupancy',
+        '_motion',
+        '_bewegung',
+        '_praesenz',
+        '_präsenz',
+    ):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    prefixes = []
+    for candidate_domain in ['sensor', domain]:
+        if candidate_domain:
+            prefixes.append(f'{candidate_domain}.{base}')
+    return unique_ordered([item for item in prefixes if item])
+
+
+def unique_ordered(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
 
 
 def is_battery_entity(state: dict[str, Any]) -> bool:

@@ -2,6 +2,7 @@ sentero:
   enabled: true
   behavior:
     learning_days: 14
+    min_usable_days: 7
 
 app:
   dev_mode: false
@@ -27,7 +28,7 @@ home_assistant:
   token: HA_TOKEN
 
 mqtt:
-  host: homeassistant.local
+  host: 192.168.178.143
   port: 1883
   username: SENTERO_MQTT_USERNAME
   password: SENTERO_MQTT_PASSWORD
