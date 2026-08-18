@@ -44,6 +44,32 @@ async def behavior_snapshot_loop() -> None:
         await asyncio.sleep(interval)
 
 
+async def network_startup_check() -> None:
+    try:
+        await asyncio.to_thread(get_services().network.ensure_first_boot_setup)
+        await asyncio.to_thread(get_services().notification.process_pending_queue)
+    except Exception:
+        logger.exception("Network startup check failed", extra={"component": "network"})
+
+
+async def network_maintenance_loop() -> None:
+    await asyncio.sleep(5)
+    while True:
+        try:
+            services = get_services()
+            result = await asyncio.to_thread(services.network.maintain_once)
+            if result.get("actions"):
+                logger.info("Network maintenance actions applied", extra={"component": "network", "actions": result.get("actions")})
+            await asyncio.to_thread(services.notification.process_pending_queue)
+            interval = services.network.failover_config().check_interval_seconds
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Network maintenance failed", extra={"component": "network"})
+            interval = 30
+        await asyncio.sleep(interval)
+
+
 class SPAStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
         try:
@@ -64,13 +90,18 @@ class SPAStaticFiles(StaticFiles):
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     logger.info("Application started", extra={"component": "app"})
+    await network_startup_check()
     behavior_task = asyncio.create_task(behavior_snapshot_loop())
+    network_task = asyncio.create_task(network_maintenance_loop())
     try:
         yield
     finally:
         behavior_task.cancel()
+        network_task.cancel()
         with suppress(asyncio.CancelledError):
             await behavior_task
+        with suppress(asyncio.CancelledError):
+            await network_task
         logger.info("Application stopped", extra={"component": "app"})
 
 
@@ -97,6 +128,10 @@ PUBLIC_PATHS = {
     "/api/sentero/auth/logout",
     "/api/setup/box-network/status",
     "/api/setup/box-network/wifi",
+    "/api/setup/network/status",
+    "/api/setup/network/wifi/networks",
+    "/api/setup/network/wifi/connect",
+    "/api/setup/network/cellular/connect",
 }
 PUBLIC_PREFIXES = (
     "/api/sentero/exchange/",

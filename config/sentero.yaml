@@ -11,6 +11,16 @@ box_setup:
   mode: disabled
   hostname: sentero
 
+network:
+  failover:
+    enabled: true
+    failure_threshold: 3
+    recovery_threshold: 3
+    check_interval_seconds: 30
+    switch_cooldown_seconds: 120
+  mail_probe_host: sentero.de
+  mail_probe_port: 443
+
 logging:
   level: INFO
 

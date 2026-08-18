@@ -9,6 +9,7 @@ Zielbild fuer Produktion:
 - Updates kommen ueber `UPDATE_BASE_URL=https://seirafi.de/robotersteve/sentero`.
 - Runtime-Daten bleiben in `data/` und werden durch Updates nicht ueberschrieben.
 - Vertrauenspersonen erhalten relevante Warnungen zu Verhalten, Sensor-Batterie und Sensor-Erreichbarkeit.
+- Die Box kann ohne vorhandenen Router ueber ein temporaeres geschuetztes Setup-WLAN und optional LTE eingerichtet werden.
 
 ## Status
 
@@ -24,6 +25,8 @@ Bereits erledigt:
 - Zigbee Permit-Join laeuft im MQTT-Modus direkt ueber Mosquitto.
 - Update-Manifeste werden aus `UPDATE_BASE_URL` generiert.
 - Release-Manifeste enthalten keine lokalen `/Users/...` Download-Pfade mehr.
+- NetworkService als Querschnittsdienst fuer Setup-WLAN, WLAN, Ethernet, LTE-Fallback und Connectivity ist vorhanden.
+- Benachrichtigungen koennen bei Offline-Zeit persistent gepuffert und nach Wiederherstellung versendet werden.
 
 ## Muss Vor Produktivbetrieb
 

@@ -26,17 +26,18 @@ Wenn LAN angeschlossen ist:
 - Benutzer oeffnet `http://sentero.local`.
 - Der normale Sentero-Wizard startet.
 
-### WLAN
+### WLAN / Mobilfunk ohne vorhandenen Router
 
 Wenn kein LAN vorhanden ist:
 
-- Box startet spaeter einen Setup-Hotspot `Sentero-Setup`.
+- Box startet einen geschuetzten Setup-Hotspot mit geraetespezifischer SSID, z.B. `Sentero-Setup-7F3A`.
 - Benutzer verbindet sich mit diesem WLAN.
-- Benutzer oeffnet `http://192.168.4.1`.
-- Mini-Setup fragt nur WLAN-Name und WLAN-Passwort ab.
-- Box verbindet sich mit dem Heim-WLAN.
+- Benutzer oeffnet `http://sentero.local` oder `http://192.168.50.1`.
+- Wizard fragt in Kundensprache nach Internetverbindung.
+- Benutzer waehlt WLAN, Ethernet oder Mobilfunk.
+- Box testet Internetzugang, DNS und Sentero-Mailserver.
 - Setup-Hotspot wird deaktiviert.
-- Benutzer oeffnet danach `http://sentero.local`.
+- Wenn die Verbindung fehlschlaegt, bleibt der Setup-Hotspot aktiv.
 
 ## Konfiguration
 
@@ -91,16 +92,18 @@ Implementiert:
 
 - sicherer Default `disabled`
 - Status-API
-- WLAN-Daten speichern
+- WLAN-Scan und WLAN-Verbindung ueber zentrale NetworkService-Grenze
+- Mobilfunkstatus und LTE-Fallback ueber ModemManager/NetworkManager-Grenze
+- temporaerer Setup-AP mit geraetespezifischer SSID
+- Connectivity-Pruefung ueber Link, Default Route, DNS, Internet und Mailserver
+- Offline-Benachrichtigungsqueue
 - keine OS-Aenderungen im Development
-- Adapter-Grenze fuer spaetere OS-Integration
+- Adapter-Grenze fuer NetworkManager/ModemManager
 - vorbereiteter Mini-Setup-Screen
 - Einstellungen -> Netzwerk zeigt Box-Verbindung getrennt von Sensor-WLAN
 
 Noch offen:
 
-- NetworkManager-Adapter mit `nmcli` oder DBus
-- Setup-Hotspot per NetworkManager oder hostapd/dnsmasq
-- Hotspot bei erfolgreicher WLAN-Verbindung deaktivieren
+- Produktionsvalidierung auf Zielhardware fuer WLAN-AP-Mode
 - Avahi/mDNS fuer `http://sentero.local`
-- Produktions-Installationsskripte fuer Debian/Raspberry Pi OS
+- Firewall-Regeln fuer Setup-AP-Isolation im Installationsskript

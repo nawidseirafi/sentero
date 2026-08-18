@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, HeartHandshake, Mail, Plus, ShieldCheck, Trash2, UserRound, X } from 'lucide-react';
-import { api, type SenteroEsp32DiscoverySensor, type SenteroSensorRole } from '@shared/api/client';
+import { ArrowLeft, ArrowRight, Cable, CheckCircle2, HeartHandshake, Mail, Plus, ShieldCheck, Smartphone, Trash2, UserRound, Wifi, X } from 'lucide-react';
+import { api, type NetworkStatus, type SenteroEsp32DiscoverySensor, type SenteroSensorRole, type WifiNetwork } from '@shared/api/client';
 import { SensorWizard, type SensorBinding, type SensorDiscoveryState } from './SensorWizard';
 
 type Profile = {
@@ -27,7 +27,7 @@ type NotificationPreferences = {
 
 type SensorPlan = { motion: boolean; door: boolean; electricity: boolean; water: boolean; gas: boolean };
 
-const steps = ['Willkommen', 'Profil', 'Räume', 'Sensoren', 'Vertraute Personen', 'Benachrichtigungen', 'Abschluss'];
+const steps = ['Willkommen', 'Internetverbindung', 'Profil', 'Räume', 'Sensoren', 'Vertraute Personen', 'Benachrichtigungen', 'Abschluss'];
 const ZIGBEE_DISCOVERY_SECONDS = 180;
 const PRESENCE_DISCOVERY_TIMEOUT_MS = 8000;
 
@@ -58,6 +58,12 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
   const [notification, setNotification] = useState<NotificationPreferences>({ anomalies: true, critical: true, daily_summary: false });
   const [confirmed, setConfirmed] = useState(false);
   const [emailSetupRequired, setEmailSetupRequired] = useState(false);
+  const [networkStatus, setNetworkStatus] = useState<NetworkStatus | null>(null);
+  const [wifiNetworks, setWifiNetworks] = useState<WifiNetwork[]>([]);
+  const [networkChoice, setNetworkChoice] = useState<'wifi' | 'cellular' | 'ethernet'>('wifi');
+  const [wifiForm, setWifiForm] = useState({ ssid: '', password: '' });
+  const [networkMessage, setNetworkMessage] = useState('');
+  const [networkBusy, setNetworkBusy] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [sensorBindings, setSensorBindings] = useState<SensorBinding[]>([]);
   const [discovery, setDiscovery] = useState<Record<string, SensorDiscoveryState>>({});
@@ -105,6 +111,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
         })));
       }
     }).catch(() => undefined);
+    void refreshNetwork();
     return () => {
       Object.values(timers.current).forEach((timer) => window.clearTimeout(timer));
       activeDiscoverySessions.current.forEach((sessionId) => {
@@ -129,14 +136,18 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
       await safeBackend(() => api.startSenteroSetup());
     }
     if (step === 1) {
-      await safeBackend(() => api.saveSenteroProfile({ name: profile.name.trim(), birth_year: Number.parseInt(profile.birthYear, 10), age: calculatedAge, notes: profile.notes }));
+      const ok = await saveNetworkStep();
+      if (!ok) return;
     }
     if (step === 2) {
+      await safeBackend(() => api.saveSenteroProfile({ name: profile.name.trim(), birth_year: Number.parseInt(profile.birthYear, 10), age: calculatedAge, notes: profile.notes }));
+    }
+    if (step === 3) {
       const roomsWithSensors = selectedRoomsWithSensors(selectedRooms, sensorPlan);
       setSelectedRooms(roomsWithSensors);
       await safeBackend(() => api.saveSenteroSetupRooms(roomsWithSensors));
     }
-    if (step === 4 && contacts.length) {
+    if (step === 5 && contacts.length) {
       await safeBackend(() => Promise.all(
         contacts.map((contact) => {
           const email = normalizeEmail(contact.email);
@@ -151,7 +162,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
         }),
       ));
     }
-    if (step === 5) {
+    if (step === 6) {
       await safeBackend(() => api.saveSenteroNotifications(notification));
     }
     if (step === steps.length - 1) {
@@ -168,14 +179,68 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
   }
 
   function validateStep() {
-    if (step === 1 && !profile.name.trim()) return ['Bitte geben Sie den Namen ein.'];
-    if (step === 1 && !validBirthYear(profile.birthYear)) return ['Bitte geben Sie ein gültiges Geburtsjahr ein.'];
-    if (step === 2 && selectedRooms.length === 0) return ['Bitte wählen Sie mindestens einen Raum aus.'];
-    if (step === 2 && selectedRoomsWithSensors(selectedRooms, sensorPlan).length === 0) return ['Bitte wählen Sie mindestens einen Raum mit Sensor aus.'];
-    if (step === 4 && contacts.length === 0) return ['Bitte fügen Sie mindestens eine vertraute Person hinzu.'];
-    if (step === 4 && !contacts.some((contact) => isValidEmail(normalizeEmail(contact.email)))) return ['Bitte hinterlegen Sie mindestens eine gültige E-Mail-Adresse.'];
-    if (step === 6 && !confirmed) return ['Bitte bestätigen Sie die Zusammenfassung.'];
+    if (step === 1 && !networkStatus?.network_ready && networkChoice === 'wifi' && !wifiForm.ssid.trim()) return ['Bitte wählen Sie ein WLAN aus.'];
+    if (step === 1 && !networkStatus?.network_ready && networkChoice === 'wifi' && !wifiForm.password) return ['Bitte geben Sie das WLAN-Passwort ein.'];
+    if (step === 2 && !profile.name.trim()) return ['Bitte geben Sie den Namen ein.'];
+    if (step === 2 && !validBirthYear(profile.birthYear)) return ['Bitte geben Sie ein gültiges Geburtsjahr ein.'];
+    if (step === 3 && selectedRooms.length === 0) return ['Bitte wählen Sie mindestens einen Raum aus.'];
+    if (step === 3 && selectedRoomsWithSensors(selectedRooms, sensorPlan).length === 0) return ['Bitte wählen Sie mindestens einen Raum mit Sensor aus.'];
+    if (step === 5 && contacts.length === 0) return ['Bitte fügen Sie mindestens eine vertraute Person hinzu.'];
+    if (step === 5 && !contacts.some((contact) => isValidEmail(normalizeEmail(contact.email)))) return ['Bitte hinterlegen Sie mindestens eine gültige E-Mail-Adresse.'];
+    if (step === 7 && !confirmed) return ['Bitte bestätigen Sie die Zusammenfassung.'];
     return [];
+  }
+
+  async function refreshNetwork() {
+    try {
+      const status = await api.networkStatus();
+      setNetworkStatus(status);
+      if (status.active_connection === 'wifi' || status.active_connection === 'ethernet' || status.active_connection === 'cellular') {
+        setNetworkChoice(status.active_connection);
+      }
+      if (status.capabilities.wifi) {
+        const scan = await api.networkWifiNetworks();
+        setWifiNetworks(scan.networks);
+      }
+    } catch {
+      // Network setup remains optional in development.
+    }
+  }
+
+  async function saveNetworkStep() {
+    setNetworkBusy(true);
+    setNetworkMessage('');
+    try {
+      if (networkStatus?.network_ready) {
+        return true;
+      }
+      if (networkChoice === 'ethernet') {
+        const status = await api.networkStatus();
+        setNetworkStatus(status);
+        if (!status.internet_reachable) {
+          setNetworkMessage('Sentero erkennt noch keine Internetverbindung. Sie können fortfahren, Benachrichtigungen werden später versendet.');
+        }
+        return true;
+      }
+      if (networkChoice === 'cellular') {
+        const result = await api.connectNetworkCellular();
+        setNetworkStatus(result.status);
+        setNetworkMessage(result.message);
+        return result.ok;
+      }
+      const result = await api.connectNetworkWifi(wifiForm);
+      setNetworkStatus(result.status);
+      setNetworkMessage(result.message);
+      if (!result.ok) setErrors([result.message || 'WLAN konnte nicht verbunden werden.']);
+      return result.ok;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internetverbindung konnte nicht eingerichtet werden.';
+      setNetworkMessage(message);
+      setErrors([message]);
+      return false;
+    } finally {
+      setNetworkBusy(false);
+    }
   }
 
   async function completeSetup() {
@@ -365,22 +430,23 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
       {errors.length > 0 && <div className="sc-form-errors" role="alert">{errors.map((error) => <p key={error}>{error}</p>)}</div>}
       <div className="sc-wizard-card">
         {step === 0 && <WelcomeStep />}
-        {step === 1 && <ProfileStep profile={profile} calculatedAge={calculatedAge} onChange={setProfile} />}
-        {step === 2 && <RoomsStep selected={selectedRooms} customRooms={customRooms} sensorPlan={sensorPlan} lockedSensorPlan={lockedSensorPlan} customRoom={customRoom} onToggle={toggleRoom} onCustomChange={setCustomRoom} onCustomAdd={addCustomRoom} onToggleSensorType={toggleSensorType} />}
-        {step === 3 && <SensorWizard sensors={sensorBindings} discovery={discovery} roomLabel={roomLabel} devMode={devMode} connected={connectedSensors} total={sensorBindings.length} onChange={updateSensor} onSearch={searchSensor} onSkip={skipSensor} />}
-        {step === 4 && <ContactsStep contacts={contacts} form={contactForm} formOpen={contactFormOpen} onOpen={() => setContactFormOpen(true)} onClose={() => setContactFormOpen(false)} onFormChange={setContactForm} onAdd={addContact} onDelete={(id) => setContacts((current) => {
+        {step === 1 && <NetworkStep status={networkStatus} choice={networkChoice} networks={wifiNetworks} wifiForm={wifiForm} busy={networkBusy} message={networkMessage} onChoice={setNetworkChoice} onWifiForm={setWifiForm} onRefresh={() => void refreshNetwork()} />}
+        {step === 2 && <ProfileStep profile={profile} calculatedAge={calculatedAge} onChange={setProfile} />}
+        {step === 3 && <RoomsStep selected={selectedRooms} customRooms={customRooms} sensorPlan={sensorPlan} lockedSensorPlan={lockedSensorPlan} customRoom={customRoom} onToggle={toggleRoom} onCustomChange={setCustomRoom} onCustomAdd={addCustomRoom} onToggleSensorType={toggleSensorType} />}
+        {step === 4 && <SensorWizard sensors={sensorBindings} discovery={discovery} roomLabel={roomLabel} devMode={devMode} connected={connectedSensors} total={sensorBindings.length} onChange={updateSensor} onSearch={searchSensor} onSkip={skipSensor} />}
+        {step === 5 && <ContactsStep contacts={contacts} form={contactForm} formOpen={contactFormOpen} onOpen={() => setContactFormOpen(true)} onClose={() => setContactFormOpen(false)} onFormChange={setContactForm} onAdd={addContact} onDelete={(id) => setContacts((current) => {
           const nextContacts = current.filter((contact) => contact.id !== id);
           if (nextContacts.length && !nextContacts.some((contact) => contact.primary)) {
             return nextContacts.map((contact, index) => ({ ...contact, primary: index === 0 }));
           }
           return nextContacts;
         })} />}
-        {step === 5 && <NotificationStep value={notification} onChange={setNotification} />}
-        {step === 6 && <SummaryStep profile={profile} age={calculatedAge} rooms={selectedRooms} roomLabel={roomLabel} contacts={contacts} sensors={connectedSensors} totalSensors={sensorBindings.length} notification={notification} confirmed={confirmed} onConfirm={setConfirmed} emailSetupRequired={emailSetupRequired} />}
+        {step === 6 && <NotificationStep value={notification} onChange={setNotification} />}
+        {step === 7 && <SummaryStep profile={profile} age={calculatedAge} rooms={selectedRooms} roomLabel={roomLabel} contacts={contacts} sensors={connectedSensors} totalSensors={sensorBindings.length} notification={notification} confirmed={confirmed} onConfirm={setConfirmed} emailSetupRequired={emailSetupRequired} />}
       </div>
       <footer className="sc-wizard-actions">
         <button type="button" onClick={back} disabled={step === 0}><ArrowLeft size={20} /> Zurück</button>
-        <button className="primary" type="button" onClick={() => void next()}>
+        <button className="primary" type="button" onClick={() => void next()} disabled={networkBusy}>
           {step === 0 ? 'Einrichtung starten' : step === steps.length - 1 ? 'Einrichtung abschließen' : 'Weiter'}
           <ArrowRight size={20} />
         </button>
@@ -419,6 +485,101 @@ function WelcomeStep() {
       <h1>Willkommen bei Sentero</h1>
       <p>Sentero achtet leise im Hintergrund auf vertraute Tagesabläufe. Wenn etwas ungewöhnlich wirkt, werden vertraute Personen behutsam informiert.</p>
       <p>Die Einrichtung dauert nur wenige Minuten und kann später jederzeit angepasst werden.</p>
+    </section>
+  );
+}
+
+function NetworkStep({ status, choice, networks, wifiForm, busy, message, onChoice, onWifiForm, onRefresh }: {
+  status: NetworkStatus | null;
+  choice: 'wifi' | 'cellular' | 'ethernet';
+  networks: WifiNetwork[];
+  wifiForm: { ssid: string; password: string };
+  busy: boolean;
+  message: string;
+  onChoice: (choice: 'wifi' | 'cellular' | 'ethernet') => void;
+  onWifiForm: (value: { ssid: string; password: string }) => void;
+  onRefresh: () => void;
+}) {
+  const capabilities = status?.capabilities || { ethernet: true, wifi: true, cellular: false, wifi_ap: false };
+  const isConnected = Boolean(status?.network_ready);
+  const connectionLabel = status?.active_connection === 'wifi'
+    ? 'WLAN'
+    : status?.active_connection === 'ethernet'
+      ? 'Ethernet'
+      : status?.active_connection === 'cellular'
+        ? 'Mobilfunk'
+        : 'Internet';
+  return (
+    <section className="sc-network-step">
+      <div className="sc-wizard-section-copy">
+        <h3>Internetverbindung</h3>
+        <p>Sentero benötigt eine Internetverbindung, um Benachrichtigungen und Updates zu senden. Ihre Sensordaten bleiben weiterhin lokal auf der Sentero-Box.</p>
+      </div>
+      {isConnected && (
+        <div className="sc-network-ready-card">
+          <CheckCircle2 size={28} />
+          <div>
+            <strong>Internet ist bereits verbunden</strong>
+            <span>{connectionLabel}{status?.ip_address ? ` · ${status.ip_address}` : ''}</span>
+          </div>
+        </div>
+      )}
+      <div className="sc-network-choice-grid">
+        {capabilities.wifi && (
+          <button type="button" className={choice === 'wifi' ? 'active' : ''} onClick={() => onChoice('wifi')}>
+            <Wifi size={22} /><strong>WLAN verwenden</strong>
+          </button>
+        )}
+        {capabilities.cellular && (
+          <button type="button" className={choice === 'cellular' ? 'active' : ''} onClick={() => onChoice('cellular')}>
+            <Smartphone size={22} /><strong>Mobilfunk verwenden</strong>
+          </button>
+        )}
+        {capabilities.ethernet && (
+          <button type="button" className={choice === 'ethernet' ? 'active' : ''} onClick={() => onChoice('ethernet')}>
+            <Cable size={22} /><strong>Ethernet verbunden</strong>
+          </button>
+        )}
+      </div>
+      {choice === 'wifi' && !isConnected && (
+        <div className="sc-network-wifi-form">
+          <div className="sc-network-card-head">
+            <div>
+              <h3>WLAN auswählen</h3>
+              <p>Wählen Sie das Netzwerk der Wohnung aus.</p>
+            </div>
+            <button type="button" onClick={onRefresh} disabled={busy}>Aktualisieren</button>
+          </div>
+          <div className="sc-wifi-list">
+            {networks.map((network) => (
+              <button key={network.ssid} type="button" className={wifiForm.ssid === network.ssid ? 'active' : ''} onClick={() => onWifiForm({ ...wifiForm, ssid: network.ssid })}>
+                <span>{network.ssid}</span>
+                <small>{network.signal}% {network.secured ? 'gesichert' : ''}</small>
+              </button>
+            ))}
+            {networks.length === 0 && <p className="sc-muted-note">Noch keine WLAN-Netze gefunden.</p>}
+          </div>
+          <label>
+            WLAN-Name
+            <input value={wifiForm.ssid} onChange={(event) => onWifiForm({ ...wifiForm, ssid: event.target.value })} placeholder="WLAN-Name eingeben" />
+          </label>
+          <label>
+            WLAN-Passwort
+            <input type="password" value={wifiForm.password} onChange={(event) => onWifiForm({ ...wifiForm, password: event.target.value })} placeholder="Passwort eingeben" />
+          </label>
+        </div>
+      )}
+      {choice === 'wifi' && isConnected && (
+        <p className="sc-network-note">Wenn Sie das WLAN ändern möchten, trennen Sie die aktuelle Verbindung oder aktualisieren Sie die Netzwerkeinstellungen später in den Einstellungen.</p>
+      )}
+      {choice === 'cellular' && !isConnected && (
+        <p className="sc-network-note">Sentero verwendet die Mobilfunkverbindung nur für die Box. Die Box wird dadurch kein WLAN-Router für andere Geräte.</p>
+      )}
+      {choice === 'ethernet' && !isConnected && (
+        <p className="sc-network-note">Wenn das Netzwerkkabel verbunden ist, prüft Sentero die Internetverbindung automatisch.</p>
+      )}
+      {message && <p className="sc-network-note">{message}</p>}
+      {status && <p className="sc-muted-note">{status.message}</p>}
     </section>
   );
 }

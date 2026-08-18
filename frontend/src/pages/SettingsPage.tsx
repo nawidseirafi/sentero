@@ -282,6 +282,18 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     }
   }
 
+  async function startNetworkRecovery() {
+    if (!window.confirm('Setup-WLAN vorübergehend starten? Die bestehende Verbindung bleibt erhalten, bis eine neue Verbindung erfolgreich geprüft wurde.')) return;
+    try {
+      await api.startNetworkSetupAp();
+      const status = await api.boxNetworkStatus();
+      setBoxNetworkStatus(status);
+      toast('Netzwerk-Einrichtung gestartet');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Netzwerk-Einrichtung konnte nicht gestartet werden.');
+    }
+  }
+
   async function testNetwork() {
     try {
       const result = await api.testSenteroSensorNetwork();
@@ -896,7 +908,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
              <div className="sc-section-title">
             <h2>Netzwerk</h2>
              </div>
-            <p>Verwalten Sie die Verbindung der Sentero-Box und die gespeicherten WLAN-Daten fuer Sensoren.</p>
+            <p>Prüfen Sie die Internetverbindung der Sentero-Box und richten Sie sie bei Bedarf neu ein.</p>
           </div>
           <div className="sc-network-sections">
             <div className="sc-network-card">
@@ -910,10 +922,13 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                 </span>
               </div>
               <div className="sc-network-facts">
-                <span>Adresse: {boxNetworkStatus?.local_url || 'http://sentero.local'}</span>
-                <span>Modus: {boxNetworkStatus?.mode || 'disabled'}</span>
-                <span>Einrichtung: {boxNetworkStatus?.setup_ap_active ? 'aktiv' : 'nicht aktiv'}</span>
+                <span>Internet: {boxNetworkStatus?.network_ready ? 'Verbunden' : 'Nicht verbunden'}</span>
+                <span>Verbindung: {networkLabel(boxNetworkStatus)}</span>
+                <span>Einrichtung: {boxNetworkStatus?.setup_ap_active ? 'vorübergehend aktiv' : 'geschlossen'}</span>
               </div>
+              {!boxNetworkStatus?.network_ready && (
+                <p className="sc-network-note">Sentero überwacht weiterhin lokal. Benachrichtigungen werden versendet, sobald die Verbindung wieder verfügbar ist.</p>
+              )}
               <div className="sc-form-grid">
                 <label>
                   WLAN-Name
@@ -927,6 +942,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
               <footer className="sc-account-actions">
                 <button className="sc-soft-action primary" type="button" onClick={() => void saveBoxNetwork()}><Save size={18} /> Verbinden</button>
+                <button className="sc-soft-action" type="button" onClick={() => void startNetworkRecovery()}><Wifi size={18} /> Netzwerk neu einrichten</button>
               </footer>
             </div>
           </div>
@@ -1864,6 +1880,15 @@ function channelAvailability(channels: SenteroNotificationChannel[]) {
     }
   }
   return state;
+}
+
+function networkLabel(status: BoxNetworkStatus | null) {
+  if (!status?.network_ready) return 'Offline';
+  const value = String((status as unknown as { active_connection?: string }).active_connection || '');
+  if (value === 'cellular') return 'Mobilfunk';
+  if (value === 'wifi') return 'WLAN';
+  if (value === 'ethernet') return 'Ethernet';
+  return 'Verbunden';
 }
 
 function sanitizeChannels(channels: string[], available: Record<'email' | 'telegram' | 'whatsapp', boolean>) {

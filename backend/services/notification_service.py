@@ -16,6 +16,8 @@ from backend.services.aal_roles import can_access_data_classes
 from backend.services.data_classification import aggregation_for_data_class, classify_notification
 from backend.services.consent_service import DEFAULT_NOTIFICATION_DATA_CLASSES, DEFAULT_NOTIFICATION_PURPOSE, ConsentService
 from backend.services.device_mapping_service import DeviceMappingService, now
+from backend.services.network.connectivity_service import ConnectivityService
+from backend.services.network.models import ConnectionType, NetworkStatusCode
 
 logger = get_logger(__name__)
 
@@ -100,14 +102,37 @@ class WhatsAppNotificationProvider(NotificationProvider):
 
 
 class NotificationService:
-    def __init__(self, mapping: DeviceMappingService | None = None, messaging: MessagingService | None = None) -> None:
+    def __init__(self, mapping: DeviceMappingService | None = None, messaging: MessagingService | None = None, connectivity: ConnectivityService | None = None) -> None:
         self.mapping = mapping or DeviceMappingService()
         self.consent = ConsentService(self.mapping)
+        self.connectivity = connectivity
         self.providers: dict[str, NotificationProvider] = {
             "email": EmailNotificationProvider(messaging),
             "telegram": TelegramNotificationProvider(),
             "whatsapp": WhatsAppNotificationProvider(),
         }
+        self.ensure_queue_schema()
+
+    def ensure_queue_schema(self) -> None:
+        with self.mapping.connect() as con:
+            con.execute(
+                """create table if not exists notification_outbox (
+                    id integer primary key autoincrement,
+                    contact_id integer,
+                    channel text not null,
+                    severity text not null,
+                    title text not null,
+                    text text not null,
+                    contact_json text not null,
+                    status text not null,
+                    attempts integer not null default 0,
+                    original_created_at text not null,
+                    last_attempt_at text,
+                    sent_at text,
+                    error_message text
+                )"""
+            )
+            con.commit()
 
     def channels(self) -> dict[str, Any]:
         with self.mapping.connect() as con:
@@ -158,6 +183,34 @@ class NotificationService:
         with self.mapping.connect() as con:
             rows = con.execute("select * from notification_logs order by created_at desc, id desc limit ?", (limit,)).fetchall()
         return {"logs": [self._public_log(dict(row)) for row in rows]}
+
+    def queue_status(self) -> dict[str, Any]:
+        with self.mapping.connect() as con:
+            rows = con.execute("select status, count(*) as count from notification_outbox group by status").fetchall()
+        return {"queue": {row["status"]: row["count"] for row in rows}}
+
+    def process_pending_queue(self, limit: int = 50) -> dict[str, Any]:
+        if self.connectivity and self.connectivity.check(ConnectionType.NONE).status in {NetworkStatusCode.OFFLINE, NetworkStatusCode.LOCAL_ONLY}:
+            return {"sent": 0, "remaining": self._pending_count(), "skipped": "offline"}
+        with self.mapping.connect() as con:
+            rows = con.execute(
+                "select * from notification_outbox where status in ('pending', 'failed') order by original_created_at, id limit ?",
+                (min(max(int(limit or 50), 1), 200),),
+            ).fetchall()
+        sent = 0
+        for row in rows:
+            item = dict(row)
+            contact = self._decode_json(item.get("contact_json"))
+            channel = str(item["channel"])
+            try:
+                text = add_original_timestamp(str(item["text"]), str(item["original_created_at"]))
+                self.providers[channel].send(contact, str(item["title"]), text, self._setting(channel).get("config") or {})
+                self._mark_outbox(int(item["id"]), "sent", None)
+                self._log(item.get("contact_id"), channel, str(item["severity"]), "sent", str(item["title"]), None)
+                sent += 1
+            except Exception as exc:
+                self._mark_outbox(int(item["id"]), "failed", self._safe_error(exc))
+        return {"sent": sent, "remaining": self._pending_count()}
 
     def notify_assessment(self, assessment: dict[str, Any], contacts: list[dict[str, Any]]) -> None:
         severity = str(assessment.get("status") or "green")
@@ -290,6 +343,10 @@ class NotificationService:
         setting = self._setting(channel)
         if not setting.get("enabled"):
             return
+        if self._should_queue_offline():
+            self._enqueue(contact, channel, severity, title, text)
+            self._log(contact.get("id"), channel, severity, "pending", title, None)
+            return
         try:
             self.providers[channel].send(contact, title, text, setting.get("config") or {})
             self._log(contact.get("id"), channel, severity, "sent", title, None)
@@ -311,6 +368,40 @@ class NotificationService:
                         extra={"component": "notification", "contact_id": contact.get("id"), "severity": severity},
                     )
                     self._log(contact.get("id"), "email", severity, "failed", title, self._safe_error(fallback_exc))
+
+    def _should_queue_offline(self) -> bool:
+        if not self.connectivity:
+            return False
+        check = self.connectivity.check(ConnectionType.NONE)
+        return check.status in {NetworkStatusCode.OFFLINE, NetworkStatusCode.LOCAL_ONLY}
+
+    def _enqueue(self, contact: dict[str, Any], channel: str, severity: str, title: str, text: str) -> None:
+        timestamp = now()
+        safe_contact = {key: contact.get(key) for key in ("id", "name", "email", "telegram_chat_id", "whatsapp_phone_number") if contact.get(key)}
+        with self.mapping.connect() as con:
+            con.execute(
+                """insert into notification_outbox
+                   (contact_id, channel, severity, title, text, contact_json, status, original_created_at)
+                   values (?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                (contact.get("id"), channel, severity, title, text, json.dumps(safe_contact, ensure_ascii=False, sort_keys=True), timestamp),
+            )
+            con.commit()
+
+    def _mark_outbox(self, outbox_id: int, status: str, error: str | None) -> None:
+        timestamp = now()
+        with self.mapping.connect() as con:
+            con.execute(
+                """update notification_outbox
+                   set status = ?, attempts = attempts + 1, last_attempt_at = ?, sent_at = case when ? = 'sent' then ? else sent_at end, error_message = ?
+                   where id = ?""",
+                (status, timestamp, status, timestamp, error, outbox_id),
+            )
+            con.commit()
+
+    def _pending_count(self) -> int:
+        with self.mapping.connect() as con:
+            row = con.execute("select count(*) as count from notification_outbox where status in ('pending', 'failed')").fetchone()
+        return int(row["count"] if row else 0)
 
     def _setting(self, channel: str) -> dict[str, Any]:
         with self.mapping.connect() as con:
@@ -557,3 +648,7 @@ def as_bool(value: Any) -> bool:
 
 def email_text_for_fallback(text: str) -> str:
     return f"{text}\n\nHinweis: Ein zusätzlicher Benachrichtigungskanal konnte nicht erreicht werden."
+
+
+def add_original_timestamp(text: str, original_created_at: str) -> str:
+    return f"{text}\n\nUrsprünglicher Zeitpunkt der Warnung: {original_created_at}"

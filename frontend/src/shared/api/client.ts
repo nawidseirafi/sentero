@@ -267,6 +267,27 @@ export type BoxNetworkWifiResult = {
   status: BoxNetworkStatus;
 };
 
+export type NetworkStatus = BoxNetworkStatus & {
+  status: 'OFFLINE' | 'LOCAL_ONLY' | 'ONLINE_ETHERNET' | 'ONLINE_WIFI' | 'ONLINE_CELLULAR' | 'DEGRADED' | string;
+  active_connection: 'ethernet' | 'wifi' | 'cellular' | 'none' | string;
+  cellular_active: boolean;
+  capabilities: { ethernet: boolean; wifi: boolean; wifi_ap: boolean; cellular: boolean };
+  cellular: {
+    available: boolean;
+    sim_present: boolean;
+    registered: boolean;
+    provider?: string | null;
+    signal_percent?: number | null;
+    connected: boolean;
+  };
+};
+
+export type WifiNetwork = {
+  ssid: string;
+  signal: number;
+  secured: boolean;
+};
+
 export type SenteroSensorProvisioningStatus = {
   implemented: boolean;
   status: string;
@@ -525,6 +546,14 @@ export const api = {
   boxNetworkStatus: () => request<BoxNetworkStatus>('/api/setup/box-network/status'),
   saveBoxNetworkWifi: (payload: { ssid: string; password: string }) =>
     request<BoxNetworkWifiResult>('/api/setup/box-network/wifi', { method: 'POST', body: JSON.stringify(payload) }),
+  networkStatus: (diagnostics = false) => request<NetworkStatus>(`/api/sentero/network/status${diagnostics ? '?diagnostics=true' : ''}`),
+  networkWifiNetworks: () => request<{ networks: WifiNetwork[] }>('/api/sentero/network/wifi/networks'),
+  connectNetworkWifi: (payload: { ssid: string; password: string }) =>
+    request<{ ok: boolean; applied: boolean; message: string; status: NetworkStatus }>('/api/sentero/network/wifi/connect', { method: 'POST', body: JSON.stringify(payload) }),
+  testNetworkWifi: () => request<{ ok: boolean; message: string }>('/api/sentero/network/wifi/test', { method: 'POST' }),
+  connectNetworkCellular: (payload: { apn?: string; username?: string; password?: string; pin?: string } = {}) =>
+    request<{ ok: boolean; applied: boolean; message: string; status: NetworkStatus }>('/api/sentero/network/cellular/connect', { method: 'POST', body: JSON.stringify(payload) }),
+  startNetworkSetupAp: () => request<{ ok: boolean; message: string }>('/api/sentero/network/setup-ap/start', { method: 'POST' }),
   senteroSensorProvisioningStatus: () => request<SenteroSensorProvisioningStatus>('/api/sentero/sensors/provisioning/status'),
   startSenteroPresenceDiscovery: () =>
     request<{ ok: boolean; message: string; discovery: SenteroEsp32DiscoveryStatus }>('/api/sentero/sensors/provisioning/esp32/discovery/start', { method: 'POST' }),

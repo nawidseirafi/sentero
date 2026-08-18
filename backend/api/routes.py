@@ -95,6 +95,22 @@ class BoxNetworkWifiPayload(BaseModel):
     password: str
 
 
+class NetworkWifiConnectPayload(BaseModel):
+    ssid: str
+    password: str
+
+
+class NetworkCellularConnectPayload(BaseModel):
+    apn: str | None = None
+    username: str | None = None
+    password: str | None = None
+    pin: str | None = None
+
+
+class FailoverTestPayload(BaseModel):
+    checks: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class Esp32ProvisioningStartPayload(BaseModel):
     room_id: str
     display_name: str
@@ -231,6 +247,91 @@ def box_network_wifi(payload: BoxNetworkWifiPayload):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise api_error(exc) from exc
+
+
+@box_setup_router.get("/network/status", tags=[TAG_SETUP])
+def local_setup_network_status():
+    return get_services().network.status()
+
+
+@box_setup_router.get("/network/wifi/networks", tags=[TAG_SETUP])
+def local_setup_wifi_networks():
+    return get_services().network.wifi_networks()
+
+
+@box_setup_router.post("/network/wifi/connect", tags=[TAG_SETUP])
+def local_setup_wifi_connect(payload: NetworkWifiConnectPayload):
+    try:
+        return get_services().network.connect_wifi(model_data(payload))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@box_setup_router.post("/network/cellular/connect", tags=[TAG_SETUP])
+def local_setup_cellular_connect(payload: NetworkCellularConnectPayload):
+    return get_services().network.connect_cellular(model_data(payload))
+
+
+@router.get("/network/status", tags=[TAG_SYSTEM])
+def network_status(diagnostics: bool = False):
+    return get_services().network.status(diagnostics=diagnostics)
+
+
+@router.get("/network/capabilities", tags=[TAG_SYSTEM])
+def network_capabilities():
+    return get_services().network.capabilities()
+
+
+@router.get("/network/wifi/networks", tags=[TAG_SYSTEM])
+def network_wifi_networks():
+    return get_services().network.wifi_networks()
+
+
+@router.post("/network/wifi/connect", tags=[TAG_SYSTEM])
+def network_wifi_connect(payload: NetworkWifiConnectPayload):
+    try:
+        return get_services().network.connect_wifi(model_data(payload))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.post("/network/wifi/test", tags=[TAG_SYSTEM])
+def network_wifi_test():
+    return get_services().network.test_wifi()
+
+
+@router.get("/network/cellular/status", tags=[TAG_SYSTEM])
+def network_cellular_status():
+    return get_services().network.cellular_status()
+
+
+@router.post("/network/cellular/connect", tags=[TAG_SYSTEM])
+def network_cellular_connect(payload: NetworkCellularConnectPayload):
+    return get_services().network.connect_cellular(model_data(payload))
+
+
+@router.post("/network/cellular/disconnect", tags=[TAG_SYSTEM])
+def network_cellular_disconnect():
+    return get_services().network.disconnect_cellular()
+
+
+@router.post("/network/setup-ap/start", tags=[TAG_SYSTEM])
+def network_setup_ap_start():
+    return get_services().network.start_setup_ap(reason="manual")
+
+
+@router.post("/network/setup-ap/stop", tags=[TAG_SYSTEM])
+def network_setup_ap_stop():
+    return get_services().network.stop_setup_ap()
+
+
+@router.post("/network/failover/test", tags=[TAG_SYSTEM])
+def network_failover_test(payload: FailoverTestPayload):
+    return get_services().network.failover_test(model_data(payload).get("checks") or [])
 
 
 @router.get("/auth/status", tags=[TAG_AUTH])

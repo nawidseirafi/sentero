@@ -9,6 +9,15 @@ sudo apt update
 sudo apt install -y ca-certificates curl git ufw
 ```
 
+Fuer Box-Netzwerk-Onboarding auf Zielhardware:
+
+```bash
+sudo apt install -y network-manager modemmanager avahi-daemon
+sudo systemctl enable --now NetworkManager ModemManager avahi-daemon
+```
+
+NetworkManager soll WLAN-Client, temporaeren Setup-Hotspot und LTE-Verbindungen exklusiv verwalten. Keine parallelen produktiven `wpa_supplicant`-, `hostapd`- oder Modem-Skripte neben Sentero betreiben.
+
 Docker installieren:
 
 ```bash
@@ -76,6 +85,8 @@ http://<MINI-PC-LAN-IP>:8080
 
 Grundregel: Kein Router-Portforwarding auf `8080` oder `1883`.
 
+Waehrend des Setup-WLANs duerfen Clients nur die Setup-Oberflaeche erreichen. Kein Routing vom Setup-WLAN zu Sensordaten, Historie, Logs, Home Assistant, MQTT oder Admin-/Shell-Diensten freigeben.
+
 UFW-Beispiel fuer Heimnetz `192.168.178.0/24`:
 
 ```bash
@@ -129,6 +140,12 @@ LAN:
 curl -i http://<MINI-PC-LAN-IP>:8080/health
 ```
 
+Netzwerkstatus lokal:
+
+```bash
+curl -i http://<MINI-PC-LAN-IP>:8080/api/sentero/network/status
+```
+
 Externe AAL-Schnittstelle:
 
 ```bash
@@ -165,3 +182,5 @@ tar czf sentero-backup-$(date +%F).tar.gz data config .env
 ```
 
 Die Datei `.env` enthaelt Secrets und darf nicht geteilt werden.
+
+Netzwerk-Credentials gehoeren produktiv in NetworkManager/OS Secret Store. Sentero speichert in SQLite nur Status und Historie ohne WLAN-Passwoerter, SIM-PINs oder Tokens.
