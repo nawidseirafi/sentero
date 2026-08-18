@@ -127,6 +127,18 @@ class MailAssistantTest(unittest.TestCase):
         self.assertIn("Die letzte erkannte Aktivität war vor 3 Minuten im Wohnzimmer", text)
         self.assertNotIn("Ihre Mutter ist", text)
 
+    def test_long_activity_age_is_formatted_as_hours(self) -> None:
+        with self.mapping.connect() as con:
+            con.execute("delete from sentero_sensor_events")
+            con.commit()
+        self._activity(minutes_ago=372, room="bedroom")
+
+        self.assistant.process_message(self._mail("Wann wurde zuletzt Aktivität erkannt?"))
+
+        text = self.notification.sent[-1]["text"]
+        self.assertIn("vor 6 Stunden und 12 Minuten", text)
+        self.assertNotIn("372 Minuten", text)
+
     def test_environment_intent(self) -> None:
         self.assistant.process_message(self._mail("Wie warm ist es?"))
         self.assertIn("22,4 °C", self.notification.sent[-1]["text"])

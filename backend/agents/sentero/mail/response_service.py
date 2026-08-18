@@ -186,14 +186,34 @@ def _activity_sentence(event: dict[str, Any]) -> str:
     age = freshness.get("age_seconds")
     if age is None:
         return f"Die letzte erkannte Aktivität wurde im {room} registriert. Die Aktualität der Daten ist momentan nicht zuverlässig bestimmbar."
-    minutes = max(int(age // 60), 0)
+    duration = _duration_label(age)
     if freshness.get("bucket") == "fresh":
         return f"Aktuell wurde Aktivität im {room} erkannt."
     if freshness.get("bucket") == "recent":
-        return f"Die letzte erkannte Aktivität war vor {minutes} Minuten im {room}."
+        return f"Die letzte erkannte Aktivität war {duration} im {room}."
     if freshness.get("bucket") == "stale":
-        return f"Die letzte sichere Aktivität wurde vor {minutes} Minuten im {room} erkannt. Eine aktuelle Raumzuordnung ist momentan nicht zuverlässig möglich."
-    return f"Die letzte erkannte Aktivität war vor {minutes} Minuten im {room}. Eine aktuelle Raumzuordnung ist nur eingeschränkt zuverlässig."
+        return f"Die letzte sichere Aktivität wurde {duration} im {room} erkannt. Eine aktuelle Raumzuordnung ist momentan nicht zuverlässig möglich."
+    return f"Die letzte erkannte Aktivität war {duration} im {room}. Eine aktuelle Raumzuordnung ist nur eingeschränkt zuverlässig."
+
+
+def _duration_label(age_seconds: Any) -> str:
+    try:
+        total_minutes = max(int(float(age_seconds) // 60), 0)
+    except (TypeError, ValueError):
+        return "vor unbekannter Zeit"
+    if total_minutes < 1:
+        return "gerade eben"
+    if total_minutes < 60:
+        return f"vor {total_minutes} {'Minute' if total_minutes == 1 else 'Minuten'}"
+    hours, minutes = divmod(total_minutes, 60)
+    if hours < 24:
+        if minutes == 0:
+            return f"vor {hours} {'Stunde' if hours == 1 else 'Stunden'}"
+        return f"vor {hours} {'Stunde' if hours == 1 else 'Stunden'} und {minutes} {'Minute' if minutes == 1 else 'Minuten'}"
+    days, hours = divmod(hours, 24)
+    if hours == 0:
+        return f"vor {days} {'Tag' if days == 1 else 'Tagen'}"
+    return f"vor {days} {'Tag' if days == 1 else 'Tagen'} und {hours} {'Stunde' if hours == 1 else 'Stunden'}"
 
 
 def _learning_sentence(learning: dict[str, Any]) -> str:
