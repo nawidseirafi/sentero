@@ -25,6 +25,8 @@ Bereits erledigt:
 - Direkter MQTT-Service fuer Mosquitto Publish/Snapshot ist vorhanden.
 - Zigbee2MQTT-Snapshots werden aus MQTT-Nachrichten erzeugt.
 - Zigbee Permit-Join laeuft im MQTT-Modus direkt ueber Mosquitto.
+- V1-Sensorwizard verwendet fuer Praesenz- und Tuersensoren einen einheitlichen Such-Flow mit Zigbee als Standardtransport.
+- ESP32/WLAN-Sensoren bleiben als `wifi_esphome` technisch kompatibel, sind aber im normalen V1-Wizard standardmaessig ausgeblendet.
 - Update-Manifeste werden aus `UPDATE_BASE_URL` generiert.
 - Release-Manifeste enthalten keine lokalen `/Users/...` Download-Pfade mehr.
 - NetworkService als Querschnittsdienst fuer Setup-WLAN, WLAN, Ethernet, LTE-Fallback und Connectivity ist vorhanden.
@@ -38,7 +40,7 @@ Offen:
 
 - Docker-Stack mit Sentero, Mosquitto und Zigbee2MQTT starten.
 - Einen echten Zigbee-Sensor anlernen.
-- Pruefen, ob der Sensor im Sentero-Wizard sichtbar wird.
+- Pruefen, ob Praesenz- und Tuersensoren im Sentero-Wizard ueber denselben Sensor-Suchen-Flow sichtbar werden.
 - Sensor bestaetigen und Dashboard-/Statusdaten pruefen.
 - Container neu starten und pruefen, ob Mapping und Status erhalten bleiben.
 

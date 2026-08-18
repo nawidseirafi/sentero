@@ -185,6 +185,40 @@ class NotificationSystemWarningTests(unittest.TestCase):
             )
         )
 
+    def test_masked_email_channel_save_keeps_existing_passwords(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            service = NotificationService(mapping)
+            service.save_channel(
+                "email",
+                False,
+                {
+                    "smtp_host": "smtp.example.test",
+                    "smtp_user": "status@example.test",
+                    "smtp_password": "smtp-secret",
+                    "imap_host": "imap.example.test",
+                    "imap_user": "status@example.test",
+                    "imap_password": "imap-secret",
+                },
+            )
+
+            public_email = next(item for item in service.channels()["channels"] if item["channel"] == "email")
+            self.assertNotEqual(public_email["config"]["smtp_password"], "smtp-secret")
+            self.assertNotEqual(public_email["config"]["imap_password"], "imap-secret")
+            self.assertTrue(public_email["config"]["smtp_password"].startswith("••••"))
+            self.assertTrue(public_email["config"]["imap_password"].startswith("••••"))
+
+            masked_config = dict(public_email["config"])
+            masked_config["test_recipient"] = "test@example.test"
+            service.save_channel("email", False, masked_config)
+
+            with mapping.connect() as con:
+                row = con.execute("select config_json from notification_channel_settings where channel = 'email'").fetchone()
+            stored = json.loads(row["config_json"])
+            self.assertEqual(stored["smtp_password"], "smtp-secret")
+            self.assertEqual(stored["imap_password"], "imap-secret")
+            self.assertEqual(stored["test_recipient"], "test@example.test")
+
     def test_system_warnings_are_deduplicated_and_resolved(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())

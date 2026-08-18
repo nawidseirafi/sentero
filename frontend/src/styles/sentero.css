@@ -4033,6 +4033,104 @@ button:disabled {
   padding: 5px 9px;
 }
 
+.sc-mail-onboarding-modal {
+  gap: 18px;
+  max-height: calc(100vh - 48px);
+  max-width: 560px;
+  width: min(100%, 560px);
+}
+
+.sc-mail-simple-form {
+  display: grid;
+  gap: 14px;
+}
+
+.sc-mail-simple-form label {
+  color: var(--sc-muted);
+  display: grid;
+  font-size: 0.96rem;
+  font-weight: 900;
+  gap: 8px;
+}
+
+.sc-mail-simple-form input {
+  background: white;
+  border: 1px solid var(--sc-line);
+  border-radius: 16px;
+  color: var(--sc-text);
+  font-size: 1.08rem;
+  font-weight: 850;
+  min-height: 56px;
+  padding: 0 16px;
+  width: 100%;
+}
+
+.sc-mail-status {
+  align-items: center;
+  border-radius: 14px;
+  display: flex;
+  gap: 8px;
+  line-height: 1.35;
+  padding: 10px 12px;
+}
+
+.sc-mail-status.checking {
+  background: #f5faf8;
+  color: var(--sc-muted);
+}
+
+.sc-mail-status.found {
+  background: #edf8f2;
+  color: var(--sc-green);
+}
+
+.sc-mail-status.failed {
+  background: #fff5ef;
+  color: #9b3f1d;
+}
+
+.sc-app-password-note {
+  background: #f8fcfa;
+  border: 1px solid #d9e9e2;
+  border-radius: 16px;
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+.sc-app-password-note small {
+  color: var(--sc-muted);
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.sc-app-password-note a,
+.sc-link-action {
+  background: transparent;
+  border: 0;
+  color: var(--sc-green);
+  cursor: pointer;
+  font-weight: 900;
+  padding: 0;
+  text-align: left;
+  text-decoration: none;
+}
+
+.sc-advanced-mail-settings {
+  display: grid;
+  gap: 12px;
+}
+
+.sc-advanced-mail-settings > button {
+  background: transparent;
+  border: 0;
+  color: var(--sc-muted);
+  cursor: pointer;
+  font-weight: 900;
+  justify-self: start;
+  padding: 0;
+}
+
 .sc-channel-modal h3 {
   color: var(--sc-text);
   font-size: 1.45rem;

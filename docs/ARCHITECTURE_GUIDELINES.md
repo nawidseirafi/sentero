@@ -71,5 +71,25 @@ Nicht in der normalen Kundensicht anzeigen:
 - IP-Adressen
 - Default Routes
 - ModemManager-/NetworkManager-Begriffe
+- Zigbee-, Permit-Join-, MQTT-, ESPHome- oder Captive-Portal-Begriffe im Sensor-Onboarding
+- QR-/Hotspot-Anleitungen fuer Praesenzsensoren im V1-Sensorwizard
 
 Admin-/Support-Diagnose darf diese Details anzeigen.
+
+## Sensoren
+
+Sensor-Onboarding muss ueber `SensorManager` bzw. die bestehende Geraeteabstraktion laufen. Neue Flows duerfen keine zweite Zigbee-, MQTT- oder Home-Assistant-Infrastruktur neben den vorhandenen Services aufbauen.
+
+Erlaubt:
+
+- Transport als persistente Metadaten speichern (`zigbee`, `wifi_esphome`).
+- Zigbee-Pairing fuer aktive Onboarding-/Admin-Flows temporaer oeffnen.
+- Mehrere Entities eines physischen Geraets zu einer Sentero-Zuordnung zusammenfassen.
+- ESP32/WLAN-Code kompatibel halten und per Feature-Flag fuer spaetere Varianten vorbereiten.
+
+Nicht erlaubt:
+
+- Sentero-Fachlogik auf Transportnamen, MQTT-Topics oder Zigbee-spezifische Entity-Namen stuetzen.
+- Pairing dauerhaft offen lassen.
+- Normale Nutzer zwischen Funktechniken waehlen lassen, solange V1 nur Zigbee anbietet.
+- Praesenzsensoren im V1-Wizard ueber QR-Code, Setup-Hotspot oder Captive Portal einrichten.

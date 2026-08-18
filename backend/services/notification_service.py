@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 
 CHANNELS = ("email", "telegram", "whatsapp")
 SEVERITIES = ("green", "yellow", "orange", "red")
-SECRET_KEYS = {"access_token", "bot_token", "smtp_password", "password", "token"}
+SECRET_KEYS = {"access_token", "bot_token", "imap_password", "smtp_password", "password", "token"}
 EMAIL_FROM = "Sentero <noreply@sentero.de>"
 BATTERY_WARNING_THRESHOLD = 30
 
@@ -45,7 +45,8 @@ class EmailNotificationProvider(NotificationProvider):
         self.messaging = messaging or MessagingService()
 
     def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> dict[str, Any] | None:
-        to_email = str(contact.get("email") or config.get("test_recipient") or config.get("smtp_user") or "").strip()
+        smtp_user = str(config.get("smtp_login") or config.get("smtp_user") or "").strip()
+        to_email = str(contact.get("email") or config.get("test_recipient") or config.get("smtp_user") or smtp_user).strip()
         if not config.get("smtp_host"):
             raise ValueError("email_not_configured")
         if not to_email:
@@ -66,11 +67,15 @@ class EmailNotificationProvider(NotificationProvider):
         for key, value in (config.get("headers") or {}).items():
             if value:
                 message[str(key)] = str(value)
-        with smtplib.SMTP(str(config["smtp_host"]), int(config.get("smtp_port") or 587), timeout=10) as smtp:
-            if as_bool(config.get("smtp_starttls", True)):
+        smtp_encryption = str(config.get("smtp_encryption") or "").strip().upper()
+        use_ssl = smtp_encryption == "SSL" or as_bool(config.get("smtp_ssl", False))
+        use_starttls = smtp_encryption == "STARTTLS" or (not use_ssl and as_bool(config.get("smtp_starttls", True)))
+        smtp_cls = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
+        with smtp_cls(str(config["smtp_host"]), int(config.get("smtp_port") or 587), timeout=10) as smtp:
+            if use_starttls:
                 smtp.starttls()
-            if config.get("smtp_user"):
-                smtp.login(str(config.get("smtp_user")), str(config.get("smtp_password") or ""))
+            if smtp_user:
+                smtp.login(smtp_user, str(config.get("smtp_password") or ""))
             smtp.send_message(message, from_addr=str(config.get("smtp_user") or parseaddr(from_header)[1] or EMAIL_FROM), to_addrs=[to_email])
         return {"message_id": message_id}
 

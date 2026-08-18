@@ -39,19 +39,43 @@ class MailResponseService:
         assessment = result.facts.get("assessment") or {}
         activity = result.facts.get("last_activity")
         env = result.facts.get("environment") or {}
+        dashboard = result.facts.get("dashboard") or {}
         lines = ["Guten Tag,", ""]
         context = _context_sentence(result)
         if context:
             lines.append(context)
+        person = dashboard.get("person_name") or "Person"
+        location = dashboard.get("current_location")
+        if location:
+            lines.append(f"{person}: {location}.")
         status = str(assessment.get("status") or "normal")
         if status in {"green", "normal", "ok"}:
             lines.append("bei Sentero gibt es aktuell keine auffälligen Hinweise.")
         else:
             lines.append("Sentero hat Hinweise erkannt, die im Tagesverlauf auffällig wirken.")
+        if dashboard.get("behavior_label"):
+            lines.append(f"Verhaltensanalyse: {dashboard['behavior_label']}. {dashboard.get('behavior_summary') or ''}".strip())
+        learning = dashboard.get("learning") or {}
+        learning_text = _learning_sentence(learning)
+        if learning_text:
+            lines.append(learning_text)
+        first_activity = dashboard.get("first_activity")
+        if first_activity:
+            lines.append(f"Aufgestanden: {_time_label(first_activity.get('event_time'))}.")
         if activity:
             lines.append(_activity_sentence(activity))
+        elif dashboard.get("last_activity"):
+            lines.append(_activity_sentence(dashboard["last_activity"]))
+        if dashboard.get("activity_event_count_today") is not None:
+            lines.append(f"Heute wurden {int(dashboard.get('activity_event_count_today') or 0)} Aktivitätsereignisse registriert.")
+        slots = _activity_slots_sentence(dashboard.get("activity_slots") or [])
+        if slots:
+            lines.append(slots)
         if env.get("temperature_c") is not None:
             lines.append(f"Die zuletzt gemessene Raumtemperatur beträgt {str(env['temperature_c']).replace('.', ',')} °C.")
+        sensor_health = dashboard.get("sensor_health")
+        if sensor_health:
+            lines.extend(_sensor_health_lines(sensor_health))
         lines.extend(["", "Viele Grüße", "Sentero"])
         return "\n".join(lines)
 
@@ -170,6 +194,63 @@ def _activity_sentence(event: dict[str, Any]) -> str:
     if freshness.get("bucket") == "stale":
         return f"Die letzte sichere Aktivität wurde vor {minutes} Minuten im {room} erkannt. Eine aktuelle Raumzuordnung ist momentan nicht zuverlässig möglich."
     return f"Die letzte erkannte Aktivität war vor {minutes} Minuten im {room}. Eine aktuelle Raumzuordnung ist nur eingeschränkt zuverlässig."
+
+
+def _learning_sentence(learning: dict[str, Any]) -> str:
+    if not learning:
+        return ""
+    usable = learning.get("usable_days")
+    required = learning.get("required_usable_days")
+    if usable is not None and required is not None and not learning.get("completed"):
+        remaining = learning.get("remaining_usable_days")
+        suffix = f" Sentero braucht noch {remaining} verwertbare {'Tag' if remaining == 1 else 'Tage'}." if remaining is not None else ""
+        return f"Lernphase: {usable} von {required} Lerntagen.{suffix}"
+    day = learning.get("day")
+    days = learning.get("days")
+    if day and days:
+        return f"Lernphase: Tag {day} von {days}."
+    return ""
+
+
+def _activity_slots_sentence(slots: list[dict[str, Any]]) -> str:
+    active = [str(slot.get("label") or "").strip() for slot in slots if slot.get("active")]
+    if not active:
+        return "Tagesverlauf: bisher keine Aktivität in den Dashboard-Zeitfenstern."
+    return f"Tagesverlauf: Aktivität in den Zeitfenstern {', '.join(active)} Uhr."
+
+
+def _sensor_health_lines(health: dict[str, Any]) -> list[str]:
+    lines = [f"Sensorstatus: {int(health.get('sensor_count') or 0)} Sensoren verbunden."]
+    unreachable = health.get("unreachable") or []
+    low_battery = health.get("low_battery") or []
+    batteries = health.get("batteries") or []
+    if unreachable:
+        lines.append("Nicht erreichbar: " + "; ".join(_sensor_label(item) for item in unreachable[:5]) + ".")
+    if low_battery:
+        lines.append("Schwache Batterie: " + "; ".join(_sensor_label(item, include_battery=True) for item in low_battery[:5]) + ".")
+    if batteries:
+        lines.append("Batteriestand: " + "; ".join(_sensor_label(item, include_battery=True) for item in batteries[:6]) + ".")
+    if not unreachable and not low_battery:
+        lines.append("Alle überwachten Sensoren sind erreichbar; es liegen keine schwachen Batterien vor.")
+    return lines
+
+
+def _sensor_label(item: dict[str, Any], include_battery: bool = False) -> str:
+    label = str(item.get("label") or "Sensor").strip()
+    room = str(item.get("room_label") or "").strip()
+    text = f"{label} ({room})" if room and room != "unbekannter Raum" else label
+    battery = item.get("battery_level")
+    if include_battery and isinstance(battery, (int, float)):
+        text += f" {int(battery)} %"
+    return text
+
+
+def _time_label(value: Any) -> str:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return "noch offen"
+    return parsed.astimezone().strftime("%H:%M")
 
 
 def _context_sentence(result: QueryResult) -> str:

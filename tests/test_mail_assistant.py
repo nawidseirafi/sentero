@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from backend.agents.sentero.mail.intent_service import MailIntentService
 from backend.agents.sentero.mail.models import InboundMail, MailAssistantConfig, MailIntent
@@ -55,6 +56,43 @@ class MailAssistantTest(unittest.TestCase):
         result = self.assistant.process_message(self._mail("Ist alles in Ordnung?"))
         self.assertEqual(result["status"], "sent")
         self.assertIn("keine auffälligen Hinweise", self.notification.sent[-1]["text"])
+
+    def test_status_intent_includes_dashboard_and_sensor_health(self) -> None:
+        roles = [
+            {
+                "role": "living_room_presence",
+                "room": "living_room",
+                "friendly_name": "Wohnzimmer Präsenz",
+                "active": 1,
+                "reachable": True,
+                "battery_level": 82,
+                "updated_at": now(),
+            },
+            {
+                "role": "bedroom_presence",
+                "room": "bedroom",
+                "friendly_name": "Schlafzimmer Präsenz",
+                "active": 1,
+                "reachable": False,
+                "battery_level": 18,
+                "updated_at": now(),
+            },
+        ]
+
+        with patch.object(self.mapping, "roles", return_value=roles):
+            result = self.assistant.process_message(self._mail("Ist alles gut?"))
+
+        text = self.notification.sent[-1]["text"]
+        self.assertEqual(result["status"], "sent")
+        self.assertIn("Person:", text)
+        self.assertIn("Verhaltensanalyse:", text)
+        self.assertIn("Aufgestanden:", text)
+        self.assertIn("Heute wurden", text)
+        self.assertIn("Tagesverlauf:", text)
+        self.assertIn("Sensorstatus: 2 Sensoren verbunden", text)
+        self.assertIn("Nicht erreichbar: Schlafzimmer Präsenz", text)
+        self.assertIn("Schwache Batterie: Schlafzimmer Präsenz (Schlafzimmer) 18 %", text)
+        self.assertIn("Batteriestand: Wohnzimmer Präsenz (Wohnzimmer) 82 %", text)
 
     def test_allowed_contact_can_write_to_customer_mailbox(self) -> None:
         result = self.assistant.process_message(self._mail("Ist alles in Ordnung?", recipient="status@example.test"))

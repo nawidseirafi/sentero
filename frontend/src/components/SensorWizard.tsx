@@ -1,4 +1,4 @@
-import { Check, Loader2, Radio, Search, ShieldCheck } from 'lucide-react';
+import { Check, Loader2, Search, ShieldCheck } from 'lucide-react';
 import type { SenteroDiscoveredSensor } from '@shared/api/client';
 import { SetupWifiQr } from './SetupWifiQr';
 
@@ -26,13 +26,14 @@ type Props = {
   devMode: boolean;
   connected: number;
   total: number;
+  presenceTransport?: 'zigbee' | 'wifi_esphome';
   roomLabel: (roomId: string) => string;
   onChange: (id: string, patch: Partial<SensorBinding>) => void;
   onSearch: (sensor: SensorBinding) => void;
   onSkip: (sensor: SensorBinding) => void;
 };
 
-export function SensorWizard({ sensors, discovery, devMode, connected, total, roomLabel, onChange, onSearch, onSkip }: Props) {
+export function SensorWizard({ sensors, discovery, devMode, connected, total, presenceTransport = 'zigbee', roomLabel, onChange, onSearch, onSkip }: Props) {
   const grouped = sensors.reduce<Record<string, SensorBinding[]>>((acc, sensor) => {
     acc[sensor.roomId] = [...(acc[sensor.roomId] || []), sensor];
     return acc;
@@ -43,15 +44,15 @@ export function SensorWizard({ sensors, discovery, devMode, connected, total, ro
   return (
     <section className="sc-sensor-step">
       <div className="sc-zigbee-intro">
-        <span className="sc-zigbee-intro-icon"><Radio size={24} /></span>
+        <span className="sc-zigbee-intro-icon"><ShieldCheck size={24} /></span>
         <div className="sc-zigbee-intro-copy">
           <div className="sc-zigbee-intro-title">
             <h3>Sensoren verbinden</h3>
             <p>Starten Sie die Suche und verbinden Sie jeden Sensor im passenden Raum.</p>
           </div>
           <div className="sc-zigbee-intro-notes">
-            <span><strong>Präsenzsensoren</strong> vorher per Setup-Hotspot ins Heim-WLAN bringen.</span>
-            <span><strong>Türsensoren</strong> während der Suche 3-5 Sekunden in den Pairing-Modus setzen.</span>
+            <span>Versetzen Sie den jeweiligen Sensor nach dem Start der Suche in den Verbindungsmodus.</span>
+            <span>Sentero ordnet gefundene Sensoren dem ausgewählten Raum zu.</span>
           </div>
         </div>
         <div className={`sc-zigbee-progress ${allConnected ? 'complete' : ''}`}>
@@ -64,11 +65,12 @@ export function SensorWizard({ sensors, discovery, devMode, connected, total, ro
         <article key={roomId} className="sc-sensor-room">
           <h3>{roomLabel(roomId)}</h3>
           {items.map((sensor) => (
-            <SensorRow
+            <SensorSetupCard
               key={sensor.id}
               sensor={sensor}
               state={discovery[sensor.id]}
               devMode={devMode}
+              presenceTransport={presenceTransport}
               onChange={onChange}
               onSearch={onSearch}
               onSkip={onSkip}
@@ -80,17 +82,18 @@ export function SensorWizard({ sensors, discovery, devMode, connected, total, ro
   );
 }
 
-function SensorRow({ sensor, state, devMode, onChange, onSearch, onSkip }: {
+function SensorSetupCard({ sensor, state, devMode, presenceTransport, onChange, onSearch, onSkip }: {
   sensor: SensorBinding;
   state?: SensorDiscoveryState;
   devMode: boolean;
+  presenceTransport: 'zigbee' | 'wifi_esphome';
   onChange: (id: string, patch: Partial<SensorBinding>) => void;
   onSearch: (sensor: SensorBinding) => void;
   onSkip: (sensor: SensorBinding) => void;
 }) {
-  const presence = isPresenceBinding(sensor);
   const label = sensorLabel(sensor);
   const help = sensorHelp(sensor);
+  const showWifiPresenceSetup = isPresenceBinding(sensor) && presenceTransport === 'wifi_esphome' && sensor.status !== 'connected';
 
   return (
     <div className={`sc-sensor-row ${sensor.status === 'connected' ? 'is-connected' : ''}`}>
@@ -98,15 +101,11 @@ function SensorRow({ sensor, state, devMode, onChange, onSearch, onSkip }: {
         <span className="sc-sensor-kind"><ShieldCheck size={20} /> {label}</span>
         <strong>{sensor.name || label}</strong>
         <small>{help}</small>
-        {presence && (
-          sensor.status === 'connected' ? (
-              <span/>
-          ) : (
-            <div className="sc-sensor-preflight">
-              <SetupWifiQr compact details={false} />
-              <span>Setup-Hotspot scannen, Captive Portal öffnen und den Sensor mit Ihrem Heimnetz verbinden. Danach kann Sentero ihn hier finden.</span>
-            </div>
-          )
+        {showWifiPresenceSetup && (
+          <div className="sc-sensor-preflight">
+            <SetupWifiQr compact details={false} />
+            <span>Setup-Hotspot scannen, Captive Portal öffnen und den Sensor mit Ihrem Heimnetz verbinden. Danach kann Sentero ihn hier finden.</span>
+          </div>
         )}
         <input
           value={sensor.name}
@@ -131,9 +130,9 @@ function SensorRow({ sensor, state, devMode, onChange, onSearch, onSkip }: {
 }
 
 function SensorStatus({ status, remainingSeconds }: { status: SensorBinding['status']; remainingSeconds?: number }) {
-  if (status === 'searching') return <span className="sc-sensor-state searching"><Loader2 size={18} /> Sensor wird verbunden{typeof remainingSeconds === 'number' ? ` · ${Math.ceil(remainingSeconds)}s` : ''}</span>;
-  if (status === 'connected') return <span className="sc-sensor-state connected"><Check size={18} /> Sensor gefunden</span>;
-  if (status === 'missing') return <span className="sc-sensor-state missing">Sensor konnte nicht verbunden werden. Bitte einschalten und erneut versuchen.</span>;
+  if (status === 'searching') return <span className="sc-sensor-state searching"><Loader2 size={18} /> Suche läuft ...{typeof remainingSeconds === 'number' ? ` · ${Math.ceil(remainingSeconds)}s` : ''}</span>;
+  if (status === 'connected') return <span className="sc-sensor-state connected"><Check size={18} /> Verbunden</span>;
+  if (status === 'missing') return <span className="sc-sensor-state missing">Kein Sensor gefunden. Bitte versetzen Sie den Sensor in den Verbindungsmodus und versuchen Sie es erneut.</span>;
   if (status === 'skipped') return <span className="sc-sensor-state skipped">Übersprungen</span>;
   return <span className="sc-sensor-state idle">Bereit</span>;
 }

@@ -174,7 +174,7 @@ def config_from_notification_settings(mapping: DeviceMappingService) -> MailAssi
         data = json.loads(row["config_json"] or "{}")
     except json.JSONDecodeError:
         data = {}
-    smtp_user = str(data.get("smtp_user") or "").strip()
+    smtp_user = str(data.get("smtp_login") or data.get("smtp_user") or "").strip()
     imap_user = _mailbox_username(data.get("imap_user"), smtp_user, data.get("imap_host"))
     smtp_password = str(data.get("smtp_password") or "").strip()
     imap_password = str(data.get("imap_password") or smtp_password).strip()

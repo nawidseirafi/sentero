@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-import json
 import os
 import requests
+from dotenv import dotenv_values, load_dotenv
 from backend.config import config_str
+from backend.paths import ENV_PATH
 from typing import Any
 
 from backend.logging_config import get_logger
-from backend.services.device_mapping_service import DeviceMappingService, sensor_source_mode
+from backend.services.device_mapping_service import DeviceMappingService, SensorTransport, sensor_source_mode
 from backend.services.esp32_discovery_service import Esp32DiscoveryService
 from backend.services.esp32_provisioning_service import Esp32ProvisioningService
 
 logger = get_logger(__name__)
+DEFAULT_DISCOVERY_SECONDS = 120
+
+load_dotenv(ENV_PATH)
 
 
 class SensorManager:
@@ -57,50 +61,56 @@ class SensorManager:
             "status_label": "Bereit" if bool(home_status.get("sensor_ready")) else "Wartet auf Sensorverbindung",
             "network": network,
             "supported_sensor_types": ["door_contact", "presence_sensor", "motion_sensor", "button", "smart_meter", "electricity_meter", "water_meter", "gas_meter"],
+            "wifi_sensor_setup_enabled": wifi_sensor_setup_enabled(),
+            "presence_sensor_transport": configured_presence_sensor_transport(),
         }
 
-    def start_discovery(self, sensor_type: str, room_id: str | None = None, role: str | None = None, duration: int = 180) -> dict[str, Any]:
+    def start_discovery(self, sensor_type: str, room_id: str | None = None, role: str | None = None, duration: int = DEFAULT_DISCOVERY_SECONDS, transport: str | None = None) -> dict[str, Any]:
         clean_type = normalize_sensor_type(sensor_type)
         target_role = role or role_for_sensor(clean_type, room_id)
+        requested_transport = normalize_transport(transport or (configured_presence_sensor_transport() if clean_type == "presence_sensor" else SensorTransport.ZIGBEE.value))
         logger.info(
             "Sensor discovery requested",
-            extra={"component": "sensor_manager", "sensor_type": clean_type, "room_id": room_id, "sensor_source": sensor_source_mode()},
+            extra={"component": "sensor_manager", "sensor_type": clean_type, "room_id": room_id, "transport": requested_transport, "sensor_source": sensor_source_mode()},
         )
-        if clean_type == "presence_sensor":
-            logger.warning(
-                "Presence sensor discovery blocked because ESP32 provisioning is required",
-                extra={"component": "sensor_manager", "sensor_type": clean_type, "room_id": room_id, "sensor_source": sensor_source_mode()},
-            )
+        if requested_transport == SensorTransport.WIFI_ESPHOME.value and not wifi_sensor_setup_enabled():
+            raise ValueError("wifi_sensor_setup_disabled")
+        source = sensor_source_mode()
+        if requested_transport == SensorTransport.WIFI_ESPHOME.value:
             return {
                 "discovery_id": 0,
                 "status": "manual_action",
                 "message": "Präsenzsensoren werden über die automatische Verbindung eingerichtet.",
                 "sensor_type": clean_type,
                 "room_id": room_id,
-                "detail": {"reason": "presence_requires_provisioning"},
+                "transport": requested_transport,
+                "detail": {"reason": "wifi_esphome_requires_provisioning"},
             }
-        source = sensor_source_mode()
         if source in {"mqtt", "zigbee2mqtt", "z2m", "mixed"}:
-            result = self.mapping.start_mqtt_discovery(target_role, room_id, duration=duration)
+            result = self.mapping.start_mqtt_discovery(target_role, room_id, duration=duration, sensor_type=public_sensor_type(clean_type))
         else:
-            result = self.mapping.start_zigbee_pairing(target_role, room_id, duration=duration)
+            result = self.mapping.start_zigbee_pairing(target_role, room_id, duration=duration, sensor_type=public_sensor_type(clean_type))
         return {
             "discovery_id": result["session_id"],
             "status": product_status(result.get("status")),
             "message": product_message(clean_type, result),
             "sensor_type": clean_type,
             "room_id": room_id,
+            "transport": requested_transport,
+            "expires_in_seconds": duration,
         }
 
     def discovered(self, discovery_id: int, dev: bool = False) -> dict[str, Any]:
-        result = self.mapping.candidates(discovery_id, dev=dev)
+        result = self.mapping.candidates(discovery_id, dev=True)
         candidate = result.get("candidate")
         public_candidate = public_candidate_from(candidate) if candidate else None
+        devices = unique_public_candidates([*(result.get("candidates") or []), *([candidate] if candidate else [])])
         return {
             "discovery_id": discovery_id,
             "status": "found" if public_candidate else "searching" if result.get("remaining_seconds", 0) > 0 else "not_found",
             "message": "Sensor gefunden." if public_candidate else "Sensor wird gesucht.",
             "sensor": public_candidate,
+            "devices": devices,
             "remaining_seconds": result.get("remaining_seconds"),
         }
 
@@ -241,6 +251,35 @@ def normalize_sensor_type(value: str) -> str:
     return "presence_sensor"
 
 
+def normalize_transport(value: str | None) -> str:
+    text = str(value or SensorTransport.ZIGBEE.value).strip().lower()
+    if text in {SensorTransport.WIFI_ESPHOME.value, "wifi", "esp32", "esphome"}:
+        return SensorTransport.WIFI_ESPHOME.value
+    return SensorTransport.ZIGBEE.value
+
+
+def wifi_sensor_setup_enabled() -> bool:
+    return (
+        str(os.getenv("SENTERO_ENABLE_WIFI_SENSOR_SETUP") or "").strip().lower() in {"1", "true", "yes", "on"}
+        or configured_presence_sensor_transport() == SensorTransport.WIFI_ESPHOME.value
+    )
+
+
+def configured_presence_sensor_transport() -> str:
+    env_value = os.getenv("SENTERO_PRESENCE_SENSOR_TRANSPORT")
+    if env_value is None:
+        env_value = dotenv_values(ENV_PATH).get("SENTERO_PRESENCE_SENSOR_TRANSPORT")
+    return normalize_transport(env_value or SensorTransport.ZIGBEE.value)
+
+
+def public_sensor_type(value: str) -> str:
+    if value == "door_contact":
+        return "door"
+    if value == "presence_sensor":
+        return "presence"
+    return value
+
+
 def role_for_sensor(sensor_type: str, room_id: str | None) -> str:
     room = str(room_id or "home").strip() or "home"
     if sensor_type == "door_contact":
@@ -291,13 +330,26 @@ def public_candidate_from(candidate: dict[str, Any]) -> dict[str, Any]:
             "confidence": candidate.get("score") or candidate.get("confidence") or 0,
             "source": source or "zigbee2mqtt",
             "source_ref": source_ref or None,
+            "entities": candidate.get("entity_ids") or [],
         }
     return {
         "id": candidate.get("entity_id"),
         "name": candidate.get("label") or "Sensor",
         "type": public_type_from_device_class(str(candidate.get("device_class") or "")),
         "confidence": candidate.get("score") or candidate.get("confidence") or 0,
+        "entities": candidate.get("entity_ids") or [],
     }
+
+
+def unique_public_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    devices: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        public = public_candidate_from(candidate)
+        key = str(public.get("id") or public.get("source_ref") or public.get("name"))
+        existing = devices.get(key)
+        if not existing or float(public.get("confidence") or 0) > float(existing.get("confidence") or 0):
+            devices[key] = public
+    return sorted(devices.values(), key=lambda item: float(item.get("confidence") or 0), reverse=True)
 
 
 def public_type_from_device_class(device_class: str) -> str:

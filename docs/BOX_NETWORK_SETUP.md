@@ -100,7 +100,8 @@ Implementiert:
 - keine OS-Aenderungen im Development
 - Adapter-Grenze fuer NetworkManager/ModemManager
 - vorbereiteter Mini-Setup-Screen
-- Einstellungen -> Netzwerk zeigt Box-Verbindung getrennt von Sensor-WLAN
+- Einstellungen -> Netzwerk zeigt Box-Verbindung getrennt von technisch vorbereiteten Sensor-Transporten
+- normaler V1-Sensorwizard enthaelt keine Sensor-WLAN-/Hotspot-Schritte
 
 Noch offen:
 

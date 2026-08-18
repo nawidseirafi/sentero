@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import os
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
+
+from backend.agents.sentero.mail.discovery import get_mail_settings, verify_mail_credentials
+from backend.agents.sentero.mail.models import MailConfig
 from backend.config import config_str
 from backend.services.container import get_services
 
@@ -36,6 +40,7 @@ OPENAPI_TAGS = [
 
 router = APIRouter(prefix=API_PREFIX)
 box_setup_router = APIRouter(prefix="/api/setup")
+mail_router = APIRouter(prefix="/api/mail")
 
 
 class ProfilePayload(BaseModel):
@@ -65,6 +70,7 @@ class SensorDiscoveryPayload(BaseModel):
     sensor_type: str = "presence_sensor"
     room_id: str | None = None
     role: str | None = None
+    transport: str | None = None
     duration: int | None = None
 
 
@@ -140,7 +146,7 @@ class ContactPayload(BaseModel):
 
 class MailContactSettingsPayload(BaseModel):
     email_queries_enabled: bool
-    email_permissions: list[str] = Field(default_factory=lambda: ["STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT"])
+    email_permissions: list[str] = Field(default_factory=lambda: ["STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT", "TECHNICAL_HEALTH"])
 
 
 class NotificationPayload(BaseModel):
@@ -227,6 +233,18 @@ class UpdateInstallRequest(BaseModel):
     layer: str | None = None
 
 
+class MailDiscoverPayload(BaseModel):
+    email: str
+
+
+class MailVerifyPayload(BaseModel):
+    email: str
+    password: str
+    config: MailConfig
+    imap_username: str | None = None
+    smtp_username: str | None = None
+
+
 def model_data(model: BaseModel) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump()
@@ -239,6 +257,27 @@ def api_error(exc: Exception) -> HTTPException:
 
 def is_dev_mode(dev: bool = False) -> bool:
     return dev or (config_str("app.dev_mode", "") or os.getenv("SENTERO_DEV_MODE", "")).lower() in {"1", "true", "yes", "on"}
+
+
+@mail_router.post("/discover", response_model=MailConfig, tags=[TAG_SETUP])
+async def discover_mail(payload: MailDiscoverPayload):
+    config = await get_mail_settings(payload.email)
+    if config is None:
+        raise HTTPException(status_code=404, detail="Für diese E-Mail-Domain wurden keine Mailserver-Einstellungen gefunden.")
+    return config
+
+
+@mail_router.post("/verify", tags=[TAG_SETUP])
+async def verify_mail(payload: MailVerifyPayload):
+    ok, message = await asyncio.to_thread(
+        verify_mail_credentials,
+        payload.config,
+        payload.email,
+        payload.password,
+        payload.imap_username,
+        payload.smtp_username,
+    )
+    return {"ok": ok, "message": message or "Senden und Empfangen funktioniert."}
 
 
 @box_setup_router.get("/box-network/status", tags=[TAG_SETUP])
@@ -471,7 +510,8 @@ def sentero_sensor_manager_start_discovery(payload: SensorDiscoveryPayload):
             payload.sensor_type,
             room_id=payload.room_id,
             role=payload.role,
-            duration=payload.duration or 180,
+            duration=payload.duration or 120,
+            transport=payload.transport,
         )
     except Exception as exc:
         raise api_error(exc) from exc

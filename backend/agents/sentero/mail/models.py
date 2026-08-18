@@ -2,7 +2,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+class MailEncryption(str, Enum):
+    SSL = "SSL"
+    STARTTLS = "STARTTLS"
+    NONE = "NONE"
+
+
+class MailConfig(BaseModel):
+    """Connection settings for an IMAP/SMTP mailbox."""
+
+    imap_host: str
+    imap_port: int = Field(ge=1, le=65535)
+    imap_encryption: MailEncryption
+    smtp_host: str
+    smtp_port: int = Field(ge=1, le=65535)
+    smtp_encryption: MailEncryption
+    auth_method: str | None = None
+    requires_app_password: bool = False
+    app_password_help_url: str | None = None
+    source: Literal["ispdb", "fallback", "manual"]
 
 
 class MailIntent(str, Enum):
@@ -50,6 +73,7 @@ DEFAULT_CONTACT_PERMISSIONS = {
     MailPermission.ROOM,
     MailPermission.ENVIRONMENT,
     MailPermission.NIGHT,
+    MailPermission.TECHNICAL_HEALTH,
 }
 
 

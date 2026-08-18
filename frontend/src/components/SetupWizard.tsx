@@ -28,7 +28,7 @@ type NotificationPreferences = {
 type SensorPlan = { motion: boolean; door: boolean; electricity: boolean; water: boolean; gas: boolean };
 
 const steps = ['Willkommen', 'Internetverbindung', 'Profil', 'Räume', 'Sensoren', 'Vertraute Personen', 'Benachrichtigungen', 'Abschluss'];
-const ZIGBEE_DISCOVERY_SECONDS = 180;
+const SENSOR_DISCOVERY_SECONDS = 120;
 const PRESENCE_DISCOVERY_TIMEOUT_MS = 8000;
 
 const roomOptions = [
@@ -67,6 +67,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
   const [errors, setErrors] = useState<string[]>([]);
   const [sensorBindings, setSensorBindings] = useState<SensorBinding[]>([]);
   const [discovery, setDiscovery] = useState<Record<string, SensorDiscoveryState>>({});
+  const [presenceTransport, setPresenceTransport] = useState<'zigbee' | 'wifi_esphome'>('zigbee');
   const timers = useRef<Record<string, number>>({});
   const activeDiscoverySessions = useRef<Set<number>>(new Set());
   const devMode = new URLSearchParams(window.location.search).get('dev') === '1';
@@ -110,6 +111,9 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
           primary: Boolean(contact.primary_contact),
         })));
       }
+    }).catch(() => undefined);
+    void api.senteroSensorManagerStatus().then((status) => {
+      setPresenceTransport(status.presence_sensor_transport === 'wifi_esphome' ? 'wifi_esphome' : 'zigbee');
     }).catch(() => undefined);
     void refreshNetwork();
     return () => {
@@ -306,26 +310,10 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
 
   async function searchSensor(sensor: SensorBinding) {
     updateSensor(sensor.id, { status: 'searching' });
-    setDiscovery((current) => ({ ...current, [sensor.id]: { remainingSeconds: ZIGBEE_DISCOVERY_SECONDS } }));
-    if (isPresenceBinding(sensor)) {
-      try {
-        const name = sensor.name || `${roomLabel(sensor.roomId)} Präsenzsensor`;
-        await api.startSenteroPresenceDiscovery();
-        const discovered = await waitForPresenceSensor();
-        setDiscovery((current) => ({
-          ...current,
-          [sensor.id]: {
-            sensor: { id: discovered.id, name: discovered.name, type: discovered.type, confidence: 100 },
-            remainingSeconds: Math.ceil(PRESENCE_DISCOVERY_TIMEOUT_MS / 1000),
-          },
-        }));
-        const result = await api.startSenteroPresenceProvisioning({ room_id: sensor.roomId, display_name: name, device_id: discovered.id });
-        updateSensor(sensor.id, { status: 'connected', score: 100, sensorManagerId: result.device.id, name: result.device.name });
-        setDiscovery((current) => ({ ...current, [sensor.id]: { sensor: { id: result.device.id, name: result.device.name, type: result.device.type, confidence: 100 }, remainingSeconds: 0 } }));
-      } catch (err) {
-        updateSensor(sensor.id, { status: 'missing' });
-        setDiscovery((current) => ({ ...current, [sensor.id]: { error: err instanceof Error ? err.message : 'Präsenzsensor konnte nicht verbunden werden.' } }));
-      }
+    setDiscovery((current) => ({ ...current, [sensor.id]: { remainingSeconds: SENSOR_DISCOVERY_SECONDS } }));
+    const activePresenceTransport = isPresenceBinding(sensor) ? await loadPresenceTransport() : presenceTransport;
+    if (isPresenceBinding(sensor) && activePresenceTransport === 'wifi_esphome') {
+      await searchWifiPresenceSensor(sensor);
       return;
     }
     try {
@@ -333,18 +321,51 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
         sensor_type: sensorTypeForDiscovery(sensor.type),
         room_id: sensor.roomId,
         role: sensor.id,
-        duration: ZIGBEE_DISCOVERY_SECONDS,
+        transport: isPresenceBinding(sensor) ? activePresenceTransport : 'zigbee',
+        duration: SENSOR_DISCOVERY_SECONDS,
       });
       if (result.status === 'manual_action') {
         throw new Error(result.message || 'Die Sensor-Einrichtung ist noch nicht bereit.');
       }
       activeDiscoverySessions.current.add(result.discovery_id);
       updateSensor(sensor.id, { sessionId: result.discovery_id });
-      setDiscovery((current) => ({ ...current, [sensor.id]: { ...(current[sensor.id] || {}), remainingSeconds: ZIGBEE_DISCOVERY_SECONDS } }));
+      setDiscovery((current) => ({ ...current, [sensor.id]: { ...(current[sensor.id] || {}), remainingSeconds: result.expires_in_seconds || SENSOR_DISCOVERY_SECONDS } }));
       pollSensor(sensor.id, result.discovery_id, Date.now(), sensor.name, sensor.roomId);
     } catch (err) {
       updateSensor(sensor.id, { status: 'missing' });
-      setDiscovery((current) => ({ ...current, [sensor.id]: { error: err instanceof Error ? err.message : 'Sensor nicht gefunden.' } }));
+      setDiscovery((current) => ({ ...current, [sensor.id]: { error: userFacingSensorError(err) } }));
+    }
+  }
+
+  async function loadPresenceTransport() {
+    try {
+      const status = await api.senteroSensorManagerStatus();
+      const nextTransport = status.presence_sensor_transport === 'wifi_esphome' ? 'wifi_esphome' : 'zigbee';
+      setPresenceTransport(nextTransport);
+      return nextTransport;
+    } catch {
+      return presenceTransport;
+    }
+  }
+
+  async function searchWifiPresenceSensor(sensor: SensorBinding) {
+    try {
+      const name = sensor.name || `${roomLabel(sensor.roomId)} Präsenzsensor`;
+      await api.startSenteroPresenceDiscovery();
+      const discovered = await waitForPresenceSensor();
+      setDiscovery((current) => ({
+        ...current,
+        [sensor.id]: {
+          sensor: { id: discovered.id, name: discovered.name, type: discovered.type, confidence: 100 },
+          remainingSeconds: Math.ceil(PRESENCE_DISCOVERY_TIMEOUT_MS / 1000),
+        },
+      }));
+      const result = await api.startSenteroPresenceProvisioning({ room_id: sensor.roomId, display_name: name, device_id: discovered.id });
+      updateSensor(sensor.id, { status: 'connected', score: 100, sensorManagerId: result.device.id, name: result.device.name });
+      setDiscovery((current) => ({ ...current, [sensor.id]: { sensor: { id: result.device.id, name: result.device.name, type: result.device.type, confidence: 100 }, remainingSeconds: 0 } }));
+    } catch (err) {
+      updateSensor(sensor.id, { status: 'missing' });
+      setDiscovery((current) => ({ ...current, [sensor.id]: { error: userFacingSensorError(err) } }));
     }
   }
 
@@ -354,7 +375,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
       try {
         const result = await api.senteroDiscoveredSensors(sessionId, devMode);
         const done = await applyCandidate(sensorId, sessionId, result, sensorName, roomId);
-        if (!done && Date.now() - startedAt < ZIGBEE_DISCOVERY_SECONDS * 1000) {
+        if (!done && Date.now() - startedAt < SENSOR_DISCOVERY_SECONDS * 1000) {
           pollSensor(sensorId, sessionId, startedAt, sensorName, roomId);
         }
       } catch (err) {
@@ -375,13 +396,15 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
       const name = sensorName || result.sensor.name || 'Sensor';
       try {
         await api.registerSenteroSensor(result.sensor.id, { discovery_id: sessionId, name, room_id: roomId }, devMode);
+        const test = await api.testSenteroSensorRole(sensorId);
+        if (!test.ok) throw new Error(test.message || 'Sensor ist aktuell nicht erreichbar.');
         activeDiscoverySessions.current.delete(sessionId);
         updateSensor(sensorId, { status: 'connected', sessionId, score, sensorManagerId: result.sensor.id, name });
       } catch (err) {
         activeDiscoverySessions.current.delete(sessionId);
         void api.cancelSenteroSensorDiscovery(sessionId).catch(() => undefined);
         updateSensor(sensorId, { status: 'missing' });
-        setDiscovery((current) => ({ ...current, [sensorId]: { ...(current[sensorId] || {}), error: err instanceof Error ? err.message : 'Sensor konnte nicht gespeichert werden.' } }));
+        setDiscovery((current) => ({ ...current, [sensorId]: { ...(current[sensorId] || {}), error: userFacingSensorError(err) } }));
       }
       return true;
     }
@@ -433,7 +456,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
         {step === 1 && <NetworkStep status={networkStatus} choice={networkChoice} networks={wifiNetworks} wifiForm={wifiForm} busy={networkBusy} message={networkMessage} onChoice={setNetworkChoice} onWifiForm={setWifiForm} onRefresh={() => void refreshNetwork()} />}
         {step === 2 && <ProfileStep profile={profile} calculatedAge={calculatedAge} onChange={setProfile} />}
         {step === 3 && <RoomsStep selected={selectedRooms} customRooms={customRooms} sensorPlan={sensorPlan} lockedSensorPlan={lockedSensorPlan} customRoom={customRoom} onToggle={toggleRoom} onCustomChange={setCustomRoom} onCustomAdd={addCustomRoom} onToggleSensorType={toggleSensorType} />}
-        {step === 4 && <SensorWizard sensors={sensorBindings} discovery={discovery} roomLabel={roomLabel} devMode={devMode} connected={connectedSensors} total={sensorBindings.length} onChange={updateSensor} onSearch={searchSensor} onSkip={skipSensor} />}
+        {step === 4 && <SensorWizard sensors={sensorBindings} discovery={discovery} roomLabel={roomLabel} devMode={devMode} connected={connectedSensors} total={sensorBindings.length} presenceTransport={presenceTransport} onChange={updateSensor} onSearch={searchSensor} onSkip={skipSensor} />}
         {step === 5 && <ContactsStep contacts={contacts} form={contactForm} formOpen={contactFormOpen} onOpen={() => setContactFormOpen(true)} onClose={() => setContactFormOpen(false)} onFormChange={setContactForm} onAdd={addContact} onDelete={(id) => setContacts((current) => {
           const nextContacts = current.filter((contact) => contact.id !== id);
           if (nextContacts.length && !nextContacts.some((contact) => contact.primary)) {
@@ -617,11 +640,12 @@ function RoomsStep({ selected, customRooms, sensorPlan, lockedSensorPlan, custom
   return (
     <section className="sc-room-select">
       <p>Wählen Sie die Räume in der Wohnung.</p>
+      <small className="sc-muted-note">Aktive Sensoren werden in diesem Raum verwendet.</small>
       <div className="sc-room-choice-grid">
         {visibleRooms.map((room) => {
           const active = selected.includes(room.id);
           const plan = sensorPlan[room.id] || defaultSensorPlan(room.id);
-          const locked = lockedSensorPlan[room.id] || defaultSensorPlan(room.id);
+          const locked = lockedSensorPlan[room.id] || emptySensorPlan();
           const roomLocked = roomHasLockedSensor(lockedSensorPlan, room.id);
           return (
             <div key={room.id} className={`sc-room-choice-card ${active ? 'active' : ''}${roomLocked ? ' has-bound-sensor' : ''}`}>
@@ -633,11 +657,11 @@ function RoomsStep({ selected, customRooms, sensorPlan, lockedSensorPlan, custom
                 <div className="sc-room-sensor-toggles">
                   <label className={`${plan.motion ? 'active' : ''}${locked.motion ? ' locked' : ''}`}>
                     <input type="checkbox" checked={plan.motion} disabled={locked.motion} onChange={() => onToggleSensorType(room.id, 'motion')} />
-                    <i aria-hidden="true" /> <span>Präsenzsensor{locked.motion}</span>
+                    <i aria-hidden="true" /> <span>Präsenzsensor</span>
                   </label>
                   <label className={`${plan.door ? 'active' : ''}${locked.door ? ' locked' : ''}`}>
                     <input type="checkbox" checked={plan.door} disabled={locked.door} onChange={() => onToggleSensorType(room.id, 'door')} />
-                    <i aria-hidden="true" /> <span>Türsensor{locked.door}</span>
+                    <i aria-hidden="true" /> <span>Türsensor</span>
                   </label>
                 </div>
               )}
@@ -895,7 +919,7 @@ async function waitForPresenceSensor(): Promise<SenteroEsp32DiscoverySensor> {
     if (sensor) return sensor;
     await wait(600);
   }
-  throw new Error('Präsenzsensor wurde noch nicht im Netzwerk gefunden.');
+  throw new Error('Präsenzsensor wurde noch nicht gefunden.');
 }
 
 function wait(ms: number) {
@@ -931,12 +955,22 @@ function defaultSensorPlan(roomId: string) {
   return { motion: roomId !== 'home', door: roomId !== 'home' && option?.door !== false, electricity: false, water: false, gas: false };
 }
 
+function emptySensorPlan(): SensorPlan {
+  return { motion: false, door: false, electricity: false, water: false, gas: false };
+}
+
 function sensorTypeForDiscovery(type: SensorBinding['type']) {
   if (type === 'door') return 'door_contact';
   if (type === 'electricity_meter') return 'electricity_meter';
   if (type === 'water_meter') return 'water_meter';
   if (type === 'gas_meter') return 'gas_meter';
   return 'presence_sensor';
+}
+
+function userFacingSensorError(err: unknown) {
+  const message = err instanceof Error ? err.message : '';
+  if (message === 'wifi_sensor_setup_disabled') return 'Kein Sensor gefunden. Bitte versetzen Sie den Sensor in den Verbindungsmodus und versuchen Sie es erneut.';
+  return 'Kein Sensor gefunden. Bitte versetzen Sie den Sensor in den Verbindungsmodus und versuchen Sie es erneut.';
 }
 
 function sensorPlanKey(type: SensorBinding['type']): keyof SensorPlan {

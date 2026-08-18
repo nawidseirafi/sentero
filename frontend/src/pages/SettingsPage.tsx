@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, Copy, DoorClosed, DoorOpen, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, ShieldCheck, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
-import { api, type BoxNetworkStatus, type SenteroConsent, type SenteroExportToken, type SenteroMailQuerySettings, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroTransparency } from '@shared/api/client';
+import { api, type BoxNetworkStatus, type MailConfig, type SenteroConsent, type SenteroExportToken, type SenteroMailQuerySettings, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroTransparency } from '@shared/api/client';
 import { UpdatePanel } from '../components/UpdatePanel';
 import { useSenteroAuth } from '../auth/SenteroAuthContext';
 import type { SenteroSettingsTab } from '../routes/routes';
@@ -92,8 +92,12 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [meterDiscovery, setMeterDiscovery] = useState<{ type: MeterAddType; status: 'idle' | 'searching' | 'found' | 'missing'; message: string; remainingSeconds?: number } | null>(null);
   const [setupChannel, setSetupChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
   const [helpChannel, setHelpChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
+  const [mailDiscovery, setMailDiscovery] = useState<{ status: 'idle' | 'checking' | 'found' | 'failed'; message: string }>({ status: 'idle', message: '' });
+  const [mailVerification, setMailVerification] = useState<{ busy: boolean; ok: boolean; message: string }>({ busy: false, ok: false, message: '' });
+  const [emailAdvancedOpen, setEmailAdvancedOpen] = useState(false);
+  const lastDiscoveredEmail = useRef('');
   const [channelForms, setChannelForms] = useState({
-    email: { mail_from: '', smtp_host: '', smtp_port: '587', smtp_user: '', smtp_password: '', imap_host: '', imap_port: '993', imap_user: '', imap_password: '', test_recipient: '' },
+    email: { mail_from: '', smtp_host: '', smtp_port: '587', smtp_user: '', smtp_login: '', smtp_password: '', smtp_encryption: '', smtp_starttls: 'true', smtp_ssl: 'false', imap_host: '', imap_port: '993', imap_user: '', imap_password: '', imap_encryption: '', app_password_help_url: '', test_recipient: '' },
     telegram: { bot_token: '', default_chat_id: '', test_recipient: '' },
     whatsapp: { access_token: '', phone_number_id: '', business_account_id: '', test_recipient: '' },
   });
@@ -101,6 +105,21 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   useEffect(() => {
     void load();
   }, []);
+
+  useEffect(() => {
+    if (setupChannel !== 'email') return;
+    const email = normalizeEmail(channelForms.email.smtp_user);
+    lastDiscoveredEmail.current = '';
+    setMailVerification({ busy: false, ok: false, message: '' });
+    if (!isValidEmail(email)) {
+      setMailDiscovery({ status: 'idle', message: '' });
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void discoverEmailSettings(email);
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [setupChannel, channelForms.email.smtp_user]);
 
   useEffect(() => {
     if (activeTab !== 'sensors') return;
@@ -476,9 +495,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   async function toggleEmailQueries(contactId: number, enabled: boolean) {
     const contact = emailQueries?.contacts.find((item) => item.id === contactId);
     if (!contact) return;
-    const next = await api.updateSenteroEmailQueryContact(contactId, {
+      const next = await api.updateSenteroEmailQueryContact(contactId, {
       email_queries_enabled: enabled,
-      email_permissions: contact.email_permissions?.length ? contact.email_permissions : ['STATUS', 'ACTIVITY', 'ROOM', 'ENVIRONMENT', 'NIGHT'],
+      email_permissions: contact.email_permissions?.length ? contact.email_permissions : ['STATUS', 'ACTIVITY', 'ROOM', 'ENVIRONMENT', 'NIGHT', 'TECHNICAL_HEALTH'],
     });
     setEmailQueries(next);
   }
@@ -641,6 +660,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         email: {
           ...current.email,
           ...stringConfig(byChannel.email),
+          smtp_login: String(byChannel.email?.smtp_login || current.email.smtp_login || byChannel.email?.smtp_user || ''),
           smtp_port: String(byChannel.email?.smtp_port || current.email.smtp_port),
           imap_port: String(byChannel.email?.imap_port || current.email.imap_port),
         },
@@ -652,12 +672,81 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
   async function saveChannel(channel: 'email' | 'telegram' | 'whatsapp') {
     try {
-      const config = channelForms[channel];
+      if (channel === 'email' && !mailVerification.ok) {
+        setMailVerification({ busy: false, ok: false, message: 'Bitte prüfen Sie zuerst die Verbindung.' });
+        return;
+      }
+      const config = channel === 'email' ? emailChannelConfig(channelForms.email) : channelForms[channel];
       await api.saveSenteroNotificationChannel(channel, { enabled: false, config });
-      toast('Kanal gespeichert. Bitte testen, um ihn für Vertrauenspersonen freizuschalten.');
+      toast(channel === 'email' ? 'E-Mail ist eingerichtet.' : 'Kanal gespeichert. Bitte testen, um ihn für Vertrauenspersonen freizuschalten.');
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Kanal konnte nicht gespeichert werden.');
+    }
+  }
+
+  async function discoverEmailSettings(email: string) {
+    if (lastDiscoveredEmail.current === email) return;
+    lastDiscoveredEmail.current = email;
+    setMailDiscovery({ status: 'checking', message: 'Mailbox wird erkannt ...' });
+    try {
+      const config = await api.discoverMailSettings(email);
+      setChannelForms((current) => ({
+        ...current,
+        email: discoveredEmailForm(current.email, config, email),
+      }));
+      setMailDiscovery({ status: 'found', message: 'Mailbox erkannt' });
+    } catch {
+      setMailDiscovery({ status: 'failed', message: 'Sentero konnte den Mailserver nicht automatisch erkennen.' });
+    }
+  }
+
+  async function verifyEmailSettings(values?: { email?: string; password?: string }) {
+    const email = normalizeEmail(values?.email || channelForms.email.smtp_user);
+    const password = values?.password ?? channelForms.email.smtp_password ?? channelForms.email.imap_password;
+    const effectiveForm = {
+      ...channelForms.email,
+      smtp_user: email,
+      smtp_login: channelForms.email.smtp_login || email,
+      imap_user: channelForms.email.imap_user || email,
+      smtp_password: password,
+      imap_password: password,
+      mail_from: channelForms.email.mail_from || 'Sentero',
+    };
+    if (!isValidEmail(email)) {
+      setMailVerification({ busy: false, ok: false, message: 'Bitte geben Sie eine gültige E-Mail-Adresse ein.' });
+      return;
+    }
+    if (!password) {
+      setMailVerification({ busy: false, ok: false, message: 'Bitte geben Sie das Passwort oder App-Passwort ein.' });
+      return;
+    }
+    if (!effectiveForm.smtp_host || !effectiveForm.imap_host) {
+      setEmailAdvancedOpen(true);
+      setMailVerification({ busy: false, ok: false, message: 'Sentero konnte den Mailserver nicht automatisch erkennen.' });
+      return;
+    }
+    setChannelForms((current) => ({ ...current, email: effectiveForm }));
+    setMailVerification({ busy: true, ok: false, message: 'Verbindung wird geprüft ...' });
+    try {
+      const result = await api.verifyMailSettings({
+        email,
+        password,
+        config: mailConfigFromForm(effectiveForm),
+        imap_username: effectiveForm.imap_user || email,
+        smtp_username: effectiveForm.smtp_login || email,
+      });
+      setMailVerification({
+        busy: false,
+        ok: result.ok,
+        message: result.ok ? 'Senden und Empfangen funktioniert.' : friendlyMailError(result.message, Boolean(channelForms.email.app_password_help_url)),
+      });
+    } catch (err) {
+      setMailVerification({
+        busy: false,
+        ok: false,
+        message: friendlyMailError(err instanceof Error ? err.message : '', Boolean(channelForms.email.app_password_help_url)),
+      });
     }
   }
 
@@ -1157,7 +1246,20 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
               form={channelForms[setupChannel]}
               recipient={primaryNotificationRecipient(status?.trusted_contacts || [])}
               onClose={() => setSetupChannel(null)}
-              onFormChange={(form) => setChannelForms((value) => ({ ...value, [setupChannel]: form as never }))}
+              onFormChange={(form) => {
+                if (setupChannel === 'email') {
+                  setMailVerification({ busy: false, ok: false, message: '' });
+                }
+                setChannelForms((value) => ({ ...value, [setupChannel]: form as never }));
+              }}
+              discoverStatus={mailDiscovery.status}
+              discoverMessage={setupChannel === 'email' ? mailDiscovery.message : ''}
+              verificationBusy={mailVerification.busy}
+              verificationOk={mailVerification.ok}
+              verificationMessage={setupChannel === 'email' ? mailVerification.message : ''}
+              advancedOpen={emailAdvancedOpen}
+              onAdvancedToggle={() => setEmailAdvancedOpen((value) => !value)}
+              onVerify={setupChannel === 'email' ? (values) => void verifyEmailSettings(values) : undefined}
               onSave={() => void saveChannel(setupChannel)}
               onTest={() => void testChannel(setupChannel)}
             />
@@ -1633,6 +1735,14 @@ function ChannelSetupModal({
   recipient,
   onClose,
   onFormChange,
+  discoverStatus = 'idle',
+  discoverMessage = '',
+  verificationBusy = false,
+  verificationOk = false,
+  verificationMessage = '',
+  advancedOpen = false,
+  onAdvancedToggle,
+  onVerify,
   onSave,
   onTest,
 }: {
@@ -1641,10 +1751,124 @@ function ChannelSetupModal({
   recipient?: { name: string; email: string; relationship?: string; primary: boolean } | null;
   onClose: () => void;
   onFormChange: (form: Record<string, string>) => void;
+  discoverStatus?: 'idle' | 'checking' | 'found' | 'failed';
+  discoverMessage?: string;
+  verificationBusy?: boolean;
+  verificationOk?: boolean;
+  verificationMessage?: string;
+  advancedOpen?: boolean;
+  onAdvancedToggle?: () => void;
+  onVerify?: (values?: { email?: string; password?: string }) => void;
   onSave: () => void;
   onTest: () => void;
 }) {
   const meta = channelSetupMeta(channel);
+  const appPasswordHelpUrl = form.app_password_help_url;
+  const emailInputRef = useRef<HTMLInputElement | null>(null);
+  const passwordInputRef = useRef<HTMLInputElement | null>(null);
+  if (channel === 'email') {
+    return (
+      <div className="sc-modal-backdrop" role="presentation" onMouseDown={onClose}>
+        <section className="sc-channel-modal sc-mail-onboarding-modal" role="dialog" aria-modal="true" aria-label={meta.title} onMouseDown={(event) => event.stopPropagation()}>
+          <header>
+            <span>{channelIcon(channel, 24)}</span>
+            <div>
+              <h3>{meta.title}</h3>
+              <p>{meta.text}</p>
+            </div>
+            <button type="button" onClick={onClose} aria-label="Dialog schließen"><X size={20} /></button>
+          </header>
+
+          <div className="sc-mail-simple-form">
+            <label>
+              E-Mail-Adresse
+              <input
+                ref={emailInputRef}
+                type="email"
+                value={form.smtp_user || ''}
+                onInput={(event) => onFormChange(emailAddressForm(form, event.currentTarget.value))}
+                onChange={(event) => onFormChange(emailAddressForm(form, event.target.value))}
+                autoComplete="email"
+              />
+            </label>
+            {discoverMessage && (
+              <p className={`sc-mail-status ${discoverStatus}`}>
+                {discoverStatus === 'found' && <CheckCircle2 size={18} />}
+                {discoverMessage}
+              </p>
+            )}
+            <label>
+              Passwort / App-Passwort
+              <input
+                ref={passwordInputRef}
+                type="password"
+                value={form.smtp_password || ''}
+                onInput={(event) => onFormChange({ ...form, smtp_password: event.currentTarget.value, imap_password: event.currentTarget.value })}
+                onChange={(event) => onFormChange({ ...form, smtp_password: event.target.value, imap_password: event.target.value })}
+                autoComplete="current-password"
+              />
+            </label>
+            {appPasswordHelpUrl && (
+              <div className="sc-app-password-note">
+                <small>{appPasswordProviderHint(form.smtp_user)}</small>
+                <a href={appPasswordHelpUrl} target="_blank" rel="noreferrer">So erstellen Sie ein App-Passwort</a>
+              </div>
+            )}
+            {verificationMessage && (
+              <p className={`sc-mail-status ${verificationOk ? 'found' : 'failed'}`}>
+                {verificationOk && <CheckCircle2 size={18} />}
+                {verificationMessage}
+              </p>
+            )}
+          </div>
+
+          <section className="sc-advanced-mail-settings">
+            <button type="button" onClick={onAdvancedToggle} aria-expanded={advancedOpen}>
+              {discoverStatus === 'failed' && !advancedOpen ? 'Erweiterte Einstellungen öffnen' : 'Erweiterte Einstellungen'}
+            </button>
+            {advancedOpen && (
+              <div className="sc-form-grid">
+                {meta.fields.map(({ key, label, hint }) => (
+                  <label key={key} className={key === 'mail_from' ? 'sc-form-wide' : undefined}>
+                    {label}
+                    {key.includes('encryption') ? (
+                      <select value={form[key] || ''} onChange={(event) => onFormChange({ ...form, [key]: event.target.value })}>
+                        <option value="">Automatisch</option>
+                        <option value="SSL">SSL</option>
+                        <option value="STARTTLS">STARTTLS</option>
+                        <option value="NONE">Keine</option>
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={form[key] || ''}
+                        onChange={(event) => onFormChange({ ...form, [key]: event.target.value })}
+                      />
+                    )}
+                    {hint && <small className="sc-field-hint">{hint}</small>}
+                  </label>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <footer>
+            <button
+              type="button"
+              onClick={() => onVerify?.({ email: emailInputRef.current?.value, password: passwordInputRef.current?.value })}
+              disabled={verificationBusy || discoverStatus === 'checking'}
+            >
+              {verificationBusy ? 'Wird geprüft' : 'Verbindung prüfen'}
+            </button>
+            <button type="button" onClick={onTest} disabled={verificationBusy || discoverStatus === 'checking'}>
+              <Send size={18} /> Testmail senden
+            </button>
+            <button type="button" onClick={onSave} disabled={!verificationOk}><Save size={18} /> Speichern</button>
+          </footer>
+        </section>
+      </div>
+    );
+  }
   return (
     <div className="sc-modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="sc-channel-modal" role="dialog" aria-modal="true" aria-label={meta.title} onMouseDown={(event) => event.stopPropagation()}>
@@ -1669,23 +1893,8 @@ function ChannelSetupModal({
             </label>
           ))}
         </div>
-        {channel === 'email' && (
-          <div className="sc-channel-recipient">
-            <span>Vertrauensperson für den Test</span>
-            {recipient ? (
-              <>
-                <strong>{recipient.name}</strong>
-                <small>{recipient.email}</small>
-                {recipient.primary && <em>Hauptansprechpartner</em>}
-              </>
-            ) : (
-              <small>Bitte hinterlegen Sie zuerst eine Vertrauensperson mit E-Mail-Adresse.</small>
-            )}
-          </div>
-        )}
-        {channel === 'email' && <p className="sc-modal-help">Sentero sendet von der Sentero-Mailbox an den Testempfänger. Antworten müssen zurück in dieselbe Sentero-Mailbox laufen.</p>}
         <footer>
-          <button type="button" onClick={onTest}><Send size={18} /> {channel === 'email' ? 'Test senden' : 'Testen'}</button>
+          <button type="button" onClick={onTest}><Send size={18} /> Testen</button>
           <button type="button" onClick={onSave}><Save size={18} /> Speichern</button>
         </footer>
       </section>
@@ -1897,6 +2106,10 @@ function normalizeEmail(value: string) {
   return value.trim().toLowerCase();
 }
 
+function isValidEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
 function emptyContactForm() {
   return {
     name: '',
@@ -1950,6 +2163,109 @@ function validateContactPayload(payload: ReturnType<typeof contactPayload>) {
 function stringConfig(value: unknown) {
   if (!value || typeof value !== 'object') return {};
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, String(item ?? '')]));
+}
+
+function discoveredEmailForm<T extends Record<string, string>>(current: T, config: MailConfig, email: string): T {
+  const smtpEncryption = String(config.smtp_encryption || '').toUpperCase();
+  const imapEncryption = String(config.imap_encryption || '').toUpperCase();
+  const currentImapUser = String(current.imap_user || '').trim();
+  const imapUser = !currentImapUser || currentImapUser === current.imap_host ? email : currentImapUser;
+  return {
+    ...current,
+    mail_from: current.mail_from || 'Sentero',
+    smtp_host: config.smtp_host,
+    smtp_port: String(config.smtp_port),
+    smtp_user: email,
+    smtp_login: current.smtp_login || email,
+    smtp_encryption: smtpEncryption,
+    smtp_starttls: smtpEncryption === 'STARTTLS' ? 'true' : 'false',
+    smtp_ssl: smtpEncryption === 'SSL' ? 'true' : 'false',
+    imap_host: config.imap_host,
+    imap_port: String(config.imap_port),
+    imap_user: imapUser,
+    imap_encryption: imapEncryption,
+    app_password_help_url: config.app_password_help_url || '',
+  };
+}
+
+function emailAddressForm<T extends Record<string, string>>(current: T, nextEmail: string): T {
+  const previousEmail = normalizeEmail(current.smtp_user || '');
+  const nextLogin = normalizeEmail(nextEmail);
+  const currentImapUser = String(current.imap_user || '').trim();
+  const currentSmtpLogin = String(current.smtp_login || '').trim();
+  const shouldUpdateSmtpLogin = !currentSmtpLogin || normalizeEmail(currentSmtpLogin) === previousEmail;
+  const shouldUpdateImapUser = !currentImapUser || normalizeEmail(currentImapUser) === previousEmail;
+  return {
+    ...current,
+    smtp_user: nextEmail,
+    smtp_login: shouldUpdateSmtpLogin ? nextEmail : currentSmtpLogin,
+    imap_user: shouldUpdateImapUser ? nextEmail : currentImapUser,
+    mail_from: current.mail_from || 'Sentero',
+  };
+}
+
+function emailChannelConfig(form: Record<string, string>) {
+  const email = normalizeEmail(form.smtp_user);
+  const password = form.smtp_password || form.imap_password || '';
+  const smtpEncryption = normalizedEncryption(form.smtp_encryption, form.smtp_port, form.smtp_starttls, form.smtp_ssl);
+  return {
+    ...form,
+    mail_from: form.mail_from || 'Sentero',
+    smtp_user: email,
+    smtp_login: form.smtp_login || email,
+    smtp_password: password,
+    smtp_encryption: smtpEncryption,
+    smtp_starttls: smtpEncryption === 'STARTTLS' ? 'true' : 'false',
+    smtp_ssl: smtpEncryption === 'SSL' ? 'true' : 'false',
+    imap_user: form.imap_user || email,
+    imap_password: form.imap_password || password,
+    imap_encryption: normalizedEncryption(form.imap_encryption, form.imap_port),
+  };
+}
+
+function mailConfigFromForm(form: Record<string, string>): MailConfig {
+  const smtpEncryption = normalizedEncryption(form.smtp_encryption, form.smtp_port, form.smtp_starttls, form.smtp_ssl);
+  const imapEncryption = normalizedEncryption(form.imap_encryption, form.imap_port);
+  return {
+    imap_host: form.imap_host,
+    imap_port: parsePort(form.imap_port, 993),
+    imap_encryption: imapEncryption,
+    smtp_host: form.smtp_host,
+    smtp_port: parsePort(form.smtp_port, 587),
+    smtp_encryption: smtpEncryption,
+    auth_method: null,
+    requires_app_password: Boolean(form.app_password_help_url),
+    app_password_help_url: form.app_password_help_url || null,
+    source: 'manual',
+  };
+}
+
+function normalizedEncryption(value: string | undefined, port: string | undefined, starttls?: string, ssl?: string) {
+  const encryption = String(value || '').toUpperCase();
+  if (encryption === 'SSL' || encryption === 'STARTTLS' || encryption === 'NONE') return encryption;
+  if (ssl === 'true' || port === '465' || port === '993') return 'SSL';
+  if (starttls !== 'false') return 'STARTTLS';
+  return 'NONE';
+}
+
+function parsePort(value: string | undefined, fallback: number) {
+  const port = Number.parseInt(String(value || ''), 10);
+  return Number.isFinite(port) && port > 0 ? port : fallback;
+}
+
+function appPasswordProviderHint(email: string) {
+  const domain = normalizeEmail(email).split('@')[1] || 'diesen Anbieter';
+  const label = domain.includes('gmail') ? 'Gmail' : domain.includes('icloud') ? 'iCloud' : domain.includes('yahoo') ? 'Yahoo' : domain.includes('outlook') || domain.includes('hotmail') ? 'Outlook' : 'diesen Anbieter';
+  return `Für ${label} benötigen Sie normalerweise ein App-Passwort.`;
+}
+
+function friendlyMailError(message: string, hasAppPasswordHint: boolean) {
+  const lower = message.toLowerCase();
+  if (hasAppPasswordHint && (lower.includes('passwort') || lower.includes('anmeldung') || lower.includes('auth'))) {
+    return 'Für diesen Anbieter benötigen Sie möglicherweise ein App-Passwort.';
+  }
+  if (lower.includes('nicht automatisch erkennen')) return 'Sentero konnte den Mailserver nicht automatisch erkennen.';
+  return 'Die Anmeldung war nicht erfolgreich. Bitte prüfen Sie E-Mail-Adresse und Passwort.';
 }
 
 function channelState(channels: SenteroNotificationChannel[], channel: string) {
@@ -2027,18 +2343,17 @@ function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp'): ChannelSe
   }
   return {
     title: 'E-Mail einrichten',
-    text: 'Eine Sentero-Mailbox sendet Hinweise und liest Antworten.',
+    text: 'Sentero verwendet diese Mailbox, um Hinweise zu senden und Antworten von Vertrauenspersonen zu empfangen.',
     fields: [
-      { key: 'mail_from', label: 'Anzeigename', hint: 'Zum Beispiel: Sentero. Die technische Absenderadresse kommt aus der Sentero-Mailbox.' },
-      { key: 'smtp_host', label: 'SMTP-Server der Sentero-Mailbox', hint: 'Server, über den Sentero E-Mails sendet.' },
-      { key: 'smtp_port', label: 'SMTP-Port', hint: 'Meist 587.' },
-      { key: 'smtp_user', label: 'Sentero-Mailbox-Adresse', hint: 'Diese Adresse steht als Absender in Sentero-Mails.' },
-      { key: 'smtp_password', label: 'SMTP-Passwort', hint: 'Passwort oder App-Passwort der Sentero-Mailbox.' },
-      { key: 'imap_host', label: 'IMAP-Server der Sentero-Mailbox', hint: 'Server, aus dem Sentero Antworten liest.' },
-      { key: 'imap_port', label: 'IMAP-Port', hint: 'Meist 993.' },
-      { key: 'imap_user', label: 'IMAP-Login', hint: 'Oft dieselbe Adresse wie die Sentero-Mailbox; manche Anbieter nutzen einen Server-Login.' },
-      { key: 'imap_password', label: 'IMAP-Passwort', hint: 'Leer lassen, wenn es dem SMTP-Passwort entspricht.' },
-      { key: 'test_recipient', label: 'Test an Vertrauensperson senden', hint: 'Hier gehört die private Adresse der Vertrauensperson hin, nicht die Sentero-Mailbox.' },
+      { key: 'smtp_host', label: 'SMTP-Server' },
+      { key: 'smtp_port', label: 'SMTP-Port' },
+      { key: 'smtp_encryption', label: 'SMTP-Verschlüsselung' },
+      { key: 'smtp_login', label: 'SMTP-Login' },
+      { key: 'imap_host', label: 'IMAP-Server' },
+      { key: 'imap_port', label: 'IMAP-Port' },
+      { key: 'imap_encryption', label: 'IMAP-Verschlüsselung' },
+      { key: 'imap_user', label: 'IMAP-Login' },
+      { key: 'mail_from', label: 'Anzeigename' },
     ],
   };
 }

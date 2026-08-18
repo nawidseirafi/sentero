@@ -84,3 +84,34 @@ Zielzustand:
 - robuste Reconnects mit Backoff bei IMAP-/SMTP-Fehlern
 
 Mail-Abfragen liefern nur vorhandene Fakten. Raumantworten unterscheiden strikt zwischen aktueller Presence, letzter Aktivitaet und unsicherer/veralteter Raumzuordnung. Sensorwerte mit alter Datenfrische werden nicht als Live-Zustand formuliert.
+
+## Sensor-Onboarding V1
+
+Ziel fuer Sentero V1:
+
+- Praesenzsensoren und Tuersensoren werden im normalen Wizard ueber denselben Sensor-Suchen-Flow eingerichtet.
+- Der Standardtransport ist `zigbee`.
+- Zigbee-Pairing wird nur temporaer waehrend eines aktiven Onboarding- oder Admin-Flows geoeffnet und bei Erfolg, Timeout oder Abbruch wieder geschlossen.
+- Default-Timeout fuer die Suche: 120 Sekunden, konfigurierbar.
+- Mehrere Home-Assistant-Entities eines physischen Geraets werden als ein Sentero-Sensor gespeichert.
+- Sentero speichert eine eigene Raumzuordnung und ist nicht darauf angewiesen, die Home-Assistant-Area zu veraendern.
+- ESP32/WLAN bleibt als `wifi_esphome` vorbereitet, ist aber im normalen V1-Wizard standardmaessig ausgeblendet.
+- Der Praesenzsensor-Transport kann fuer Installation/Entwicklung per `.env` umgestellt werden: `SENTERO_PRESENCE_SENSOR_TRANSPORT=zigbee` oder `SENTERO_PRESENCE_SENSOR_TRANSPORT=wifi_esphome`.
+
+Persistente Zuordnung:
+
+```json
+{
+  "sensor_type": "presence",
+  "transport": "zigbee",
+  "room_id": "hallway",
+  "device_id": "0x...",
+  "primary_entity_id": "binary_sensor.flur_occupancy",
+  "entity_ids": [
+    "binary_sensor.flur_occupancy",
+    "sensor.flur_battery"
+  ]
+}
+```
+
+Die Verhaltensanalyse konsumiert daraus nur normalisierte Fachdaten, nicht den Transport.

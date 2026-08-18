@@ -143,6 +143,19 @@ export type SenteroNotificationChannel = {
   updated_at?: string | null;
 };
 
+export type MailConfig = {
+  imap_host: string;
+  imap_port: number;
+  imap_encryption: 'SSL' | 'STARTTLS' | 'NONE' | string;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_encryption: 'SSL' | 'STARTTLS' | 'NONE' | string;
+  auth_method?: string | null;
+  requires_app_password: boolean;
+  app_password_help_url?: string | null;
+  source: 'ispdb' | 'fallback' | 'manual' | string;
+};
+
 export type SenteroConsent = {
   id: number;
   contact_id: number;
@@ -239,6 +252,8 @@ export type SenteroSensorDiscoveryStart = {
   message: string;
   sensor_type: string;
   room_id?: string | null;
+  transport?: 'zigbee' | 'wifi_esphome' | string;
+  expires_in_seconds?: number;
 };
 
 export type SenteroDiscoveredSensor = {
@@ -246,6 +261,7 @@ export type SenteroDiscoveredSensor = {
   name: string;
   type: string;
   confidence: number;
+  entities?: string[];
 };
 
 export type SenteroSensorDiscoveryResult = {
@@ -253,6 +269,7 @@ export type SenteroSensorDiscoveryResult = {
   status: 'found' | 'searching' | 'not_found' | string;
   message: string;
   sensor?: SenteroDiscoveredSensor | null;
+  devices?: SenteroDiscoveredSensor[];
   remaining_seconds?: number;
 };
 
@@ -260,6 +277,16 @@ export type SenteroSensorNetworkSettings = {
   wifi_ssid: string;
   wifi_password_set: boolean;
   configured: boolean;
+};
+
+export type SenteroSensorManagerStatus = {
+  ready: boolean;
+  mode: string;
+  status_label: string;
+  network: SenteroSensorNetworkSettings;
+  supported_sensor_types: string[];
+  wifi_sensor_setup_enabled?: boolean;
+  presence_sensor_transport?: 'zigbee' | 'wifi_esphome' | string;
 };
 
 export type BoxNetworkStatus = {
@@ -548,7 +575,7 @@ export const api = {
     request<SenteroPairingStart>('/api/sentero/setup/discovery/start', { method: 'POST', body: JSON.stringify(payload) }),
   startSenteroZigbeePairing: (payload: { role: string; room?: string | null; duration?: number }) =>
     request<SenteroPairingStart>('/api/sentero/setup/pairing/zigbee/start', { method: 'POST', body: JSON.stringify(payload) }),
-  startSenteroSensorDiscovery: (payload: { sensor_type: string; room_id?: string | null; role?: string | null; duration?: number }) =>
+  startSenteroSensorDiscovery: (payload: { sensor_type: string; room_id?: string | null; role?: string | null; transport?: 'zigbee' | 'wifi_esphome' | string; duration?: number }) =>
     request<SenteroSensorDiscoveryStart>('/api/sentero/sensors/start-discovery', { method: 'POST', body: JSON.stringify(payload) }),
   senteroDiscoveredSensors: (discoveryId: number, dev = false) =>
     request<SenteroSensorDiscoveryResult>(`/api/sentero/sensors/discovered?discovery_id=${discoveryId}${dev ? '&dev=true' : ''}`),
@@ -585,6 +612,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ entity_id: entityId, ...(payload || {}) }),
     }),
+  senteroSensorManagerStatus: () => request<SenteroSensorManagerStatus>('/api/sentero/sensors/status'),
   saveSenteroSetupSensors: () => request<SenteroSetupStatus>('/api/sentero/setup/sensors', { method: 'POST' }),
   saveSenteroContact: (payload: SenteroContactPayload) =>
     request<SenteroSetupStatus>('/api/sentero/setup/contact', { method: 'POST', body: JSON.stringify(payload) }),
@@ -595,6 +623,10 @@ export const api = {
   senteroEmailQuerySettings: () => request<SenteroMailQuerySettings>('/api/sentero/setup/email-queries'),
   updateSenteroEmailQueryContact: (contactId: number, payload: { email_queries_enabled: boolean; email_permissions: string[] }) =>
     request<SenteroMailQuerySettings>(`/api/sentero/setup/contact/${encodeURIComponent(String(contactId))}/email-queries`, { method: 'PUT', body: JSON.stringify(payload) }),
+  discoverMailSettings: (email: string) =>
+    request<MailConfig>('/api/mail/discover', { method: 'POST', body: JSON.stringify({ email }) }),
+  verifyMailSettings: (payload: { email: string; password: string; config: MailConfig; imap_username?: string; smtp_username?: string }) =>
+    request<{ ok: boolean; message: string }>('/api/mail/verify', { method: 'POST', body: JSON.stringify(payload) }),
   saveSenteroNotifications: (payload: { anomalies: boolean; critical: boolean; daily_summary: boolean }) =>
     request<SenteroSetupStatus>('/api/sentero/setup/notifications', { method: 'POST', body: JSON.stringify(payload) }),
   senteroNotificationChannels: () => request<{ channels: SenteroNotificationChannel[] }>('/api/sentero/notifications/channels'),

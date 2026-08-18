@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ DB_PATH = DATA_DIR / 'sentero.db'
 DB_TIMEOUT_SECONDS = 30
 DISCOVERY_TIMEOUT_SECONDS = 180
 DISCOVERY_CONFIDENCE_THRESHOLD = 50
-PRESENCE_CLASSES = {'occupancy', 'motion', 'presence'}
+PRESENCE_CLASSES = {'occupancy', 'motion', 'presence', 'moving_target', 'static_target'}
 CONTACT_CLASSES = {'door', 'window', 'opening', 'contact'}
 SMART_METER_CLASSES = {'energy', 'power', 'water', 'gas'}
 SMART_METER_KEYS = {
@@ -35,6 +36,11 @@ SMART_METER_KEYS = {
     'gas_consumption',
 }
 logger = get_logger(__name__)
+
+
+class SensorTransport(str, Enum):
+    ZIGBEE = "zigbee"
+    WIFI_ESPHOME = "wifi_esphome"
 ROOM_TERMS = {
     'living_room': ['wohnzimmer', 'living', 'living_room'],
     'kitchen': ['kueche', 'küche', 'kitchen'],
@@ -152,7 +158,7 @@ class DeviceMappingService:
         )
         return {'session_id': session_id, 'status': status, 'message': message, 'detail': detail}
 
-    def start_zigbee_pairing(self, role: str, room: str | None, duration: int = 60) -> dict[str, Any]:
+    def start_zigbee_pairing(self, role: str, room: str | None, duration: int = 60, sensor_type: str | None = None) -> dict[str, Any]:
         ha_url = getattr(self.ha, 'base_url', '')
         duration = min(max(int(duration or 60), 10), 300)
         try:
@@ -181,9 +187,21 @@ class DeviceMappingService:
         with self.connect() as con:
             cur = con.execute(
                 '''insert into sensor_discovery_sessions
-                   (target_role, target_room, started_at, status, baseline_snapshot_json, pairing_code_provided, pairing_detail_json)
-                   values (?, ?, ?, ?, ?, ?, ?)''',
-                (role, room, now(), status, json.dumps(baseline, ensure_ascii=False), 0, json.dumps(detail, ensure_ascii=False)),
+                   (target_role, target_room, target_sensor_type, target_transport, timeout_seconds,
+                    started_at, status, baseline_snapshot_json, pairing_code_provided, pairing_detail_json)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (
+                    role,
+                    room,
+                    sensor_type,
+                    SensorTransport.ZIGBEE.value,
+                    duration,
+                    now(),
+                    status,
+                    json.dumps(baseline, ensure_ascii=False),
+                    0,
+                    json.dumps(detail, ensure_ascii=False),
+                ),
             )
             con.commit()
             session_id = int(cur.lastrowid)
@@ -207,7 +225,7 @@ class DeviceMappingService:
             )
         return {'session_id': session_id, 'status': status, 'message': message, 'detail': detail}
 
-    def start_mqtt_discovery(self, role: str, room: str | None, duration: int = 180) -> dict[str, Any]:
+    def start_mqtt_discovery(self, role: str, room: str | None, duration: int = 180, sensor_type: str | None = None) -> dict[str, Any]:
         duration = min(max(int(duration or DISCOVERY_TIMEOUT_SECONDS), 10), 300)
         try:
             baseline = self._mqtt_snapshot()
@@ -225,9 +243,21 @@ class DeviceMappingService:
         with self.connect() as con:
             cur = con.execute(
                 '''insert into sensor_discovery_sessions
-                   (target_role, target_room, started_at, status, baseline_snapshot_json, pairing_code_provided, pairing_detail_json)
-                   values (?, ?, ?, ?, ?, ?, ?)''',
-                (role, room, now(), status, json.dumps(baseline, ensure_ascii=False), 0, json.dumps(detail, ensure_ascii=False)),
+                   (target_role, target_room, target_sensor_type, target_transport, timeout_seconds,
+                    started_at, status, baseline_snapshot_json, pairing_code_provided, pairing_detail_json)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (
+                    role,
+                    room,
+                    sensor_type,
+                    SensorTransport.ZIGBEE.value,
+                    duration,
+                    now(),
+                    status,
+                    json.dumps(baseline, ensure_ascii=False),
+                    0,
+                    json.dumps(detail, ensure_ascii=False),
+                ),
             )
             con.commit()
             session_id = int(cur.lastrowid)
@@ -257,6 +287,7 @@ class DeviceMappingService:
             raise ValueError('session not found')
         started_at = parse_time(row['started_at'])
         elapsed_seconds = max((datetime.now(timezone.utc) - started_at).total_seconds(), 0)
+        timeout_seconds = int(row['timeout_seconds'] or DISCOVERY_TIMEOUT_SECONDS)
         if row['status'] == 'pairing_needs_manual_action':
             logger.info(
                 "Sentero discovery poll session=%s skipped status=pairing_needs_manual_action ha_url=%s",
@@ -285,7 +316,7 @@ class DeviceMappingService:
         changed_count = len(scored)
         best_scored = scored[0] if scored else None
         best = best_scored if best_scored and best_scored['confidence'] >= DISCOVERY_CONFIDENCE_THRESHOLD else None
-        timed_out = elapsed_seconds >= DISCOVERY_TIMEOUT_SECONDS
+        timed_out = elapsed_seconds >= timeout_seconds
         status = 'found' if best else 'no_signal_detected' if timed_out else 'waiting_for_signal'
         message = (
             'Sensor-Signal erkannt.'
@@ -343,7 +374,7 @@ class DeviceMappingService:
             'candidate': candidate_public(best, dev) if best else None,
             'candidates': public_candidates,
             'elapsed_seconds': elapsed_seconds,
-            'remaining_seconds': max(DISCOVERY_TIMEOUT_SECONDS - elapsed_seconds, 0),
+            'remaining_seconds': max(timeout_seconds - elapsed_seconds, 0),
             'changed_count': changed_count if dev else None,
             'current_state_count': len(current) if dev else None,
             'baseline_state_count': len(baseline) if dev else None,
@@ -380,18 +411,29 @@ class DeviceMappingService:
         if mqtt_candidate and not metadata_detail.get('ok'):
             raise RuntimeError(str(metadata_detail.get('message') or metadata_detail.get('reason') or 'Sensor konnte nicht umbenannt werden.'))
         source_ref = str(metadata_detail.get('source_ref') or entity.get('source_ref') or entity.get('topic') or entity.get('entity_id') or entity_id).strip()
+        transport = str(session['target_transport'] or SensorTransport.ZIGBEE.value)
+        sensor_type = str(session['target_sensor_type'] or sensor_type_from_role(session['target_role']))
+        device_id = attrs.get('device_id') or entity.get('device_id')
+        primary_entity_id = str(entity.get('entity_id') or entity_id)
+        entity_ids = entity_ids_for_physical_device(current, entity)
         payload = {
             'role': session['target_role'],
             'room': target_room,
             'entity_id': source_ref if mqtt_candidate else str(entity.get('entity_id') or entity_id),
-            'device_id': attrs.get('device_id') or entity.get('device_id'),
+            'device_id': device_id,
             'friendly_name': desired_name,
             'device_class': attrs.get('device_class') or entity.get('device_class'),
             'domain': entity.get('domain') or (entity_id.split('.')[0] if '.' in entity_id else ''),
             'source': source or 'wizard',
             'confidence': 100,
+            'sensor_type': sensor_type,
+            'transport': transport,
+            'primary_entity_id': primary_entity_id,
+            'entity_ids': entity_ids,
+            'last_seen': latest_seen_for_entities(current, entity_ids),
         }
         role = self.upsert_role(payload)
+        self.upsert_sensor_device(payload)
         with self.connect() as con:
             con.execute('update sensor_discovery_sessions set status = ?, selected_entity_id = ?, ended_at = ? where id = ?', ('confirmed', entity_id, now(), session_id))
             con.commit()
@@ -423,16 +465,81 @@ class DeviceMappingService:
         if not role_candidate_matches(role, data, allow_missing_device_class=True):
             raise ValueError('entity does not match expected sensor class for role')
         timestamp = now()
+        entity_ids = data.get('entity_ids')
+        if not isinstance(entity_ids, list):
+            entity_ids = [data.get('primary_entity_id') or entity_id]
+        entity_ids_json = json.dumps([str(item) for item in entity_ids if item], ensure_ascii=False)
+        sensor_type = str(data.get('sensor_type') or sensor_type_from_role(role))
+        transport = normalize_transport(data.get('transport'), data.get('source'))
         with self.connect() as con:
             con.execute('update sensor_roles set active = 0, updated_at = ? where role = ?', (timestamp, role))
             con.execute(
                 '''insert into sensor_roles
-                   (role, room, entity_id, device_id, friendly_name, device_class, domain, source, confidence, active, created_at, updated_at)
-                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)''',
-                (role, data.get('room'), entity_id, data.get('device_id'), data.get('friendly_name'), data.get('device_class'), data.get('domain'), data.get('source'), float(data.get('confidence') or 0), timestamp, timestamp),
+                   (role, room, entity_id, device_id, friendly_name, device_class, domain, source, confidence,
+                    sensor_type, transport, primary_entity_id, entity_ids_json, last_seen, enabled, active, created_at, updated_at)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)''',
+                (
+                    role,
+                    data.get('room'),
+                    entity_id,
+                    data.get('device_id'),
+                    data.get('friendly_name'),
+                    data.get('device_class'),
+                    data.get('domain'),
+                    data.get('source'),
+                    float(data.get('confidence') or 0),
+                    sensor_type,
+                    transport,
+                    data.get('primary_entity_id') or entity_id,
+                    entity_ids_json,
+                    data.get('last_seen'),
+                    timestamp,
+                    timestamp,
+                ),
             )
             con.commit()
         return self.get_role(role, dev=True) or {}
+
+    def upsert_sensor_device(self, data: dict[str, Any]) -> dict[str, Any]:
+        primary_entity_id = str(data.get('primary_entity_id') or data.get('entity_id') or '').strip()
+        if not primary_entity_id:
+            raise ValueError('primary_entity_id required')
+        sensor_type = str(data.get('sensor_type') or sensor_type_from_role(str(data.get('role') or ''))).strip()
+        transport = normalize_transport(data.get('transport'), data.get('source'))
+        entity_ids = data.get('entity_ids')
+        if not isinstance(entity_ids, list):
+            entity_ids = [primary_entity_id]
+        entity_ids_json = json.dumps([str(item) for item in entity_ids if item], ensure_ascii=False)
+        timestamp = now()
+        device_id = str(data.get('device_id') or '').strip()
+        room_id = data.get('room')
+        with self.connect() as con:
+            if device_id:
+                con.execute('update sensor_devices set enabled = 0, updated_at = ? where room_id is ? and sensor_type = ? and enabled = 1', (timestamp, room_id, sensor_type))
+            else:
+                con.execute('update sensor_devices set enabled = 0, updated_at = ? where room_id is ? and sensor_type = ? and primary_entity_id = ? and enabled = 1', (timestamp, room_id, sensor_type, primary_entity_id))
+            cur = con.execute(
+                '''insert into sensor_devices
+                   (room_id, sensor_type, transport, device_id, primary_entity_id, entity_ids_json,
+                    friendly_name, connected_at, last_seen, enabled, created_at, updated_at)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)''',
+                (
+                    room_id,
+                    sensor_type,
+                    transport,
+                    device_id or None,
+                    primary_entity_id,
+                    entity_ids_json,
+                    data.get('friendly_name'),
+                    timestamp,
+                    data.get('last_seen'),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            con.commit()
+            device_row = con.execute('select * from sensor_devices where id = ?', (int(cur.lastrowid),)).fetchone()
+        return dict(device_row) if device_row else {}
 
     def get_role(self, role: str, dev: bool = False) -> dict[str, Any] | None:
         with self.connect() as con:
@@ -1412,11 +1519,43 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     )''')
     con.execute('create index if not exists idx_sentero_password_reset_tokens_hash on sentero_password_reset_tokens(token_hash)')
     con.execute('''create table if not exists sensor_roles (id integer primary key autoincrement, role text not null, room text, entity_id text not null, device_id text, friendly_name text, device_class text, domain text, source text, confidence real, active integer not null default 1, created_at text not null, updated_at text not null)''')
+    for statement in [
+        "alter table sensor_roles add column sensor_type text",
+        "alter table sensor_roles add column transport text",
+        "alter table sensor_roles add column primary_entity_id text",
+        "alter table sensor_roles add column entity_ids_json text",
+        "alter table sensor_roles add column last_seen text",
+        "alter table sensor_roles add column enabled integer not null default 1",
+    ]:
+        try:
+            con.execute(statement)
+        except sqlite3.OperationalError:
+            pass
     con.execute('create unique index if not exists idx_sensor_roles_active_role on sensor_roles(role) where active = 1')
+    con.execute('''create table if not exists sensor_devices (
+        id integer primary key autoincrement,
+        room_id text,
+        sensor_type text not null,
+        transport text not null,
+        device_id text,
+        primary_entity_id text not null,
+        entity_ids_json text not null,
+        friendly_name text,
+        connected_at text not null,
+        last_seen text,
+        enabled integer not null default 1,
+        created_at text not null,
+        updated_at text not null
+    )''')
+    con.execute('create index if not exists idx_sensor_devices_room_type on sensor_devices(room_id, sensor_type)')
+    con.execute('create index if not exists idx_sensor_devices_device_id on sensor_devices(device_id)')
     con.execute('''create table if not exists sensor_discovery_sessions (id integer primary key autoincrement, target_role text not null, target_room text, started_at text not null, ended_at text, status text not null, baseline_snapshot_json text, candidate_snapshot_json text, selected_entity_id text)''')
     for statement in [
         "alter table sensor_discovery_sessions add column pairing_code_provided integer not null default 0",
         "alter table sensor_discovery_sessions add column pairing_detail_json text",
+        "alter table sensor_discovery_sessions add column target_sensor_type text",
+        "alter table sensor_discovery_sessions add column target_transport text",
+        "alter table sensor_discovery_sessions add column timeout_seconds integer",
     ]:
         try:
             con.execute(statement)
@@ -1779,6 +1918,64 @@ def role_state_priority(role: str, item: dict[str, Any]) -> int:
     return score
 
 
+def normalize_transport(value: Any, source: Any = None) -> str:
+    text = str(value or '').strip().lower()
+    if text in {SensorTransport.ZIGBEE.value, 'zigbee2mqtt', 'zha'}:
+        return SensorTransport.ZIGBEE.value
+    if text in {SensorTransport.WIFI_ESPHOME.value, 'wifi', 'esp32', 'mqtt'}:
+        return SensorTransport.WIFI_ESPHOME.value if str(source or '').strip() == 'mqtt' else SensorTransport.ZIGBEE.value
+    source_text = str(source or '').strip().lower()
+    if source_text == 'mqtt':
+        return SensorTransport.WIFI_ESPHOME.value
+    return SensorTransport.ZIGBEE.value
+
+
+def sensor_type_from_role(role: str) -> str:
+    if role_is_contact(role):
+        return 'door'
+    if role_is_presence(role):
+        return 'presence'
+    if role_is_electricity_meter(role):
+        return 'electricity_meter'
+    if 'water' in normalize(role):
+        return 'water_meter'
+    if 'gas' in normalize(role):
+        return 'gas_meter'
+    if role_is_button(role):
+        return 'button'
+    return 'sensor'
+
+
+def entity_ids_for_physical_device(states: list[dict[str, Any]], selected: dict[str, Any]) -> list[str]:
+    selected_entity_id = str(selected.get('entity_id') or '').strip()
+    device_id = str(selected.get('device_id') or '').strip()
+    identities = mqtt_identity_values(selected)
+    grouped: list[str] = []
+    for item in states:
+        entity_id = str(item.get('entity_id') or '').strip()
+        if not entity_id:
+            continue
+        same_device = bool(device_id and str(item.get('device_id') or '').strip() == device_id)
+        same_mqtt_device = bool(identities and identities.intersection(mqtt_identity_values(item)))
+        if same_device or same_mqtt_device or entity_id == selected_entity_id:
+            grouped.append(entity_id)
+    if selected_entity_id and selected_entity_id not in grouped:
+        grouped.insert(0, selected_entity_id)
+    return sorted(set(grouped), key=lambda value: (value != selected_entity_id, value))
+
+
+def latest_seen_for_entities(states: list[dict[str, Any]], entity_ids: list[str]) -> str | None:
+    wanted = set(entity_ids)
+    timestamps = [
+        parse_time(item.get('last_updated') or item.get('last_changed'))
+        for item in states
+        if str(item.get('entity_id') or '') in wanted and (item.get('last_updated') or item.get('last_changed'))
+    ]
+    if not timestamps:
+        return None
+    return max(timestamps).isoformat(timespec='seconds')
+
+
 def testable_state_entity(item: dict[str, Any]) -> bool:
     entity_id = str(item.get('entity_id') or '')
     domain = str(item.get('domain') or entity_id.split('.', 1)[0] if '.' in entity_id else '')
@@ -2051,6 +2248,7 @@ def candidate_public(item: dict[str, Any] | None, dev: bool) -> dict[str, Any] |
         'domain': item.get('domain'),
         'source': item.get('source') or item.get('platform'),
         'source_ref': item.get('source_ref') or item.get('topic'),
+        'entity_ids': item.get('entity_ids'),
         'topic': item.get('topic'),
         'payload_key': item.get('payload_key'),
     }

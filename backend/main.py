@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .paths import FRONTEND_DIST
-from backend.api.routes import OPENAPI_TAGS, box_setup_router, router
+from backend.api.routes import OPENAPI_TAGS, box_setup_router, mail_router, router
 from backend.logging_config import configure_logging, get_logger
 from backend.services.container import get_services
 
@@ -159,6 +159,8 @@ PUBLIC_PATHS = {
     "/api/setup/network/wifi/networks",
     "/api/setup/network/wifi/connect",
     "/api/setup/network/cellular/connect",
+    "/api/mail/discover",
+    "/api/mail/verify",
 }
 PUBLIC_PREFIXES = (
     "/api/sentero/exchange/",
@@ -210,6 +212,7 @@ async def require_sentero_auth(request, call_next):
 
 app.include_router(router)
 app.include_router(box_setup_router)
+app.include_router(mail_router)
 
 
 def custom_openapi() -> dict:

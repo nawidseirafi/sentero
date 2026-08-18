@@ -6,10 +6,33 @@ Sentero ist lokal-first aufgebaut. Sensorerfassung, lokale Zustandsbildung und V
 
 - `backend/services/service.py`: Sentero-Fachlogik und Verhaltensbewertung.
 - `backend/sensors/` und `backend/sensor_sources/`: Sensorquellen und normalisierte Sensordaten.
+- `backend/services/sensor_manager.py`: Produktnahe Sensor-Onboarding-Fassade fuer Suche, Pairing, Zuordnung und Transport-Abstraktion.
 - `backend/services/notification_service.py`: Benachrichtigungen und persistente Offline-Queue.
 - `backend/services/network/`: Querschnittsdienst fuer Box-Netzwerk, Setup-WLAN, Connectivity und LTE-Fallback.
 
 Der Sentero-Agent besitzt keine Netzwerklogik. Er konsumiert nur fachliche Sensor- und Benachrichtigungsdienste.
+
+## Sensor-Onboarding
+
+Sentero V1 richtet Präsenzsensoren und Türsensoren im normalen Wizard ausschliesslich ueber den einheitlichen Sensor-Suchen-Flow ein. Die normale UI zeigt keine Funktechnik, keine MQTT-/Zigbee-Begriffe und keine ESP32-/WLAN-Provisioning-Schritte.
+
+Das Onboarding laeuft ueber:
+
+```text
+Sentero Wizard
+      ↓
+SensorManager / Sensor-Onboarding
+      ↓
+Home Assistant bzw. bestehende Sensorquellen
+      ↓
+Zigbee2MQTT / ZHA
+      ↓
+Sensor
+```
+
+Home Assistant bleibt, wo vorhanden, die zentrale Geraeteabstraktion. Sentero-Fachlogik darf nicht direkt von Transportdetails abhaengen. Persistierte Sensorzuordnungen speichern den Transport, z.B. `zigbee` oder `wifi_esphome`, aber Auswertung und Dashboard konsumieren normalisierte Zustaende wie `room.presence = true` oder `door.open = false`.
+
+ESP32/WLAN-Sensoren bleiben technisch vorbereitet und kompatibel (`wifi_esphome`), werden im V1-Wizard aber standardmaessig nicht angeboten. Die Transportwahl darf erst ueber ein explizites Feature-Flag sichtbar werden.
 
 ## Netzwerk
 

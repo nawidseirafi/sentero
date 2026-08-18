@@ -11,6 +11,7 @@ from .device_mapping_service import DeviceMappingService, now
 ROOMS = ['living_room', 'kitchen', 'bathroom', 'bedroom', 'hallway', 'entrance']
 EMAIL_QUERY_PERMISSIONS = {"STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT", "HISTORY", "TECHNICAL_HEALTH"}
 logger = get_logger(__name__)
+DEFAULT_EMAIL_QUERY_PERMISSIONS = ["STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT", "TECHNICAL_HEALTH"]
 
 class SenteroSetupService:
     def __init__(self, mapping: DeviceMappingService) -> None:
@@ -290,13 +291,13 @@ def normalize_email_permissions(value: Any) -> list[str]:
         except json.JSONDecodeError:
             value = [value]
     if not isinstance(value, list) or not value:
-        return ["STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT"]
+        return DEFAULT_EMAIL_QUERY_PERMISSIONS.copy()
     clean: list[str] = []
     for item in value:
         permission = str(item or "").strip().upper()
         if permission in EMAIL_QUERY_PERMISSIONS and permission not in clean:
             clean.append(permission)
-    return clean or ["STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT"]
+    return clean or DEFAULT_EMAIL_QUERY_PERMISSIONS.copy()
 
 
 def public_contact(contact: dict[str, Any]) -> dict[str, Any]:
