@@ -134,6 +134,13 @@ class ContactPayload(BaseModel):
     preferred_channels: list[str] | None = None
     notification_enabled: bool = True
     primary_contact: bool = False
+    email_queries_enabled: bool = False
+    email_permissions: list[str] | None = None
+
+
+class MailContactSettingsPayload(BaseModel):
+    email_queries_enabled: bool
+    email_permissions: list[str] = Field(default_factory=lambda: ["STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT"])
 
 
 class NotificationPayload(BaseModel):
@@ -655,6 +662,19 @@ def setup_contact_update(contact_id: int, payload: ContactPayload):
 @router.delete("/setup/contact/{contact_id}", tags=[TAG_SETUP])
 def setup_contact_delete(contact_id: int):
     return get_services().setup.delete_contact(contact_id)
+
+
+@router.get("/setup/email-queries", tags=[TAG_SETUP])
+def setup_email_queries():
+    return get_services().mail_assistant_settings.status()
+
+
+@router.put("/setup/contact/{contact_id}/email-queries", tags=[TAG_SETUP])
+def setup_contact_email_queries(contact_id: int, payload: MailContactSettingsPayload):
+    try:
+        return get_services().mail_assistant_settings.update_contact(contact_id, model_data(payload))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/setup/notifications", tags=[TAG_SETUP])

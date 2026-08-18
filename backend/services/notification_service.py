@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import smtplib
 import socket
+import uuid
 from abc import ABC, abstractmethod
 from email.message import EmailMessage
+from email.utils import parseaddr
 from typing import Any
 
 import requests
@@ -32,7 +34,7 @@ class NotificationProvider(ABC):
     channel: str
 
     @abstractmethod
-    def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> None:
+    def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> dict[str, Any] | None:
         raise NotImplementedError
 
 
@@ -42,29 +44,41 @@ class EmailNotificationProvider(NotificationProvider):
     def __init__(self, messaging: MessagingService | None = None) -> None:
         self.messaging = messaging or MessagingService()
 
-    def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> None:
+    def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> dict[str, Any] | None:
         to_email = str(contact.get("email") or config.get("test_recipient") or config.get("smtp_user") or "").strip()
         if not config.get("smtp_host"):
             raise ValueError("email_not_configured")
         if not to_email:
             raise ValueError("email_recipient_missing")
+        message_id = str(config.get("message_id") or generate_sentero_message_id(config)).strip()
+        from_header = sentero_mail_from(config)
         message = EmailMessage()
         message["Subject"] = title
-        message["From"] = EMAIL_FROM
+        message["From"] = from_header
         message["To"] = to_email
+        message["Message-ID"] = message_id
+        message["X-Sentero-Generated"] = "true"
+        message["Auto-Submitted"] = "auto-generated"
+        reply_to = mail_assistant_reply_to(contact, config)
+        if reply_to:
+            message["Reply-To"] = reply_to
         message.set_content(text)
+        for key, value in (config.get("headers") or {}).items():
+            if value:
+                message[str(key)] = str(value)
         with smtplib.SMTP(str(config["smtp_host"]), int(config.get("smtp_port") or 587), timeout=10) as smtp:
             if as_bool(config.get("smtp_starttls", True)):
                 smtp.starttls()
             if config.get("smtp_user"):
                 smtp.login(str(config.get("smtp_user")), str(config.get("smtp_password") or ""))
-            smtp.send_message(message, from_addr=str(config.get("smtp_user") or EMAIL_FROM), to_addrs=[to_email])
+            smtp.send_message(message, from_addr=str(config.get("smtp_user") or parseaddr(from_header)[1] or EMAIL_FROM), to_addrs=[to_email])
+        return {"message_id": message_id}
 
 
 class TelegramNotificationProvider(NotificationProvider):
     channel = "telegram"
 
-    def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> None:
+    def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> dict[str, Any] | None:
         token = str(config.get("bot_token") or "").strip()
         chat_id = str(contact.get("telegram_chat_id") or config.get("default_chat_id") or "").strip()
         if not token or not chat_id:
@@ -75,12 +89,13 @@ class TelegramNotificationProvider(NotificationProvider):
             timeout=10,
         )
         response.raise_for_status()
+        return None
 
 
 class WhatsAppNotificationProvider(NotificationProvider):
     channel = "whatsapp"
 
-    def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> None:
+    def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> dict[str, Any] | None:
         access_token = str(config.get("access_token") or "").strip()
         phone_number_id = str(config.get("phone_number_id") or "").strip()
         recipient = str(contact.get("whatsapp_phone_number") or config.get("test_recipient") or "").strip()
@@ -99,6 +114,7 @@ class WhatsAppNotificationProvider(NotificationProvider):
             timeout=10,
         )
         response.raise_for_status()
+        return None
 
 
 class NotificationService:
@@ -168,9 +184,9 @@ class NotificationService:
             "whatsapp": "Sentero Testnachricht: WhatsApp ist verbunden.",
         }[channel]
         try:
-            self.providers[channel].send(contact, title, text, setting.get("config") or {})
+            result = self.providers[channel].send(contact, title, text, setting.get("config") or {})
             self._mark_channel_enabled(channel, True)
-            self._log(contact.get("id"), channel, "yellow", "sent", title, None)
+            self._log(contact.get("id"), channel, "yellow", "sent", title, None, outgoing_message_id=_provider_message_id(result))
             return {"ok": True, "message": "Testnachricht gesendet."}
         except Exception as exc:
             logger.exception("Notification test failed", extra={"component": "notification", "channel": channel})
@@ -204,13 +220,17 @@ class NotificationService:
             channel = str(item["channel"])
             try:
                 text = add_original_timestamp(str(item["text"]), str(item["original_created_at"]))
-                self.providers[channel].send(contact, str(item["title"]), text, self._setting(channel).get("config") or {})
+                result = self.providers[channel].send(contact, str(item["title"]), text, self._setting(channel).get("config") or {})
                 self._mark_outbox(int(item["id"]), "sent", None)
-                self._log(item.get("contact_id"), channel, str(item["severity"]), "sent", str(item["title"]), None)
+                self._log(item.get("contact_id"), channel, str(item["severity"]), "sent", str(item["title"]), None, outgoing_message_id=_provider_message_id(result))
                 sent += 1
             except Exception as exc:
                 self._mark_outbox(int(item["id"]), "failed", self._safe_error(exc))
         return {"sent": sent, "remaining": self._pending_count()}
+
+    def send_email_direct(self, to_email: str, title: str, text: str, config: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any] | None:
+        clean_config = {**(config or {}), "headers": headers or {}}
+        return self.providers["email"].send({"email": to_email}, title, text, clean_config)
 
     def notify_assessment(self, assessment: dict[str, Any], contacts: list[dict[str, Any]]) -> None:
         severity = str(assessment.get("status") or "green")
@@ -343,13 +363,15 @@ class NotificationService:
         setting = self._setting(channel)
         if not setting.get("enabled"):
             return
+        if channel == "email":
+            text = add_mail_assistant_footer(text, setting.get("config") or {})
         if self._should_queue_offline():
             self._enqueue(contact, channel, severity, title, text)
             self._log(contact.get("id"), channel, severity, "pending", title, None)
             return
         try:
-            self.providers[channel].send(contact, title, text, setting.get("config") or {})
-            self._log(contact.get("id"), channel, severity, "sent", title, None)
+            result = self.providers[channel].send(contact, title, text, setting.get("config") or {})
+            self._log(contact.get("id"), channel, severity, "sent", title, None, outgoing_message_id=_provider_message_id(result))
         except Exception as exc:
             safe_error = self._safe_error(exc)
             logger.exception(
@@ -360,8 +382,8 @@ class NotificationService:
             if channel != "email" and fallback:
                 try:
                     email_setting = self._setting("email")
-                    self.providers["email"].send(contact, title, email_text_for_fallback(text), email_setting.get("config") or {})
-                    self._log(contact.get("id"), "email", severity, "fallback_sent", title, None)
+                    result = self.providers["email"].send(contact, title, email_text_for_fallback(text), email_setting.get("config") or {})
+                    self._log(contact.get("id"), "email", severity, "fallback_sent", title, None, outgoing_message_id=_provider_message_id(result))
                 except Exception as fallback_exc:
                     logger.exception(
                         "Notification fallback email failed",
@@ -563,14 +585,14 @@ class NotificationService:
             )
             con.commit()
 
-    def _log(self, contact_id: Any, channel: str, severity: str, status: str, title: str, error: str | None) -> None:
+    def _log(self, contact_id: Any, channel: str, severity: str, status: str, title: str, error: str | None, outgoing_message_id: str | None = None) -> None:
         data_class = classify_notification(severity, channel)
         with self.mapping.connect() as con:
             con.execute(
                 """insert into notification_logs
-                   (contact_id, channel, severity, status, message_title, error_message, data_class, aggregation_level, created_at)
-                   values (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (contact_id, channel, severity, status, title, error, data_class, aggregation_for_data_class(data_class), now()),
+                   (contact_id, channel, severity, status, message_title, error_message, data_class, aggregation_level, outgoing_message_id, created_at)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (contact_id, channel, severity, status, title, error, data_class, aggregation_for_data_class(data_class), outgoing_message_id, now()),
             )
             con.commit()
 
@@ -648,6 +670,83 @@ def as_bool(value: Any) -> bool:
 
 def email_text_for_fallback(text: str) -> str:
     return f"{text}\n\nHinweis: Ein zusätzlicher Benachrichtigungskanal konnte nicht erreicht werden."
+
+
+def generate_sentero_message_id(config: dict[str, Any] | None = None) -> str:
+    domain = _message_id_domain(config or {})
+    return f"<sentero-{uuid.uuid4()}@{domain}>"
+
+
+def sentero_mail_from(config: dict[str, Any] | None = None) -> str:
+    data = config or {}
+    smtp_user = _email_address(data.get("smtp_user"))
+    configured = str(data.get("mail_from") or "").strip()
+    configured_address = _email_address(configured)
+    address = configured_address or smtp_user or _email_address(EMAIL_FROM)
+    name = "Sentero"
+    if configured_address:
+        raw_name = configured.rsplit("<", 1)[0].strip().strip('"')
+        name = raw_name or name
+    return f"{name} <{address}>" if address else name
+
+
+def _email_address(value: Any) -> str:
+    address = parseaddr(str(value or ""))[1].strip()
+    return address if "@" in address else ""
+
+
+def _message_id_domain(config: dict[str, Any]) -> str:
+    address = parseaddr(sentero_mail_from(config))[1]
+    domain = address.rsplit("@", 1)[1].strip().lower() if "@" in address else ""
+    return domain or "sentero.local"
+
+
+def _provider_message_id(result: dict[str, Any] | None) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    value = str(result.get("message_id") or "").strip()
+    return value or None
+
+
+def add_mail_assistant_footer(text: str, config: dict[str, Any] | None = None) -> str:
+    if not mail_assistant_configured(config or {}):
+        return text
+    footer = "Antworten Sie einfach auf diese E-Mail, um eine Statusfrage an Sentero zu stellen."
+    if footer in text:
+        return text
+    return f"{text.rstrip()}\n\n---\n{footer}"
+
+
+def mail_assistant_reply_to(contact: dict[str, Any], config: dict[str, Any]) -> str | None:
+    if not mail_assistant_configured(config):
+        return None
+    if not bool(contact.get("email_queries_enabled")):
+        return None
+    raw_address = (
+        str((config or {}).get("reply_to") or "")
+        or str((config or {}).get("imap_username") or "")
+        or str((config or {}).get("imap_user") or "")
+        or str((config or {}).get("smtp_user") or "")
+    )
+    address = parseaddr(str(raw_address or ""))[1]
+    return address if "@" in address else None
+
+
+def mail_assistant_configured(config: dict[str, Any]) -> bool:
+    smtp_user = str((config or {}).get("smtp_user") or "").strip()
+    raw_imap_user = str((config or {}).get("imap_user") or (config or {}).get("imap_username") or "").strip()
+    imap_host = str((config or {}).get("imap_host") or "").strip().lower()
+    imap_user = smtp_user if raw_imap_user.lower() == imap_host else (raw_imap_user or smtp_user)
+    smtp_password = str((config or {}).get("smtp_password") or "").strip()
+    imap_password = str((config or {}).get("imap_password") or smtp_password).strip()
+    return bool(
+        (config or {}).get("smtp_host")
+        and smtp_user
+        and smtp_password
+        and (config or {}).get("imap_host")
+        and imap_user
+        and imap_password
+    )
 
 
 def add_original_timestamp(text: str, original_created_at: str) -> str:

@@ -25,6 +25,37 @@ Neue Features duerfen lokale Sensorik und lokale Verhaltensanalyse nicht von Int
 
 Ausgehende Meldungen muessen bei Offline-Zeit persistent gepuffert werden, wenn sie nicht sofort zugestellt werden koennen.
 
+## Mail Assistant
+
+Der Sentero Mail Assistant ist ein Sentero-Fachservice und kein globaler Messaging-Querschnitt. Inbound IMAP darf als eigene Komponente implementiert werden; SMTP-Versand muss vorhandene Notification-/Mail-Abstraktionen wiederverwenden, solange diese geeignet sind.
+
+Erlaubt:
+
+- Postfach per IMAP ueber TLS pollen.
+- Antworten per bestehendem E-Mail-Notification-Provider versenden.
+- Dasselbe konfigurierte Kundenpostfach fuer Versand und Rueckfragen verwenden.
+- Message-ID, Intent, Hash der Frage und Antwortstatus auditieren.
+- Kontaktberechtigungen vor jeder Datenabfrage pruefen.
+- Bei LLM-Ausfall deterministische Keyword-Intents nutzen.
+
+Nicht erlaubt:
+
+- eingehende Ports, Webhooks oder oeffentliche Callback-Endpunkte fuer Statusabfragen oeffnen.
+- zweite parallele SMTP-Infrastruktur bauen.
+- Mailpasswoerter, Tokens oder vollstaendige private Mailinhalte loggen.
+- Home Assistant, Tueren, Geraete, Alarmregeln, Kontakte, Benutzer, Konfiguration, Sensoren oder Shell/System per E-Mail veraendern.
+- LLMs direkt SQL, Home Assistant oder Entity-Auswahl ueberlassen.
+- alte Sensorwerte als aktuellen Zustand ausgeben.
+
+LLM-Regel:
+
+```text
+E-Mail -> Intent-Klassifikation -> erlaubter Intent -> deterministischer QueryService
+       -> strukturierte Fakten -> optionale Formulierung -> Antwort
+```
+
+Wenn ein Intent unsicher oder handlungsbezogen ist, wird `UNKNOWN` verwendet bzw. eine Read-only-Ablehnung formuliert. Prompt-Injection im Mailinhalt darf niemals Berechtigungen oder Read-only-Grenzen umgehen.
+
 ## UI
 
 Normale Kundensicht:
@@ -42,4 +73,3 @@ Nicht in der normalen Kundensicht anzeigen:
 - ModemManager-/NetworkManager-Begriffe
 
 Admin-/Support-Diagnose darf diese Details anzeigen.
-

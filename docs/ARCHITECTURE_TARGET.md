@@ -68,3 +68,19 @@ Credentials werden getrennt von Statusdaten verwaltet:
 - SQLite enthaelt nur nicht-sensitive Netzwerk-Metadaten und Historie
 - produktiv vorzugsweise NetworkManager Connection Store oder OS Secret Store
 
+## Bidirektionale E-Mail ohne eingehende Ports
+
+Sentero bleibt auch fuer aktive Statusabfragen technisch von aussen unerreichbar. Angehoerige fragen per E-Mail an oder antworten auf eine Sentero-Benachrichtigung. Die Box pollt das konfigurierte Kundenpostfach per IMAP ueber TLS und antwortet ueber dasselbe Mailkonto per SMTP. Es gibt keine technische Sonderadresse fuer Angehoerige; die normale Kundenadresse wird fuer Senden und Empfangen verwendet.
+
+Zielzustand:
+
+- keine Portweiterleitung
+- kein Webhook aus dem Internet
+- kein oeffentlich erreichbarer Sentero-Endpunkt
+- periodisches IMAP-Polling, Default 60 Sekunden
+- IMAP IDLE kann spaeter ergaenzt werden, ist aber nicht Voraussetzung
+- SMTP-Versand ueber die bestehende Benachrichtigungsarchitektur
+- Message-ID-basierte Idempotenz
+- robuste Reconnects mit Backoff bei IMAP-/SMTP-Fehlern
+
+Mail-Abfragen liefern nur vorhandene Fakten. Raumantworten unterscheiden strikt zwischen aktueller Presence, letzter Aktivitaet und unsicherer/veralteter Raumzuordnung. Sensorwerte mit alter Datenfrische werden nicht als Live-Zustand formuliert.

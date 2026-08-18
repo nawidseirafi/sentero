@@ -70,6 +70,29 @@ async def network_maintenance_loop() -> None:
         await asyncio.sleep(interval)
 
 
+async def mail_assistant_loop() -> None:
+    await asyncio.sleep(8)
+    backoff = 1
+    while True:
+        try:
+            services = get_services()
+            assistant = services.mail_assistant
+            if not assistant.enabled():
+                await asyncio.sleep(60)
+                continue
+            result = await asyncio.to_thread(assistant.poll_once)
+            if result.get("processed"):
+                logger.info("Mail assistant processed messages", extra={"component": "mail_assistant", "processed": result.get("processed")})
+            backoff = 1
+            await asyncio.sleep(assistant.config.poll_interval_seconds)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Mail assistant polling failed", extra={"component": "mail_assistant"})
+            await asyncio.sleep(min(300, 5 * backoff))
+            backoff = min(backoff * 2, 60)
+
+
 class SPAStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
         try:
@@ -93,15 +116,19 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     await network_startup_check()
     behavior_task = asyncio.create_task(behavior_snapshot_loop())
     network_task = asyncio.create_task(network_maintenance_loop())
+    mail_task = asyncio.create_task(mail_assistant_loop())
     try:
         yield
     finally:
         behavior_task.cancel()
         network_task.cancel()
+        mail_task.cancel()
         with suppress(asyncio.CancelledError):
             await behavior_task
         with suppress(asyncio.CancelledError):
             await network_task
+        with suppress(asyncio.CancelledError):
+            await mail_task
         logger.info("Application stopped", extra={"component": "app"})
 
 

@@ -96,7 +96,22 @@ export type SenteroTrustedContact = {
   preferred_channels?: string | string[] | null;
   notification_enabled?: number | boolean;
   primary_contact?: number | boolean;
+  email_queries_enabled?: number | boolean;
+  email_permissions?: string[] | string | null;
   active?: number;
+};
+
+export type SenteroMailQueryContact = {
+  id: number;
+  name: string;
+  email?: string | null;
+  email_queries_enabled: boolean;
+  email_permissions: string[];
+};
+
+export type SenteroMailQuerySettings = {
+  enabled: boolean;
+  contacts: SenteroMailQueryContact[];
 };
 
 export type SenteroNotifications = {
@@ -162,7 +177,7 @@ export type SenteroExportToken = {
 
 export type SenteroTransparencyItem = {
   id: string;
-  category: 'export' | 'notification' | 'consent' | 'security' | string;
+  category: 'export' | 'notification' | 'mail_query' | 'consent' | 'security' | string;
   event_type: string;
   status: string;
   summary: string;
@@ -179,7 +194,7 @@ export type SenteroTransparencyItem = {
 
 export type SenteroTransparency = {
   items: SenteroTransparencyItem[];
-  summary: { total: number; exports: number; notifications: number; consents: number; security: number };
+  summary: { total: number; exports: number; notifications: number; mail_queries?: number; consents: number; security: number };
   retention: {
     retention_days: number;
     tables: Array<{ table: string; count: number; oldest?: string | null; newest?: string | null }>;
@@ -197,6 +212,8 @@ export type SenteroContactPayload = {
   preferred_channels?: string[];
   notification_enabled?: boolean;
   primary_contact?: boolean;
+  email_queries_enabled?: boolean;
+  email_permissions?: string[];
 };
 
 export type SenteroCandidate = {
@@ -575,6 +592,9 @@ export const api = {
     request<SenteroSetupStatus>(`/api/sentero/setup/contact/${encodeURIComponent(String(contactId))}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteSenteroContact: (contactId: number) =>
     request<SenteroSetupStatus>(`/api/sentero/setup/contact/${encodeURIComponent(String(contactId))}`, { method: 'DELETE' }),
+  senteroEmailQuerySettings: () => request<SenteroMailQuerySettings>('/api/sentero/setup/email-queries'),
+  updateSenteroEmailQueryContact: (contactId: number, payload: { email_queries_enabled: boolean; email_permissions: string[] }) =>
+    request<SenteroMailQuerySettings>(`/api/sentero/setup/contact/${encodeURIComponent(String(contactId))}/email-queries`, { method: 'PUT', body: JSON.stringify(payload) }),
   saveSenteroNotifications: (payload: { anomalies: boolean; critical: boolean; daily_summary: boolean }) =>
     request<SenteroSetupStatus>('/api/sentero/setup/notifications', { method: 'POST', body: JSON.stringify(payload) }),
   senteroNotificationChannels: () => request<{ channels: SenteroNotificationChannel[] }>('/api/sentero/notifications/channels'),

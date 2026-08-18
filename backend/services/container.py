@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 
+from backend.agents.sentero.mail.service import SenteroMailAssistant, SenteroMailAssistantSettings
 from backend.sensors.service import SenteroSensorService
 from backend.services.audit_service import AuditService
 from backend.services.auth_service import SenteroAuthService
@@ -33,6 +34,8 @@ class SenteroServices:
     network: NetworkService
     exports: ExportService
     audit: AuditService
+    mail_assistant: SenteroMailAssistant
+    mail_assistant_settings: SenteroMailAssistantSettings
 
 
 @lru_cache(maxsize=1)
@@ -41,11 +44,12 @@ def get_services() -> SenteroServices:
     sentero = SenteroService(mapping)
     sensors = SenteroSensorService(mapping)
     network = NetworkService(mapping)
+    notification = NotificationService(mapping, connectivity=network.connectivity)
     return SenteroServices(
         mapping=mapping,
         setup=SenteroSetupService(mapping),
         sentero=sentero,
-        notification=NotificationService(mapping, connectivity=network.connectivity),
+        notification=notification,
         consent=ConsentService(mapping),
         auth=SenteroAuthService(mapping),
         update=SenteroUpdateService(),
@@ -55,6 +59,8 @@ def get_services() -> SenteroServices:
         network=network,
         exports=ExportService(mapping, sentero=sentero, sensors=sensors),
         audit=AuditService(mapping),
+        mail_assistant=SenteroMailAssistant(mapping, sentero, notification),
+        mail_assistant_settings=SenteroMailAssistantSettings(mapping),
     )
 
 

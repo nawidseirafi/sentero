@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, Copy, DoorClosed, DoorOpen, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, ShieldCheck, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
-import { api, type BoxNetworkStatus, type SenteroConsent, type SenteroExportToken, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroTransparency } from '@shared/api/client';
+import { api, type BoxNetworkStatus, type SenteroConsent, type SenteroExportToken, type SenteroMailQuerySettings, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroTransparency } from '@shared/api/client';
 import { UpdatePanel } from '../components/UpdatePanel';
 import { useSenteroAuth } from '../auth/SenteroAuthContext';
 import type { SenteroSettingsTab } from '../routes/routes';
@@ -25,6 +25,16 @@ const aalActorRoles: Array<{ value: AalActorRole; label: string }> = [
   { value: 'housing_provider', label: 'Wohnungsanbieter' },
   { value: 'resident', label: 'Bewohner' },
   { value: 'admin', label: 'Administrator' },
+];
+
+const emailQueryPermissions = [
+  { value: 'STATUS', label: 'Status' },
+  { value: 'ACTIVITY', label: 'Aktivität' },
+  { value: 'ROOM', label: 'Räume' },
+  { value: 'ENVIRONMENT', label: 'Temperatur' },
+  { value: 'NIGHT', label: 'Nacht' },
+  { value: 'HISTORY', label: 'Historie' },
+  { value: 'TECHNICAL_HEALTH', label: 'Technik' },
 ];
 
 const roomLabels: Record<string, string> = {
@@ -78,11 +88,12 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [newExportToken, setNewExportToken] = useState<{ contactId: number; token: string } | null>(null);
   const [exportDialogContactId, setExportDialogContactId] = useState<number | null>(null);
   const [transparency, setTransparency] = useState<SenteroTransparency | null>(null);
+  const [emailQueries, setEmailQueries] = useState<SenteroMailQuerySettings | null>(null);
   const [meterDiscovery, setMeterDiscovery] = useState<{ type: MeterAddType; status: 'idle' | 'searching' | 'found' | 'missing'; message: string; remainingSeconds?: number } | null>(null);
   const [setupChannel, setSetupChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
   const [helpChannel, setHelpChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
   const [channelForms, setChannelForms] = useState({
-    email: { smtp_host: '', smtp_port: '587', smtp_user: '', smtp_password: '', test_recipient: '' },
+    email: { mail_from: '', smtp_host: '', smtp_port: '587', smtp_user: '', smtp_password: '', imap_host: '', imap_port: '993', imap_user: '', imap_password: '', test_recipient: '' },
     telegram: { bot_token: '', default_chat_id: '', test_recipient: '' },
     whatsapp: { access_token: '', phone_number_id: '', business_account_id: '', test_recipient: '' },
   });
@@ -126,7 +137,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
   async function load() {
     try {
-      const [nextStatus, nextSensors, nextChannels, nextConsents, nextExportTokens, nextTransparency, nextNetwork, nextBoxNetwork] = await Promise.all([
+      const [nextStatus, nextSensors, nextChannels, nextConsents, nextExportTokens, nextTransparency, nextNetwork, nextBoxNetwork, nextEmailQueries] = await Promise.all([
         api.senteroSetupStatus(),
         api.senteroSensorRoles(true),
         api.senteroNotificationChannels(),
@@ -135,6 +146,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         api.senteroTransparency(),
         api.senteroSensorNetwork(),
         api.boxNetworkStatus(),
+        api.senteroEmailQuerySettings(),
       ]);
       setStatus(nextStatus);
       setSensors(nextSensors.sensor_roles);
@@ -149,6 +161,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         wifi_password: '',
       });
       setBoxNetworkStatus(nextBoxNetwork);
+      setEmailQueries(nextEmailQueries);
       setBoxNetworkForm({ ssid: '', password: '' });
       hydrateChannelForms(nextChannels.channels);
       const sensorRooms = Array.from(new Set(nextSensors.sensor_roles.map((sensor) => sensor.room).filter(Boolean))) as string[];
@@ -447,6 +460,29 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     }
   }
 
+  async function updateEmailQueryPermission(contactId: number, permission: string, checked: boolean) {
+    const contact = emailQueries?.contacts.find((item) => item.id === contactId);
+    if (!contact) return;
+    const permissions = new Set(contact.email_permissions || []);
+    if (checked) permissions.add(permission);
+    else permissions.delete(permission);
+    const next = await api.updateSenteroEmailQueryContact(contactId, {
+      email_queries_enabled: contact.email_queries_enabled,
+      email_permissions: Array.from(permissions),
+    });
+    setEmailQueries(next);
+  }
+
+  async function toggleEmailQueries(contactId: number, enabled: boolean) {
+    const contact = emailQueries?.contacts.find((item) => item.id === contactId);
+    if (!contact) return;
+    const next = await api.updateSenteroEmailQueryContact(contactId, {
+      email_queries_enabled: enabled,
+      email_permissions: contact.email_permissions?.length ? contact.email_permissions : ['STATUS', 'ACTIVITY', 'ROOM', 'ENVIRONMENT', 'NIGHT'],
+    });
+    setEmailQueries(next);
+  }
+
   async function revokeExportToken(tokenId: number) {
     if (!window.confirm('Export-Token widerrufen? Der Partner kann ihn danach nicht mehr nutzen.')) return;
     try {
@@ -602,7 +638,12 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     setChannelForms((current) => {
       const byChannel = Object.fromEntries(nextChannels.map((item) => [item.channel, item.config || {}]));
       return {
-        email: { ...current.email, ...stringConfig(byChannel.email), smtp_port: String(byChannel.email?.smtp_port || current.email.smtp_port) },
+        email: {
+          ...current.email,
+          ...stringConfig(byChannel.email),
+          smtp_port: String(byChannel.email?.smtp_port || current.email.smtp_port),
+          imap_port: String(byChannel.email?.imap_port || current.email.imap_port),
+        },
         telegram: { ...current.telegram, ...stringConfig(byChannel.telegram) },
         whatsapp: { ...current.whatsapp, ...stringConfig(byChannel.whatsapp) },
       };
@@ -1028,6 +1069,42 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
               </article>
             ))}
           </div>
+          <section className="sc-email-query-settings">
+            <div className="sc-section-title">
+              <div>
+                <h2>E-Mail-Anfragen</h2>
+                <p>Vertraute Personen können per Antwortmail ausschließlich Statusinformationen abfragen.</p>
+              </div>
+            </div>
+            {!emailQueries?.enabled && <p className="sc-muted-note">E-Mail-Antworten sind noch nicht verbunden. Die Freigaben unten sind vorbereitet und werden aktiv, sobald die Mail-Konfiguration eingerichtet ist.</p>}
+            <div className="sc-email-query-list">
+              {(emailQueries?.contacts || []).map((contact) => (
+                <article key={contact.id}>
+                  <header>
+                    <div>
+                      <strong>{contact.name}</strong>
+                      <small>{contact.email || 'Keine E-Mail hinterlegt'}</small>
+                    </div>
+                    <label className="sc-toggle-line">
+                      <input type="checkbox" checked={contact.email_queries_enabled} disabled={!contact.email} onChange={(event) => void toggleEmailQueries(contact.id, event.target.checked)} />
+                      <span>Anfragen erlauben</span>
+                    </label>
+                  </header>
+                  <div className="sc-email-permission-grid">
+                    {emailQueryPermissions.map((permission) => (
+                      <label key={permission.value} className={contact.email_permissions.includes(permission.value) ? 'active' : ''}>
+                        <input type="checkbox" checked={contact.email_permissions.includes(permission.value)} disabled={!contact.email_queries_enabled} onChange={(event) => void updateEmailQueryPermission(contact.id, permission.value, event.target.checked)} />
+                        <span>{permission.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <footer>
+                    <small>{contact.email_queries_enabled ? 'Rückfragen an die Sentero-Mailadresse sind erlaubt.' : 'Rückfragen sind für diesen Kontakt deaktiviert.'}</small>
+                  </footer>
+                </article>
+              ))}
+            </div>
+          </section>
         </section>
       )}
 
@@ -1102,6 +1179,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
             <TransparencyMetric label="Einträge" value={String(transparency?.summary.total || 0)} />
             <TransparencyMetric label="Exporte" value={String(transparency?.summary.exports || 0)} />
             <TransparencyMetric label="Benachrichtigungen" value={String(transparency?.summary.notifications || 0)} />
+            <TransparencyMetric label="E-Mail-Anfragen" value={String(transparency?.summary.mail_queries || 0)} />
             <TransparencyMetric label="Freigaben" value={String(transparency?.summary.consents || 0)} />
           </section>
 
@@ -1430,6 +1508,7 @@ function TransparencyMetric({ label, value }: { label: string; value: string }) 
 function transparencyIcon(category: string) {
   if (category === 'export') return <KeyRound size={18} />;
   if (category === 'notification') return <Bell size={18} />;
+  if (category === 'mail_query') return <Mail size={18} />;
   if (category === 'consent') return <ShieldCheck size={18} />;
   return <ShieldAlert size={18} />;
 }
@@ -1446,6 +1525,7 @@ function transparencyDetail(item: { contact_name?: string | null; actor_role?: s
 
 function purposeLabel(value: string) {
   if (value === 'behavior_notification') return 'Verhaltensmeldung';
+  if (value === 'mail_status_query') return 'E-Mail-Statusfrage';
   if (value === 'aal_partner_export') return 'Partnerexport';
   return value;
 }
@@ -1455,6 +1535,10 @@ function statusLabel(value: string) {
   if (value === 'active') return 'aktiv';
   if (value === 'revoked') return 'widerrufen';
   if (value === 'completed') return 'abgeschlossen';
+  if (value === 'failed') return 'fehlgeschlagen';
+  if (value === 'rejected') return 'abgelehnt';
+  if (value === 'ignored') return 'ignoriert';
+  if (value === 'duplicate') return 'doppelt';
   if (value.startsWith('skipped')) return 'blockiert';
   return value;
 }
@@ -1462,6 +1546,7 @@ function statusLabel(value: string) {
 function categoryLabel(value: string) {
   if (value === 'export') return 'Export';
   if (value === 'notification') return 'Benachrichtigung';
+  if (value === 'mail_query') return 'E-Mail-Anfrage';
   if (value === 'consent') return 'Freigabe';
   if (value === 'security') return 'Sicherheit';
   return value;
@@ -1572,7 +1657,7 @@ function ChannelSetupModal({
           <button type="button" onClick={onClose} aria-label="Dialog schließen"><X size={20} /></button>
         </header>
         <div className="sc-form-grid">
-          {meta.fields.map(([key, label]) => (
+          {meta.fields.map(({ key, label, hint }) => (
             <label key={key} className={key.includes('token') || key.includes('password') ? 'sc-form-wide' : undefined}>
               {label}
               <input
@@ -1580,12 +1665,13 @@ function ChannelSetupModal({
                 value={form[key] || ''}
                 onChange={(event) => onFormChange({ ...form, [key]: event.target.value })}
               />
+              {hint && <small className="sc-field-hint">{hint}</small>}
             </label>
           ))}
         </div>
         {channel === 'email' && (
           <div className="sc-channel-recipient">
-            <span>Empfänger</span>
+            <span>Vertrauensperson für den Test</span>
             {recipient ? (
               <>
                 <strong>{recipient.name}</strong>
@@ -1597,7 +1683,7 @@ function ChannelSetupModal({
             )}
           </div>
         )}
-        {channel === 'email' && <p className="sc-modal-help">Diese Angaben werden benötigt, damit Sentero E-Mails versenden kann.</p>}
+        {channel === 'email' && <p className="sc-modal-help">Sentero sendet von der Sentero-Mailbox an den Testempfänger. Antworten müssen zurück in dieselbe Sentero-Mailbox laufen.</p>}
         <footer>
           <button type="button" onClick={onTest}><Send size={18} /> {channel === 'email' ? 'Test senden' : 'Testen'}</button>
           <button type="button" onClick={onSave}><Save size={18} /> Speichern</button>
@@ -1914,15 +2000,18 @@ function channelIcon(channel: string, size = 20) {
   return <Mail size={size} />;
 }
 
-function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp') {
+type ChannelSetupField = { key: string; label: string; hint?: string };
+type ChannelSetupMeta = { title: string; text: string; fields: ChannelSetupField[] };
+
+function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp'): ChannelSetupMeta {
   if (channel === 'telegram') {
     return {
       title: 'Telegram einrichten',
       text: 'Telegram kann zusätzlich zur E-Mail genutzt werden.',
       fields: [
-        ['bot_token', 'Bot Token'],
-        ['default_chat_id', 'Chat ID'],
-      ] as Array<[string, string]>,
+        { key: 'bot_token', label: 'Bot Token' },
+        { key: 'default_chat_id', label: 'Chat ID' },
+      ],
     };
   }
   if (channel === 'whatsapp') {
@@ -1930,22 +2019,27 @@ function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp') {
       title: 'WhatsApp einrichten',
       text: 'WhatsApp benötigt eigene WhatsApp Cloud API Zugangsdaten.',
       fields: [
-        ['access_token', 'Access Token'],
-        ['phone_number_id', 'Phone Number ID'],
-        ['business_account_id', 'Business Account ID'],
-      ] as Array<[string, string]>,
+        { key: 'access_token', label: 'Access Token' },
+        { key: 'phone_number_id', label: 'Phone Number ID' },
+        { key: 'business_account_id', label: 'Business Account ID' },
+      ],
     };
   }
   return {
     title: 'E-Mail einrichten',
-    text: 'E-Mail bleibt der Standardkanal für Sentero-Benachrichtigungen.',
+    text: 'Eine Sentero-Mailbox sendet Hinweise und liest Antworten.',
     fields: [
-      ['smtp_host', 'SMTP Host'],
-      ['smtp_port', 'SMTP Port'],
-      ['smtp_user', 'SMTP Benutzer'],
-      ['smtp_password', 'SMTP Passwort'],
-      ['test_recipient', 'Testempfänger'],
-    ] as Array<[string, string]>,
+      { key: 'mail_from', label: 'Anzeigename', hint: 'Zum Beispiel: Sentero. Die technische Absenderadresse kommt aus der Sentero-Mailbox.' },
+      { key: 'smtp_host', label: 'SMTP-Server der Sentero-Mailbox', hint: 'Server, über den Sentero E-Mails sendet.' },
+      { key: 'smtp_port', label: 'SMTP-Port', hint: 'Meist 587.' },
+      { key: 'smtp_user', label: 'Sentero-Mailbox-Adresse', hint: 'Diese Adresse steht als Absender in Sentero-Mails.' },
+      { key: 'smtp_password', label: 'SMTP-Passwort', hint: 'Passwort oder App-Passwort der Sentero-Mailbox.' },
+      { key: 'imap_host', label: 'IMAP-Server der Sentero-Mailbox', hint: 'Server, aus dem Sentero Antworten liest.' },
+      { key: 'imap_port', label: 'IMAP-Port', hint: 'Meist 993.' },
+      { key: 'imap_user', label: 'IMAP-Login', hint: 'Oft dieselbe Adresse wie die Sentero-Mailbox; manche Anbieter nutzen einen Server-Login.' },
+      { key: 'imap_password', label: 'IMAP-Passwort', hint: 'Leer lassen, wenn es dem SMTP-Passwort entspricht.' },
+      { key: 'test_recipient', label: 'Test an Vertrauensperson senden', hint: 'Hier gehört die private Adresse der Vertrauensperson hin, nicht die Sentero-Mailbox.' },
+    ],
   };
 }
 
@@ -1979,12 +2073,12 @@ function channelHelpContent(channel: 'email' | 'telegram' | 'whatsapp') {
     title: 'E-Mail einrichten',
     intro: 'E-Mail ist der empfohlene Standardkanal für Sentero.',
     sections: [
-      { title: 'Warum E-Mail?', text: ['Sentero nutzt Ihre E-Mail-Zugangsdaten, um Hinweise und Warnungen an Ihre Vertrauenspersonen zu senden.'] },
-      { title: 'Was wird benötigt?', items: ['SMTP Host', 'SMTP Port', 'E-Mail-Adresse oder Benutzername', 'App-Passwort oder E-Mail-Passwort'] },
-      { title: 'Beispiel Gmail', text: ['SMTP Host: smtp.gmail.com', 'SMTP Port: 587', 'Verschlüsselung: STARTTLS'] },
+      { title: 'Warum E-Mail?', text: ['Sentero nutzt Ihre E-Mail-Zugangsdaten, um Hinweise und Warnungen zu senden und Antworten von Vertrauenspersonen zu lesen.'] },
+      { title: 'Was wird benötigt?', items: ['Server zum Senden', 'Server für Antworten', 'E-Mail-Adresse', 'App-Passwort oder E-Mail-Passwort'] },
+      { title: 'Beispiel Gmail', text: ['Server zum Senden: smtp.gmail.com', 'Server für Antworten: imap.gmail.com', 'Sendeport: 587', 'Antwortport: 993'] },
       { title: 'Wichtig bei Gmail', text: ['Bei Gmail sollte ein App-Passwort verwendet werden. Das normale Google-Passwort funktioniert meistens nicht.'] },
       { title: 'So erstellen Sie ein App-Passwort', steps: ['Öffnen Sie Ihr Google-Konto.', 'Aktivieren Sie die Zwei-Faktor-Authentifizierung.', 'Öffnen Sie „App-Passwörter“.', 'Erstellen Sie ein neues App-Passwort für „Mail“.', 'Tragen Sie dieses Passwort in Sentero ein.'] },
-      { title: 'Hinweis', text: ['Wenn Sie einen anderen E-Mail-Anbieter verwenden, finden Sie die SMTP-Daten meist in den Hilfe-Seiten Ihres Anbieters.'] },
+      { title: 'Hinweis', text: ['Wenn Sie einen anderen E-Mail-Anbieter verwenden, finden Sie die Angaben zum Senden und Empfangen meist in den Hilfe-Seiten Ihres Anbieters.'] },
     ],
   };
 }

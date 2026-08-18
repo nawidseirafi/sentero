@@ -11,6 +11,8 @@ Zielbild fuer Produktion:
 - Vertrauenspersonen erhalten relevante Warnungen zu Verhalten, Sensor-Batterie und Sensor-Erreichbarkeit.
 - Die Box kann ohne vorhandenen Router ueber ein temporaeres geschuetztes Setup-WLAN und optional LTE eingerichtet werden.
 
+Tech-Debt: `notification_logs` wird derzeit aus zwei unabhaengigen Schema-Definitionen erzeugt (`device_mapping_service.py` und `audit_service.py`). Langfristig sollte die Tabelle aus einer einzigen Quelle stammen, idealerweise ueber eine Notification-Service-eigene Migration.
+
 ## Status
 
 Bereits erledigt:

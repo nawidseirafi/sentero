@@ -9,6 +9,7 @@ from backend.services.consent_service import ConsentService, DEFAULT_NOTIFICATIO
 from .device_mapping_service import DeviceMappingService, now
 
 ROOMS = ['living_room', 'kitchen', 'bathroom', 'bedroom', 'hallway', 'entrance']
+EMAIL_QUERY_PERMISSIONS = {"STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT", "HISTORY", "TECHNICAL_HEALTH"}
 logger = get_logger(__name__)
 
 class SenteroSetupService:
@@ -23,7 +24,7 @@ class SenteroSetupService:
             contacts = con.execute('select * from trusted_contacts where active = 1 order by id').fetchall()
             notifications = con.execute('select * from notification_preferences where id = 1').fetchone()
         profile_data = dict(profile) if profile else None
-        contact_data = [dict(contact) for contact in contacts]
+        contact_data = [public_contact(dict(contact)) for contact in contacts]
         notification_data = dict(notifications) if notifications else None
         status = {
             'current_step': row['current_step'],
@@ -111,6 +112,8 @@ class SenteroSetupService:
         whatsapp_phone_number = normalize_text(payload.get('whatsapp_phone_number') or payload.get('phone'))
         actor_role = normalize_aal_role(payload.get('actor_role'), default=DEFAULT_CONTACT_AAL_ROLE)
         primary_contact = int(bool(payload.get('primary_contact', False)))
+        email_queries_enabled = int(bool(payload.get('email_queries_enabled', False)))
+        email_permissions = normalize_email_permissions(payload.get('email_permissions'))
         validate_contact_channels(channels, email, telegram_chat_id, whatsapp_phone_number)
         if not name:
             raise ValueError('name is required')
@@ -128,18 +131,21 @@ class SenteroSetupService:
                 con.execute(
                     '''update trusted_contacts
                        set name = ?, relationship = ?, email = ?, phone = ?, telegram_chat_id = ?,
-                           whatsapp_phone_number = ?, preferred_channels = ?, notification_enabled = ?, primary_contact = ?, updated_at = ?
+                           whatsapp_phone_number = ?, preferred_channels = ?, notification_enabled = ?, primary_contact = ?,
+                           email_queries_enabled = ?, email_permissions = ?, updated_at = ?
                        where id = ?''',
-                    (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, timestamp, existing['id']),
+                    (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, email_queries_enabled, json.dumps(email_permissions), timestamp, existing['id']),
                 )
                 con.execute("update trusted_contacts set actor_role = ? where id = ?", (actor_role, existing['id']))
                 contact_id = int(existing['id'])
             else:
                 cur = con.execute(
                     '''insert into trusted_contacts
-                       (name, relationship, email, phone, telegram_chat_id, whatsapp_phone_number, preferred_channels, notification_enabled, primary_contact, actor_role, active, created_at, updated_at)
-                       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)''',
-                    (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, actor_role, timestamp, timestamp),
+                       (name, relationship, email, phone, telegram_chat_id, whatsapp_phone_number, preferred_channels,
+                        notification_enabled, primary_contact, actor_role, email_queries_enabled,
+                        email_permissions, active, created_at, updated_at)
+                       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)''',
+                    (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, actor_role, email_queries_enabled, json.dumps(email_permissions), timestamp, timestamp),
                 )
                 contact_id = int(cur.lastrowid)
             con.commit()
@@ -157,6 +163,8 @@ class SenteroSetupService:
         whatsapp_phone_number = normalize_text(payload.get('whatsapp_phone_number') or payload.get('phone'))
         actor_role = normalize_aal_role(payload.get('actor_role'), default=DEFAULT_CONTACT_AAL_ROLE)
         primary_contact = int(bool(payload.get('primary_contact', False)))
+        email_queries_enabled = int(bool(payload.get('email_queries_enabled', False)))
+        email_permissions = normalize_email_permissions(payload.get('email_permissions'))
         validate_contact_channels(channels, email, telegram_chat_id, whatsapp_phone_number)
         if not name:
             raise ValueError('name is required')
@@ -175,9 +183,10 @@ class SenteroSetupService:
             con.execute(
                 '''update trusted_contacts
                    set name = ?, relationship = ?, email = ?, phone = ?, telegram_chat_id = ?,
-                       whatsapp_phone_number = ?, preferred_channels = ?, notification_enabled = ?, primary_contact = ?, actor_role = ?, updated_at = ?
+                       whatsapp_phone_number = ?, preferred_channels = ?, notification_enabled = ?, primary_contact = ?,
+                       actor_role = ?, email_queries_enabled = ?, email_permissions = ?, updated_at = ?
                    where id = ?''',
-                (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, actor_role, now(), contact_id),
+                (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, actor_role, email_queries_enabled, json.dumps(email_permissions), now(), contact_id),
             )
             con.commit()
         logger.info("Trusted contact updated", extra={"component": "wizard", "contact_id": contact_id})
@@ -272,3 +281,29 @@ def validate_contact_channels(channels: list[str], email: str, telegram_chat_id:
         raise ValueError('telegram chat id is required')
     if 'whatsapp' in channels and not whatsapp_phone_number:
         raise ValueError('whatsapp phone number is required')
+
+
+def normalize_email_permissions(value: Any) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = [value]
+    if not isinstance(value, list) or not value:
+        return ["STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT"]
+    clean: list[str] = []
+    for item in value:
+        permission = str(item or "").strip().upper()
+        if permission in EMAIL_QUERY_PERMISSIONS and permission not in clean:
+            clean.append(permission)
+    return clean or ["STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT"]
+
+
+def public_contact(contact: dict[str, Any]) -> dict[str, Any]:
+    data = dict(contact)
+    data.pop("email_query_token", None)
+    data["email_queries_enabled"] = bool(data.get("email_queries_enabled"))
+    data["notification_enabled"] = bool(data.get("notification_enabled"))
+    data["primary_contact"] = bool(data.get("primary_contact"))
+    data["email_permissions"] = normalize_email_permissions(data.get("email_permissions"))
+    return data

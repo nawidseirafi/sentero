@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
-from backend.services.device_mapping_service import DeviceMappingService, now
+from backend.services.audit_service import ensure_audit_schema
+from backend.services.audit_service import AuditService
+from backend.services.device_mapping_service import DeviceMappingService, ensure_schema, now
 from backend.services.aal_roles import can_access_data_classes
 from backend.services.consent_service import ConsentService
-from backend.services.notification_service import NotificationService
+from backend.services.notification_service import NotificationService, mail_assistant_reply_to, sentero_mail_from
 
 
 class DummyHomeAssistant:
@@ -21,15 +26,164 @@ class RecordingProvider:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
 
-    def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> None:
+    def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> dict[str, Any]:
         self.sent.append({"contact": contact, "title": title, "text": text, "config": config})
+        return {"message_id": f"<sentero-recording-{len(self.sent)}@sentero.local>"}
+
+
+class MemoryMapping:
+    def __init__(self) -> None:
+        self.con = sqlite3.connect(":memory:")
+        self.con.row_factory = sqlite3.Row
+
+    @contextmanager
+    def connect(self):
+        yield self.con
+
+    def close(self) -> None:
+        self.con.close()
+
+
+class FakeSmtp:
+    sent_messages: list[Any] = []
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    def __enter__(self) -> "FakeSmtp":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+    def starttls(self) -> None:
+        pass
+
+    def login(self, user: str, password: str) -> None:
+        pass
+
+    def send_message(self, message: Any, from_addr: str, to_addrs: list[str]) -> None:
+        self.sent_messages.append(message)
 
 
 class NotificationSystemWarningTests(unittest.TestCase):
+    def test_notification_log_schema_definitions_have_same_columns(self) -> None:
+        device_mapping = MemoryMapping()
+        audit_mapping = MemoryMapping()
+
+        ensure_schema(device_mapping.con)
+        ensure_audit_schema(audit_mapping)
+
+        device_columns = notification_log_columns(device_mapping.con)
+        audit_columns = notification_log_columns(audit_mapping.con)
+        self.assertEqual(device_columns, audit_columns)
+        self.assertIn("outgoing_message_id", device_columns)
+        device_mapping.close()
+        audit_mapping.close()
+
+    def test_email_message_id_is_generated_and_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            contact_id = insert_contact(mapping)
+            with mapping.connect() as con:
+                con.execute(
+                    "update notification_channel_settings set enabled = 1, config_json = ? where channel = 'email'",
+                    (
+                        json.dumps(
+                            {
+                                "smtp_host": "smtp.example.test",
+                                "smtp_user": "status@example.test",
+                                "smtp_password": "secret",
+                                "mail_from": "Sentero <status@example.test>",
+                            }
+                        ),
+                    ),
+                )
+                con.commit()
+
+            FakeSmtp.sent_messages = []
+            service = NotificationService(mapping)
+            with patch("backend.services.notification_service.smtplib.SMTP", FakeSmtp):
+                result = service.test("email")
+
+            self.assertTrue(result["ok"])
+            message = FakeSmtp.sent_messages[-1]
+            message_id = str(message["Message-ID"])
+            self.assertRegex(message_id, r"^<sentero-[0-9a-f-]+@example\.test>$")
+            self.assertEqual(message["X-Sentero-Generated"], "true")
+            self.assertEqual(message["Auto-Submitted"], "auto-generated")
+            with mapping.connect() as con:
+                row = con.execute(
+                    "select outgoing_message_id from notification_logs where contact_id = ? and channel = 'email' and status = 'sent'",
+                    (contact_id,),
+                ).fetchone()
+            self.assertEqual(row["outgoing_message_id"], message_id)
+
+    def test_email_from_uses_sentero_mailbox_when_display_name_only_is_configured(self) -> None:
+        self.assertEqual(
+            sentero_mail_from({"mail_from": "Sentero", "smtp_user": "nawid@seirafi.de"}),
+            "Sentero <nawid@seirafi.de>",
+        )
+
+    def test_transparency_includes_mail_queries_and_cleanup_retains_them(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            contact_id = insert_contact(mapping)
+            with mapping.connect() as con:
+                con.execute(
+                    """insert into sentero_mail_queries
+                       (received_at, message_id, contact_id, sender_email, intent, confidence, question_hash,
+                        response_status, response_sent_at, error_code, processing_ms, created_at)
+                       values ('2026-08-18T10:00:00+00:00', '<mail-query@example.test>', ?, 'nawid@example.test',
+                               'STATUS_SUMMARY', 0.9, 'hash', 'failed', null, 'ValueError', 12, '2026-08-18T10:00:00+00:00')""",
+                    (contact_id,),
+                )
+                con.execute(
+                    """insert into sentero_mail_queries
+                       (received_at, message_id, contact_id, sender_email, intent, confidence, question_hash,
+                        response_status, response_sent_at, error_code, processing_ms, created_at)
+                       values ('2020-01-01T10:00:00+00:00', '<old-mail-query@example.test>', ?, 'nawid@example.test',
+                               'STATUS_SUMMARY', 0.9, 'hash', 'sent', '2020-01-01T10:00:01+00:00', null, 12, '2020-01-01T10:00:00+00:00')""",
+                    (contact_id,),
+                )
+                con.commit()
+
+            service = AuditService(mapping)
+            transparency = service.transparency()
+
+            self.assertEqual(transparency["summary"]["mail_queries"], 2)
+            self.assertTrue(any(item["id"].startswith("mail-query-") for item in transparency["items"]))
+            cleanup = service.cleanup(days=30)
+            self.assertEqual(cleanup["deleted"]["sentero_mail_queries"], 1)
+
     def test_aal_roles_do_not_allow_behavior_raw_data_for_external_actors(self) -> None:
         self.assertTrue(can_access_data_classes("care_service", ["personal_behavior"], aggregation_level="summary"))
         self.assertFalse(can_access_data_classes("care_service", ["personal_behavior"], aggregation_level="raw"))
         self.assertFalse(can_access_data_classes("housing_provider", ["personal_behavior"], aggregation_level="summary"))
+
+    def test_mail_assistant_reply_to_is_only_added_for_enabled_contacts(self) -> None:
+        config = {
+            "smtp_host": "smtp.example.test",
+            "smtp_user": "status@example.test",
+            "smtp_password": "secret",
+            "imap_host": "imap.example.test",
+            "imap_user": "status@example.test",
+            "imap_password": "secret",
+            "mail_from": "Sentero <noreply@example.test>",
+        }
+        self.assertEqual(
+            mail_assistant_reply_to(
+                {"email_queries_enabled": 1},
+                config,
+            ),
+            "status@example.test",
+        )
+        self.assertIsNone(
+            mail_assistant_reply_to(
+                {"email_queries_enabled": 0},
+                config,
+            )
+        )
 
     def test_system_warnings_are_deduplicated_and_resolved(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -176,6 +330,11 @@ def contact(mapping: DeviceMappingService, contact_id: int) -> dict[str, Any]:
     with mapping.connect() as con:
         row = con.execute("select * from trusted_contacts where id = ?", (contact_id,)).fetchone()
     return dict(row)
+
+
+def notification_log_columns(con: sqlite3.Connection) -> list[str]:
+    rows = con.execute("pragma table_info(notification_logs)").fetchall()
+    return [str(row["name"]) for row in rows]
 
 
 if __name__ == "__main__":

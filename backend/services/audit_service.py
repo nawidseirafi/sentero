@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import Any
 
 from backend.services.device_mapping_service import DeviceMappingService, now
 
 DEFAULT_AUDIT_RETENTION_DAYS = 180
 AUDIT_TABLES = ("aal_audit_log", "aal_export_audit", "notification_logs")
+RETENTION_TABLES = (*AUDIT_TABLES, "sentero_mail_queries")
 
 
 class AuditService:
@@ -20,6 +22,7 @@ class AuditService:
             *self._audit_log_items(),
             *self._export_items(),
             *self._notification_items(),
+            *self._mail_query_items(),
         ]
         items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
         limited = items[: max(1, min(int(limit), 500))]
@@ -29,6 +32,7 @@ class AuditService:
                 "total": len(items),
                 "exports": sum(1 for item in items if item.get("category") == "export"),
                 "notifications": sum(1 for item in items if item.get("category") == "notification"),
+                "mail_queries": sum(1 for item in items if item.get("category") == "mail_query"),
                 "consents": sum(1 for item in items if item.get("category") == "consent"),
                 "security": sum(1 for item in items if item.get("category") == "security"),
             },
@@ -39,7 +43,10 @@ class AuditService:
         ensure_audit_schema(self.mapping)
         tables: list[dict[str, Any]] = []
         with self.mapping.connect() as con:
-            for table in AUDIT_TABLES:
+            for table in RETENTION_TABLES:
+                if not table_exists(con, table):
+                    tables.append({"table": table, "count": 0, "oldest": None, "newest": None})
+                    continue
                 row = con.execute(f"select count(*) as count, min(created_at) as oldest, max(created_at) as newest from {table}").fetchone()
                 tables.append({"table": table, "count": row["count"], "oldest": row["oldest"], "newest": row["newest"]})
         return {"retention_days": DEFAULT_AUDIT_RETENTION_DAYS, "tables": tables}
@@ -50,7 +57,10 @@ class AuditService:
         deleted: dict[str, int] = {}
         with self.mapping.connect() as con:
             cutoff = con.execute("select datetime('now', ?)", (f"-{normalized_days} days",)).fetchone()[0]
-            for table in AUDIT_TABLES:
+            for table in RETENTION_TABLES:
+                if not table_exists(con, table):
+                    deleted[table] = 0
+                    continue
                 cur = con.execute(f"delete from {table} where created_at < ?", (cutoff,))
                 deleted[table] = int(cur.rowcount or 0)
             con.commit()
@@ -106,6 +116,46 @@ class AuditService:
                         "export_type": data.get("export_type"),
                         "period_start": data.get("period_start"),
                         "period_end": data.get("period_end"),
+                    },
+                }
+            )
+        return items
+
+    def _mail_query_items(self) -> list[dict[str, Any]]:
+        with self.mapping.connect() as con:
+            if not table_exists(con, "sentero_mail_queries"):
+                return []
+            rows = con.execute(
+                """select q.*, t.name as contact_name
+                   from sentero_mail_queries q
+                   left join trusted_contacts t on t.id = q.contact_id
+                   order by q.created_at desc, q.id desc
+                   limit 500"""
+            ).fetchall()
+        items = []
+        for row in rows:
+            data = dict(row)
+            status = str(data.get("response_status") or "")
+            items.append(
+                {
+                    "id": f"mail-query-{data.get('id')}",
+                    "category": "mail_query",
+                    "event_type": "mail_query",
+                    "status": status,
+                    "summary": mail_query_summary(data),
+                    "contact_id": data.get("contact_id"),
+                    "contact_name": data.get("contact_name"),
+                    "purpose": "mail_status_query",
+                    "data_classes": mail_query_data_classes(data.get("intent")),
+                    "aggregation_level": "summary",
+                    "raw_data_included": False,
+                    "created_at": data.get("created_at"),
+                    "metadata": {
+                        "sender_email": data.get("sender_email"),
+                        "intent": data.get("intent"),
+                        "response_status": status,
+                        "error_code": data.get("error_code"),
+                        "processing_ms": data.get("processing_ms"),
                     },
                 }
             )
@@ -197,9 +247,14 @@ def ensure_audit_schema(mapping: DeviceMappingService) -> None:
                 error_message text,
                 data_class text not null default 'health_adjacent',
                 aggregation_level text not null default 'summary',
+                outgoing_message_id text,
                 created_at text not null
             )"""
         )
+        try:
+            con.execute("alter table notification_logs add column outgoing_message_id text")
+        except sqlite3.OperationalError:
+            pass
         con.commit()
 
 
@@ -280,6 +335,38 @@ def notification_summary(row: dict[str, Any]) -> str:
     if status.startswith("skipped"):
         return f"Benachrichtigung an {contact} ueber {channel} blockiert."
     return f"Benachrichtigung an {contact} ueber {channel} verarbeitet."
+
+
+def mail_query_summary(row: dict[str, Any]) -> str:
+    contact = str(row.get("contact_name") or row.get("sender_email") or "unbekannter Absender")
+    status = str(row.get("response_status") or "")
+    if status == "sent":
+        return f"E-Mail-Rueckfrage von {contact} beantwortet."
+    if status == "failed":
+        return f"E-Mail-Rueckfrage von {contact} konnte nicht beantwortet werden."
+    if status == "ignored":
+        return f"Automatische E-Mail von {contact} ignoriert."
+    if status == "rejected":
+        return f"E-Mail-Rueckfrage von {contact} abgelehnt."
+    if status == "duplicate":
+        return f"Doppelte E-Mail-Rueckfrage von {contact} ignoriert."
+    return f"E-Mail-Rueckfrage von {contact} verarbeitet."
+
+
+def mail_query_data_classes(intent: Any) -> list[str]:
+    value = str(intent or "")
+    if value in {"ENVIRONMENT"}:
+        return ["environmental"]
+    if value in {"SENSOR_HEALTH"}:
+        return ["technical"]
+    if value in {"STATUS_SUMMARY", "CURRENT_ACTIVITY", "LAST_ACTIVITY", "LAST_ROOM", "TODAY_SUMMARY", "ANOMALIES", "NIGHT_SUMMARY"}:
+        return ["personal_behavior"]
+    return ["metadata"]
+
+
+def table_exists(con: Any, table: str) -> bool:
+    row = con.execute("select 1 from sqlite_master where type = 'table' and name = ?", (table,)).fetchone()
+    return row is not None
 
 
 def parse_classes(value: Any) -> list[str]:

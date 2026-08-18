@@ -1312,6 +1312,8 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         "alter table trusted_contacts add column notification_enabled integer not null default 1",
         "alter table trusted_contacts add column primary_contact integer not null default 0",
         "alter table trusted_contacts add column actor_role text not null default 'relative'",
+        "alter table trusted_contacts add column email_queries_enabled integer not null default 0",
+        "alter table trusted_contacts add column email_permissions text not null default '[]'",
     ]:
         try:
             con.execute(statement)
@@ -1336,6 +1338,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         error_message text,
         data_class text not null default 'health_adjacent',
         aggregation_level text not null default 'summary',
+        outgoing_message_id text,
         created_at text not null
     )''')
     try:
@@ -1344,6 +1347,10 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         pass
     try:
         con.execute("alter table notification_logs add column aggregation_level text not null default 'summary'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        con.execute("alter table notification_logs add column outgoing_message_id text")
     except sqlite3.OperationalError:
         pass
     con.execute('''create table if not exists data_consents (
