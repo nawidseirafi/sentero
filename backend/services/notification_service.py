@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 import smtplib
+import sqlite3
 import socket
 import uuid
 from abc import ABC, abstractmethod
+from datetime import datetime, time
 from email.message import EmailMessage
 from email.utils import parseaddr
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
@@ -153,6 +157,12 @@ class NotificationService:
                     error_message text
                 )"""
             )
+            con.execute(
+                """create table if not exists daily_summary_notification_state (
+                    summary_date text primary key,
+                    sent_at text not null
+                )"""
+            )
             con.commit()
 
     def channels(self) -> dict[str, Any]:
@@ -232,6 +242,37 @@ class NotificationService:
             except Exception as exc:
                 self._mark_outbox(int(item["id"]), "failed", self._safe_error(exc))
         return {"sent": sent, "remaining": self._pending_count()}
+
+    def send_daily_summary_if_due(self, now_dt: datetime | None = None) -> dict[str, Any]:
+        if not self._daily_summary_enabled():
+            return {"sent": 0, "skipped": "disabled"}
+        local_now = local_summary_now(now_dt)
+        scheduled = daily_summary_time()
+        if local_now.time() < scheduled:
+            return {"sent": 0, "skipped": "not_due", "scheduled_time": scheduled.strftime("%H:%M")}
+        summary_date = local_now.date().isoformat()
+        if self._daily_summary_already_sent(summary_date):
+            return {"sent": 0, "skipped": "already_sent", "summary_date": summary_date}
+        contacts = self._trusted_contacts()
+        text = self._daily_summary_text(summary_date)
+        sent = 0
+        for contact in contacts:
+            if not bool(contact.get("notification_enabled", 1)):
+                continue
+            if not can_access_data_classes(contact.get("actor_role") or "relative", DEFAULT_NOTIFICATION_DATA_CLASSES, aggregation_level="summary"):
+                self._log(contact.get("id"), "consent", "yellow", "skipped_role_denied", "Sentero Tageszusammenfassung", None)
+                continue
+            if not self.consent.has_active_consent(contact.get("id"), DEFAULT_NOTIFICATION_PURPOSE, DEFAULT_NOTIFICATION_DATA_CLASSES):
+                self._log(contact.get("id"), "consent", "yellow", "skipped_no_consent", "Sentero Tageszusammenfassung", None)
+                continue
+            for channel in self._channels_for_contact(contact, "yellow"):
+                before = self._log_count()
+                self._send_with_log(contact, channel, "yellow", "Sentero Tageszusammenfassung", text, fallback=False)
+                if self._log_count() > before:
+                    sent += 1
+        if sent:
+            self._mark_daily_summary_sent(summary_date)
+        return {"sent": sent, "summary_date": summary_date, "scheduled_time": scheduled.strftime("%H:%M")}
 
     def send_email_direct(self, to_email: str, title: str, text: str, config: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any] | None:
         clean_config = {**(config or {}), "headers": headers or {}}
@@ -531,6 +572,45 @@ class NotificationService:
             row = con.execute("select daily_summary from notification_preferences where id = 1").fetchone()
         return bool(row and row["daily_summary"])
 
+    def _daily_summary_already_sent(self, summary_date: str) -> bool:
+        with self.mapping.connect() as con:
+            row = con.execute("select summary_date from daily_summary_notification_state where summary_date = ?", (summary_date,)).fetchone()
+        return row is not None
+
+    def _mark_daily_summary_sent(self, summary_date: str) -> None:
+        with self.mapping.connect() as con:
+            con.execute(
+                "insert or replace into daily_summary_notification_state (summary_date, sent_at) values (?, ?)",
+                (summary_date, now()),
+            )
+            con.commit()
+
+    def _daily_summary_text(self, summary_date: str) -> str:
+        try:
+            with self.mapping.connect() as con:
+                row = con.execute("select * from behavior_daily_summary where date = ?", (summary_date,)).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+        if not row:
+            return "Heute liegen noch keine verwertbaren Tagesdaten vor. Sentero überwacht die verbundenen Sensoren weiter."
+        summary = dict(row)
+        lines = ["Tägliche Zusammenfassung:", ""]
+        first = _time_text(summary.get("first_activity"))
+        last = _time_text(summary.get("last_activity"))
+        if first:
+            lines.append(f"Erste Aktivität: {first}.")
+        if last:
+            lines.append(f"Letzte Aktivität: {last}.")
+        lines.append(f"Aktive Zeit: {int(summary.get('active_minutes') or 0)} Minuten.")
+        lines.append(f"Türereignisse: {int(summary.get('door_events') or 0)}.")
+        room_usage = self._decode_json(summary.get("room_usage"))
+        if isinstance(room_usage, dict) and room_usage:
+            rooms = "; ".join(f"{room}: {count}" for room, count in room_usage.items())
+            lines.append(f"Raumaktivität: {rooms}.")
+        anomaly_score = int(summary.get("anomaly_score") or 0)
+        lines.append("Bewertung: keine auffälligen Hinweise." if anomaly_score == 0 else f"Bewertung: Auffälligkeitsscore {anomaly_score}.")
+        return "\n".join(lines).strip()
+
     def _message(self, assessment: dict[str, Any]) -> tuple[str, str, str]:
         title = assessment.get("email_subject") or "Sentero Hinweis"
         summary = assessment.get("summary") or "Heute wurde eine Auffälligkeit im Tagesablauf erkannt."
@@ -756,3 +836,35 @@ def mail_assistant_configured(config: dict[str, Any]) -> bool:
 
 def add_original_timestamp(text: str, original_created_at: str) -> str:
     return f"{text}\n\nUrsprünglicher Zeitpunkt der Warnung: {original_created_at}"
+
+
+def daily_summary_time() -> time:
+    raw = str(os.getenv("SENTERO_DAILY_SUMMARY_TIME") or "20:00").strip()
+    try:
+        hour_text, minute_text = raw.split(":", 1)
+        return time(hour=max(0, min(int(hour_text), 23)), minute=max(0, min(int(minute_text), 59)))
+    except (TypeError, ValueError):
+        return time(hour=20, minute=0)
+
+
+def local_summary_now(value: datetime | None = None) -> datetime:
+    timezone_name = str(os.getenv("SENTERO_TIMEZONE") or os.getenv("TZ") or "Europe/Berlin").strip()
+    try:
+        tz = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        tz = ZoneInfo("Europe/Berlin")
+    current = value or datetime.now(tz)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=tz)
+    return current.astimezone(tz)
+
+
+def _time_text(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw[:5] if len(raw) >= 5 else raw
+    return local_summary_now(parsed).strftime("%H:%M")

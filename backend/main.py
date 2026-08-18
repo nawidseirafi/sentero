@@ -61,6 +61,7 @@ async def network_maintenance_loop() -> None:
             if result.get("actions"):
                 logger.info("Network maintenance actions applied", extra={"component": "network", "actions": result.get("actions")})
             await asyncio.to_thread(services.notification.process_pending_queue)
+            await asyncio.to_thread(services.notification.send_daily_summary_if_due)
             interval = services.network.failover_config().check_interval_seconds
         except asyncio.CancelledError:
             raise

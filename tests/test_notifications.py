@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -307,6 +308,42 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
             logs = service.logs()["logs"]
             self.assertTrue(all("data_class" in log and "aggregation_level" in log for log in logs))
+
+    def test_daily_summary_is_sent_once_after_configured_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            contact_id = insert_contact(mapping)
+            ConsentService(mapping).grant({"contact_id": contact_id})
+            with mapping.connect() as con:
+                con.execute("update notification_preferences set daily_summary = 1 where id = 1")
+                con.commit()
+
+            provider = RecordingProvider()
+            service = NotificationService(mapping)
+            service.providers["email"] = provider
+
+            early = service.send_daily_summary_if_due(datetime(2026, 8, 18, 17, 59, tzinfo=timezone.utc))
+            first = service.send_daily_summary_if_due(datetime(2026, 8, 18, 18, 1, tzinfo=timezone.utc))
+            second = service.send_daily_summary_if_due(datetime(2026, 8, 18, 18, 2, tzinfo=timezone.utc))
+
+            self.assertEqual(early["skipped"], "not_due")
+            self.assertEqual(first["sent"], 1)
+            self.assertEqual(second["skipped"], "already_sent")
+            self.assertEqual(len(provider.sent), 1)
+            self.assertEqual(provider.sent[0]["title"], "Sentero Tageszusammenfassung")
+
+    def test_daily_summary_disabled_does_not_send(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            insert_contact(mapping)
+            provider = RecordingProvider()
+            service = NotificationService(mapping)
+            service.providers["email"] = provider
+
+            result = service.send_daily_summary_if_due(datetime(2026, 8, 18, 18, 1, tzinfo=timezone.utc))
+
+            self.assertEqual(result["skipped"], "disabled")
+            self.assertEqual(provider.sent, [])
 
     def test_expired_consent_is_not_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

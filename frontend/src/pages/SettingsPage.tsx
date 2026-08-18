@@ -115,6 +115,10 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       setMailDiscovery({ status: 'idle', message: '' });
       return;
     }
+    if (hasEmailServerSettings(channelForms.email)) {
+      setMailDiscovery({ status: 'idle', message: '' });
+      return;
+    }
     const timer = window.setTimeout(() => {
       void discoverEmailSettings(email);
     }, 500);
@@ -1766,6 +1770,7 @@ function ChannelSetupModal({
   const appPasswordHelpUrl = form.app_password_help_url;
   const emailInputRef = useRef<HTMLInputElement | null>(null);
   const passwordInputRef = useRef<HTMLInputElement | null>(null);
+  const visibleDiscoverMessage = channel === 'email' && discoverStatus === 'failed' && hasEmailServerSettings(form) ? '' : discoverMessage;
   if (channel === 'email') {
     return (
       <div className="sc-modal-backdrop" role="presentation" onMouseDown={onClose}>
@@ -1791,10 +1796,10 @@ function ChannelSetupModal({
                 autoComplete="email"
               />
             </label>
-            {discoverMessage && (
+            {visibleDiscoverMessage && (
               <p className={`sc-mail-status ${discoverStatus}`}>
                 {discoverStatus === 'found' && <CheckCircle2 size={18} />}
-                {discoverMessage}
+                {visibleDiscoverMessage}
               </p>
             )}
             <label>
@@ -2202,6 +2207,10 @@ function emailAddressForm<T extends Record<string, string>>(current: T, nextEmai
     imap_user: shouldUpdateImapUser ? nextEmail : currentImapUser,
     mail_from: current.mail_from || 'Sentero',
   };
+}
+
+function hasEmailServerSettings(form: Record<string, string>) {
+  return Boolean(String(form.smtp_host || '').trim() && String(form.imap_host || '').trim());
 }
 
 function emailChannelConfig(form: Record<string, string>) {
