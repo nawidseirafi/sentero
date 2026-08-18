@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import requests
 from dotenv import dotenv_values, load_dotenv
@@ -9,6 +10,7 @@ from typing import Any
 
 from backend.logging_config import get_logger
 from backend.services.device_mapping_service import DeviceMappingService, SensorTransport, sensor_source_mode
+from backend.services.ecotracker_service import EcoTrackerClient, normalize_ecotracker_host
 from backend.services.esp32_discovery_service import Esp32DiscoveryService
 from backend.services.esp32_provisioning_service import Esp32ProvisioningService
 
@@ -49,6 +51,21 @@ class SensorManager:
                 "insert or ignore into sensor_manager_network_settings (id, updated_at) values (1, ?)",
                 (self.mapping_now(),),
             )
+            con.execute(
+                """create table if not exists ecotracker_settings (
+                    id integer primary key check (id = 1),
+                    host text,
+                    enabled integer not null default 0,
+                    last_payload_json text not null default '{}',
+                    last_checked_at text,
+                    created_at text not null,
+                    updated_at text not null
+                )"""
+            )
+            con.execute(
+                "insert or ignore into ecotracker_settings (id, created_at, updated_at) values (1, ?, ?)",
+                (self.mapping_now(), self.mapping_now()),
+            )
             con.commit()
 
     def status(self) -> dict[str, Any]:
@@ -60,9 +77,77 @@ class SensorManager:
             "mode": source,
             "status_label": "Bereit" if bool(home_status.get("sensor_ready")) else "Wartet auf Sensorverbindung",
             "network": network,
-            "supported_sensor_types": ["door_contact", "presence_sensor", "motion_sensor", "button", "smart_meter", "electricity_meter", "water_meter", "gas_meter"],
+            "supported_sensor_types": ["door_contact", "presence_sensor", "motion_sensor", "button", "electricity_meter"],
+            "supported_meter_devices": ["everhome_ecotracker_ir"],
             "wifi_sensor_setup_enabled": wifi_sensor_setup_enabled(),
             "presence_sensor_transport": configured_presence_sensor_transport(),
+        }
+
+    def ecotracker_status(self) -> dict[str, Any]:
+        with self.mapping.connect() as con:
+            row = con.execute("select * from ecotracker_settings where id = 1").fetchone()
+        data = dict(row) if row else {}
+        return {
+            "enabled": bool(data.get("enabled")),
+            "configured": bool(data.get("host")),
+            "host": data.get("host") or "",
+            "device": "everHome EcoTracker IR",
+            "last_checked_at": data.get("last_checked_at"),
+        }
+
+    def test_ecotracker(self, host: str) -> dict[str, Any]:
+        clean_host = normalize_ecotracker_host(host)
+        payload = EcoTrackerClient(clean_host).read()
+        return {
+            "ok": True,
+            "message": "EcoTracker erreichbar.",
+            "host": clean_host,
+            "reading": public_ecotracker_reading(payload),
+        }
+
+    def connect_ecotracker(self, host: str) -> dict[str, Any]:
+        clean_host = normalize_ecotracker_host(host)
+        payload = EcoTrackerClient(clean_host).read()
+        timestamp = self.mapping_now()
+        with self.mapping.connect() as con:
+            con.execute(
+                """insert into ecotracker_settings (id, host, enabled, last_payload_json, last_checked_at, created_at, updated_at)
+                   values (1, ?, 1, ?, ?, ?, ?)
+                   on conflict(id) do update set
+                     host = excluded.host,
+                     enabled = 1,
+                     last_payload_json = excluded.last_payload_json,
+                     last_checked_at = excluded.last_checked_at,
+                     updated_at = excluded.updated_at""",
+                (clean_host, json_dumps(payload), timestamp, timestamp, timestamp),
+            )
+            con.execute(
+                """insert into sensor_roles
+                   (role, room, entity_id, device_id, friendly_name, device_class, domain, source, confidence, active, created_at, updated_at)
+                   values ('home_energy', 'home', 'ecotracker.energyCounterIn', ?, 'everHome EcoTracker IR', 'energy', 'sensor', 'ecotracker', 100, 1, ?, ?)
+                   on conflict(role) where active = 1 do update set
+                     room = excluded.room,
+                     entity_id = excluded.entity_id,
+                     device_id = excluded.device_id,
+                     friendly_name = excluded.friendly_name,
+                     device_class = excluded.device_class,
+                     domain = excluded.domain,
+                     source = excluded.source,
+                     confidence = excluded.confidence,
+                     updated_at = excluded.updated_at""",
+                (f"ecotracker:{clean_host}", timestamp, timestamp),
+            )
+            con.commit()
+        logger.info("EcoTracker connected", extra={"component": "sensor_manager", "host": clean_host})
+        return {
+            "status": "registered",
+            "sensor": {
+                "id": "home_energy",
+                "name": "everHome EcoTracker IR",
+                "room_id": "home",
+                "type": "electricity_meter",
+            },
+            "reading": public_ecotracker_reading(payload),
         }
 
     def start_discovery(self, sensor_type: str, room_id: str | None = None, role: str | None = None, duration: int = DEFAULT_DISCOVERY_SECONDS, transport: str | None = None) -> dict[str, Any]:
@@ -408,3 +493,23 @@ def public_type_from_role(role: str) -> str:
 
 def clean_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def json_dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def public_ecotracker_reading(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "power_w": payload.get("power"),
+        "power_avg_w": payload.get("powerAvg"),
+        "energy_in_kwh": wh_to_kwh(payload.get("energyCounterIn")),
+        "energy_out_kwh": wh_to_kwh(payload.get("energyCounterOut")),
+    }
+
+
+def wh_to_kwh(value: Any) -> float | None:
+    try:
+        return round(float(value) / 1000, 3)
+    except (TypeError, ValueError):
+        return None

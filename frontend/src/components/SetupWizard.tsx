@@ -115,6 +115,10 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     void api.senteroSensorManagerStatus().then((status) => {
       setPresenceTransport(status.presence_sensor_transport === 'wifi_esphome' ? 'wifi_esphome' : 'zigbee');
     }).catch(() => undefined);
+    void api.senteroEcoTrackerStatus().then((status) => {
+      if (!status.host) return;
+      setSensorBindings((current) => current.map((sensor) => sensor.type === 'electricity_meter' ? { ...sensor, sensorId: status.host } : sensor));
+    }).catch(() => undefined);
     void refreshNetwork();
     return () => {
       Object.values(timers.current).forEach((timer) => window.clearTimeout(timer));
@@ -287,7 +291,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     const id = label;
     setCustomRooms((current) => ({ ...current, [id]: label }));
     setSelectedRooms((current) => current.includes(id) ? current : [...current, id]);
-    setSensorPlan((current) => ({ ...current, [id]: current[id] || { motion: true, door: false } }));
+    setSensorPlan((current) => ({ ...current, [id]: current[id] || { ...emptySensorPlan(), motion: true } }));
     setCustomRoom('');
   }
 
@@ -311,6 +315,10 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
   async function searchSensor(sensor: SensorBinding) {
     updateSensor(sensor.id, { status: 'searching' });
     setDiscovery((current) => ({ ...current, [sensor.id]: { remainingSeconds: SENSOR_DISCOVERY_SECONDS } }));
+    if (sensor.type === 'electricity_meter') {
+      await connectEcoTracker(sensor);
+      return;
+    }
     const activePresenceTransport = isPresenceBinding(sensor) ? await loadPresenceTransport() : presenceTransport;
     if (isPresenceBinding(sensor) && activePresenceTransport === 'wifi_esphome') {
       await searchWifiPresenceSensor(sensor);
@@ -334,6 +342,25 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     } catch (err) {
       updateSensor(sensor.id, { status: 'missing' });
       setDiscovery((current) => ({ ...current, [sensor.id]: { error: userFacingSensorError(err) } }));
+    }
+  }
+
+  async function connectEcoTracker(sensor: SensorBinding) {
+    const host = sensor.sensorId.trim();
+    if (!host) {
+      updateSensor(sensor.id, { status: 'missing' });
+      setDiscovery((current) => ({ ...current, [sensor.id]: { error: 'Bitte geben Sie die IP-Adresse des EcoTrackers ein.' } }));
+      return;
+    }
+    try {
+      const result = await api.connectSenteroEcoTracker(host);
+      const test = await api.testSenteroSensorRole(sensor.id);
+      if (!test.ok) throw new Error(test.message || 'EcoTracker ist aktuell nicht erreichbar.');
+      updateSensor(sensor.id, { status: 'connected', score: 100, sensorManagerId: result.sensor.id, name: result.sensor.name, sensorId: host });
+      setDiscovery((current) => ({ ...current, [sensor.id]: { sensor: { id: result.sensor.id, name: result.sensor.name, type: result.sensor.type, confidence: 100 }, remainingSeconds: 0 } }));
+    } catch (err) {
+      updateSensor(sensor.id, { status: 'missing' });
+      setDiscovery((current) => ({ ...current, [sensor.id]: { error: err instanceof Error ? err.message : 'EcoTracker konnte nicht verbunden werden.' } }));
     }
   }
 

@@ -77,6 +77,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [networkStatus, setNetworkStatus] = useState<SenteroSensorNetworkSettings | null>(null);
   const [boxNetworkForm, setBoxNetworkForm] = useState({ ssid: '', password: '' });
   const [boxNetworkStatus, setBoxNetworkStatus] = useState<BoxNetworkStatus | null>(null);
+  const [ecoTrackerHost, setEcoTrackerHost] = useState('');
+  const [ecoTrackerMessage, setEcoTrackerMessage] = useState('');
+  const [ecoTrackerBusy, setEcoTrackerBusy] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '', new_password_confirm: '' });
   const [accountEditing, setAccountEditing] = useState(false);
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
@@ -160,7 +163,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
   async function load() {
     try {
-      const [nextStatus, nextSensors, nextChannels, nextConsents, nextExportTokens, nextTransparency, nextNetwork, nextBoxNetwork, nextEmailQueries] = await Promise.all([
+      const [nextStatus, nextSensors, nextChannels, nextConsents, nextExportTokens, nextTransparency, nextNetwork, nextBoxNetwork, nextEmailQueries, nextEcoTracker] = await Promise.all([
         api.senteroSetupStatus(),
         api.senteroSensorRoles(true),
         api.senteroNotificationChannels(),
@@ -170,6 +173,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         api.senteroSensorNetwork(),
         api.boxNetworkStatus(),
         api.senteroEmailQuerySettings(),
+        api.senteroEcoTrackerStatus(),
       ]);
       setStatus(nextStatus);
       setSensors(nextSensors.sensor_roles);
@@ -185,6 +189,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       });
       setBoxNetworkStatus(nextBoxNetwork);
       setEmailQueries(nextEmailQueries);
+      setEcoTrackerHost(nextEcoTracker.host || '');
       setBoxNetworkForm({ ssid: '', password: '' });
       hydrateChannelForms(nextChannels.channels);
       const sensorRooms = Array.from(new Set(nextSensors.sensor_roles.map((sensor) => sensor.room).filter(Boolean))) as string[];
@@ -225,6 +230,48 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       await pollMeterDiscovery(type, started.discovery_id, Date.now());
     } catch (err) {
       setMeterDiscovery({ type, status: 'missing', message: err instanceof Error ? err.message : `${meta.label} konnte nicht verbunden werden.` });
+    }
+  }
+
+  async function testEcoTracker() {
+    const host = ecoTrackerHost.trim();
+    if (!host) {
+      setEcoTrackerMessage('Bitte geben Sie die IP-Adresse des EcoTrackers ein.');
+      return;
+    }
+    setEcoTrackerBusy(true);
+    setEcoTrackerMessage('EcoTracker wird geprüft ...');
+    try {
+      const result = await api.testSenteroEcoTracker(host);
+      setEcoTrackerHost(result.host);
+      setEcoTrackerMessage(ecoTrackerReadingMessage(result.reading));
+      setError('');
+    } catch (err) {
+      setEcoTrackerMessage(err instanceof Error ? err.message : 'EcoTracker konnte nicht erreicht werden.');
+    } finally {
+      setEcoTrackerBusy(false);
+    }
+  }
+
+  async function connectEcoTracker() {
+    const host = ecoTrackerHost.trim();
+    if (!host) {
+      setEcoTrackerMessage('Bitte geben Sie die IP-Adresse des EcoTrackers ein.');
+      return;
+    }
+    setEcoTrackerBusy(true);
+    setEcoTrackerMessage('EcoTracker wird verbunden ...');
+    try {
+      const result = await api.connectSenteroEcoTracker(host);
+      setEcoTrackerHost(host);
+      setEcoTrackerMessage(`EcoTracker verbunden. ${ecoTrackerReadingMessage(result.reading)}`);
+      setSaved('everHome EcoTracker IR wurde als Stromzähler verbunden.');
+      setError('');
+      await load();
+    } catch (err) {
+      setEcoTrackerMessage(err instanceof Error ? err.message : 'EcoTracker konnte nicht verbunden werden.');
+    } finally {
+      setEcoTrackerBusy(false);
     }
   }
 
@@ -960,16 +1007,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       {activeTab === 'sensors' && (
         <section className="sc-panel sc-settings-panel">
           <div className="sc-section-title"><h2>Räume & Sensoren</h2><button type="button" onClick={() => window.location.assign('/sentero/setup')}><Plus size={20} /> Sensor hinzufügen</button></div>
-          <div className="sc-inline-add">
-            <button type="button" onClick={() => void addMeter('electricity_meter')} disabled={meterDiscovery?.status === 'searching'}><Plug size={18} /> Stromzähler suchen</button>
-            <button type="button" onClick={() => void addMeter('water_meter')} disabled={meterDiscovery?.status === 'searching'}><Plus size={18} /> Wasserzähler suchen</button>
-            <button type="button" onClick={() => void addMeter('gas_meter')} disabled={meterDiscovery?.status === 'searching'}><Plus size={18} /> Gaszähler suchen</button>
-          </div>
-          {meterDiscovery && (
-            <p className={`sc-muted-note ${meterDiscovery.status}`}>
-              {meterDiscovery.message}{meterDiscovery.status === 'searching' && typeof meterDiscovery.remainingSeconds === 'number' ? ` (${Math.ceil(meterDiscovery.remainingSeconds)}s)` : ''}
-            </p>
-          )}
+
+
           <div className="sc-inline-add">
             <input value={roomDraft} onChange={(event) => setRoomDraft(event.target.value)} placeholder="Raum hinzufügen" />
             <button type="button" onClick={() => void addRoom()}><Plus size={20} /> Raum hinzufügen</button>
@@ -2039,6 +2078,14 @@ function formatMeterValue(sensor: SenteroSensorRole) {
   if (dc === 'water' || sensor.role.endsWith('_water')) return `${value} m³`;
   if (dc === 'gas' || sensor.role.endsWith('_gas')) return `${value} m³`;
   return `${value} kWh`;
+}
+
+function ecoTrackerReadingMessage(reading: Record<string, unknown>) {
+  const parts = [];
+  if (reading.power_w != null) parts.push(`Leistung ${reading.power_w} W`);
+  if (reading.energy_in_kwh != null) parts.push(`Bezug ${reading.energy_in_kwh} kWh`);
+  if (reading.energy_out_kwh != null) parts.push(`Einspeisung ${reading.energy_out_kwh} kWh`);
+  return parts.length ? parts.join(' · ') : 'EcoTracker erreichbar.';
 }
 
 function isEsp32PresenceSensor(sensor: SenteroSensorRole) {

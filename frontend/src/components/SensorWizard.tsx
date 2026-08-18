@@ -94,6 +94,7 @@ function SensorSetupCard({ sensor, state, devMode, presenceTransport, onChange, 
   const label = sensorLabel(sensor);
   const help = sensorHelp(sensor);
   const showWifiPresenceSetup = isPresenceBinding(sensor) && presenceTransport === 'wifi_esphome' && sensor.status !== 'connected';
+  const isEcoTracker = sensor.type === 'electricity_meter';
 
   return (
     <div className={`sc-sensor-row ${sensor.status === 'connected' ? 'is-connected' : ''}`}>
@@ -108,9 +109,9 @@ function SensorSetupCard({ sensor, state, devMode, presenceTransport, onChange, 
           </div>
         )}
         <input
-          value={sensor.name}
-          onChange={(event) => onChange(sensor.id, { name: event.target.value })}
-          placeholder="Sensorname"
+          value={isEcoTracker ? sensor.sensorId : sensor.name}
+          onChange={(event) => onChange(sensor.id, isEcoTracker ? { sensorId: event.target.value } : { name: event.target.value })}
+          placeholder={isEcoTracker ? 'EcoTracker IP, z.B. 192.168.1.42' : 'Sensorname'}
           disabled={sensor.status === 'connected'}
         />
       </div>
@@ -118,7 +119,7 @@ function SensorSetupCard({ sensor, state, devMode, presenceTransport, onChange, 
         <SensorStatus status={sensor.status} remainingSeconds={state?.remainingSeconds} />
         <div className="sc-sensor-buttons">
           <button className="primary" type="button" onClick={() => void onSearch(sensor)} disabled={sensor.status === 'searching' || sensor.status === 'connected'}>
-            <Search size={19} /> {sensor.status === 'connected' ? 'Verbunden' : 'Sensor suchen'}
+            <Search size={19} /> {sensor.status === 'connected' ? 'Verbunden' : isEcoTracker ? 'EcoTracker verbinden' : 'Sensor suchen'}
           </button>
           <button className="secondary" type="button" onClick={() => onSkip(sensor)} disabled={sensor.status === 'connected'}>Überspringen</button>
         </div>
@@ -145,7 +146,7 @@ function isPresenceBinding(sensor: SensorBinding) {
 
 function sensorLabel(sensor: SensorBinding) {
   if (sensor.type === 'door') return 'Türsensor';
-  if (sensor.type === 'electricity_meter') return 'Stromzähler';
+  if (sensor.type === 'electricity_meter') return 'everHome EcoTracker IR';
   if (sensor.type === 'water_meter') return 'Wasserzähler';
   if (sensor.type === 'gas_meter') return 'Gaszähler';
   return 'Präsenzsensor';
@@ -153,7 +154,7 @@ function sensorLabel(sensor: SensorBinding) {
 
 function sensorHelp(sensor: SensorBinding) {
   if (sensor.type === 'door') return 'Erkennt, ob eine Tür oder ein Fenster geöffnet wurde.';
-  if (sensor.type === 'electricity_meter') return 'Liefert Stromverbrauch oder aktuelle Leistung als zusätzlichen Aktivitätshinweis.';
+  if (sensor.type === 'electricity_meter') return 'Liest den Stromzähler lokal über http://EcoTracker-IP/v1/json aus.';
   if (sensor.type === 'water_meter') return 'Liefert Wasserverbrauch als zusätzlichen Aktivitätshinweis.';
   if (sensor.type === 'gas_meter') return 'Liefert Gasverbrauch als zusätzlichen Aktivitätshinweis.';
   return 'Erkennt, ob sich eine Person im Raum bewegt oder anwesend ist.';

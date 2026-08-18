@@ -12,6 +12,7 @@ from typing import Any
 from backend.config import config_str
 from backend.paths import DATA_DIR
 from backend.logging_config import get_logger
+from backend.services.ecotracker_service import EcoTrackerClient, ecotracker_snapshot_rows
 from backend.sensor_sources.base import create_sensor_source
 from backend.services.homeassistant_service import HomeAssistantService
 from backend.services.mqtt_service import MqttService
@@ -1017,8 +1018,11 @@ class DeviceMappingService:
         return None
 
     def snapshot(self) -> list[dict[str, Any]]:
+        local_rows = self._local_ecotracker_snapshot()
         if self.uses_mqtt_source():
-            return [normalize_snapshot_item(item) for item in self.sensor_source.snapshot()]
+            return [*local_rows, *[normalize_snapshot_item(item) for item in self.sensor_source.snapshot()]]
+        if local_rows and not self.ha.configured():
+            return local_rows
         states = self.ha.get_states()
         entity_registry = self._entity_registry_by_entity_id()
         device_registry = self._device_registry_by_id()
@@ -1049,7 +1053,22 @@ class DeviceMappingService:
                 'last_changed': item.get('last_changed'),
                 'last_updated': item.get('last_updated'),
             })
-        return result
+        return [*local_rows, *result]
+
+    def _local_ecotracker_snapshot(self) -> list[dict[str, Any]]:
+        try:
+            with self.connect() as con:
+                row = con.execute("select host, enabled from ecotracker_settings where id = 1").fetchone()
+        except sqlite3.OperationalError:
+            return []
+        if not row or not bool(row["enabled"]) or not str(row["host"] or "").strip():
+            return []
+        try:
+            payload = EcoTrackerClient(str(row["host"])).read()
+        except Exception:
+            logger.exception("EcoTracker local snapshot failed", extra={"component": "device_mapping", "source": "ecotracker"})
+            return []
+        return [normalize_snapshot_item(item) for item in ecotracker_snapshot_rows(str(row["host"]), payload)]
 
     def _mqtt_snapshot(self) -> list[dict[str, Any]]:
         sources = getattr(self.sensor_source, 'sources', None)

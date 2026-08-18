@@ -279,6 +279,21 @@ export type SenteroSensorNetworkSettings = {
   configured: boolean;
 };
 
+export type SenteroEcoTrackerStatus = {
+  enabled: boolean;
+  configured: boolean;
+  host: string;
+  device: string;
+  last_checked_at?: string | null;
+};
+
+export type SenteroEcoTrackerReading = {
+  power_w?: number | null;
+  power_avg_w?: number | null;
+  energy_in_kwh?: number | null;
+  energy_out_kwh?: number | null;
+};
+
 export type SenteroSensorManagerStatus = {
   ready: boolean;
   mode: string;
@@ -587,6 +602,11 @@ export const api = {
   saveSenteroSensorNetwork: (payload: { wifi_ssid?: string; wifi_password?: string }) =>
     request<{ status: string; network: SenteroSensorNetworkSettings }>('/api/sentero/sensors/network', { method: 'POST', body: JSON.stringify(payload) }),
   testSenteroSensorNetwork: () => request<{ ok: boolean; message: string }>('/api/sentero/sensors/network/test', { method: 'POST' }),
+  senteroEcoTrackerStatus: () => request<SenteroEcoTrackerStatus>('/api/sentero/sensors/ecotracker'),
+  testSenteroEcoTracker: (host: string) =>
+    request<{ ok: boolean; message: string; host: string; reading: SenteroEcoTrackerReading }>('/api/sentero/sensors/ecotracker/test', { method: 'POST', body: JSON.stringify({ host }) }),
+  connectSenteroEcoTracker: (host: string) =>
+    request<{ status: string; sensor: { id: string; name: string; room_id?: string | null; type: string }; reading: SenteroEcoTrackerReading }>('/api/sentero/sensors/ecotracker/connect', { method: 'POST', body: JSON.stringify({ host }) }),
   boxNetworkStatus: () => request<BoxNetworkStatus>('/api/setup/box-network/status'),
   saveBoxNetworkWifi: (payload: { ssid: string; password: string }) =>
     request<BoxNetworkWifiResult>('/api/setup/box-network/wifi', { method: 'POST', body: JSON.stringify(payload) }),

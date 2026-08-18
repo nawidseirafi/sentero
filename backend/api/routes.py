@@ -89,6 +89,10 @@ class SensorNetworkPayload(BaseModel):
     wifi_password: str | None = None
 
 
+class EcoTrackerPayload(BaseModel):
+    host: str
+
+
 class SensorRoleCommandPayload(BaseModel):
     command: str
     enabled: bool | None = None
@@ -571,6 +575,31 @@ def sentero_sensor_manager_save_network(payload: SensorNetworkPayload):
 @router.post("/sensors/network/test", tags=[TAG_SENSORS])
 def sentero_sensor_manager_test_network():
     return get_services().sensor_manager.test_network_settings()
+
+
+@router.get("/sensors/ecotracker", tags=[TAG_SENSORS])
+def sentero_ecotracker_status():
+    return get_services().sensor_manager.ecotracker_status()
+
+
+@router.post("/sensors/ecotracker/test", tags=[TAG_SENSORS])
+def sentero_ecotracker_test(payload: EcoTrackerPayload):
+    try:
+        return get_services().sensor_manager.test_ecotracker(payload.host)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.post("/sensors/ecotracker/connect", tags=[TAG_SENSORS])
+def sentero_ecotracker_connect(payload: EcoTrackerPayload):
+    try:
+        return get_services().sensor_manager.connect_ecotracker(payload.host)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
 
 
 @router.get("/sensors/provisioning/status", tags=[TAG_SENSORS])
