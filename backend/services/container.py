@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from backend.agents.sentero.mail.service import SenteroMailAssistant, SenteroMailAssistantSettings
+from backend.agents.sentero.telegram.service import SenteroTelegramAssistant
 from backend.sensors.service import SenteroSensorService
 from backend.services.audit_service import AuditService
 from backend.services.auth_service import SenteroAuthService
@@ -36,6 +37,7 @@ class SenteroServices:
     audit: AuditService
     mail_assistant: SenteroMailAssistant
     mail_assistant_settings: SenteroMailAssistantSettings
+    telegram_assistant: SenteroTelegramAssistant
 
 
 @lru_cache(maxsize=1)
@@ -61,6 +63,7 @@ def get_services() -> SenteroServices:
         audit=AuditService(mapping),
         mail_assistant=SenteroMailAssistant(mapping, sentero, notification),
         mail_assistant_settings=SenteroMailAssistantSettings(mapping),
+        telegram_assistant=SenteroTelegramAssistant(mapping, sentero, notification),
     )
 
 

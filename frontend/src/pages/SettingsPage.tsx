@@ -99,7 +99,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [channelForms, setChannelForms] = useState({
     email: { mail_from: '', smtp_host: '', smtp_port: '587', smtp_user: '', smtp_login: '', smtp_password: '', smtp_encryption: '', smtp_starttls: 'true', smtp_ssl: 'false', imap_host: '', imap_port: '993', imap_user: '', imap_password: '', imap_encryption: '', app_password_help_url: '', test_recipient: '' },
     telegram: { bot_token: '', default_chat_id: '', test_recipient: '' },
-    whatsapp: { access_token: '', phone_number_id: '', business_account_id: '', test_recipient: '' },
+    whatsapp: { access_token: '', phone_number_id: '', business_account_id: '', api_version: 'v23.0', test_recipient: '' },
   });
 
   useEffect(() => {
@@ -756,6 +756,12 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
   async function testChannel(channel: 'email' | 'telegram' | 'whatsapp') {
     try {
+      if (channel === 'email' && !mailVerification.ok) {
+        setMailVerification({ busy: false, ok: false, message: 'Bitte prüfen Sie zuerst die Verbindung.' });
+        return;
+      }
+      const config = channel === 'email' ? emailChannelConfig(channelForms.email) : channelForms[channel];
+      await api.saveSenteroNotificationChannel(channel, { enabled: false, config });
       const result = await api.testSenteroNotificationChannel(channel);
       if (result.ok) {
         setError('');
@@ -2334,8 +2340,8 @@ function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp'): ChannelSe
       title: 'Telegram einrichten',
       text: 'Telegram kann zusätzlich zur E-Mail genutzt werden.',
       fields: [
-        { key: 'bot_token', label: 'Bot Token' },
-        { key: 'default_chat_id', label: 'Chat ID' },
+        { key: 'bot_token', label: 'Bot Token', hint: 'Token von BotFather.' },
+        { key: 'default_chat_id', label: 'Chat ID', hint: 'Numerische Chat-ID des Empfängers, nicht der Bot-Name.' },
       ],
     };
   }
@@ -2347,6 +2353,7 @@ function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp'): ChannelSe
         { key: 'access_token', label: 'Access Token' },
         { key: 'phone_number_id', label: 'Phone Number ID' },
         { key: 'business_account_id', label: 'Business Account ID' },
+        { key: 'api_version', label: 'Graph API Version' },
       ],
     };
   }

@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import requests
+
 from backend.services.audit_service import ensure_audit_schema
 from backend.services.audit_service import AuditService
 from backend.services.device_mapping_service import DeviceMappingService, ensure_schema, now
@@ -65,6 +67,20 @@ class FakeSmtp:
 
     def send_message(self, message: Any, from_addr: str, to_addrs: list[str]) -> None:
         self.sent_messages.append(message)
+
+
+class FakeJsonResponse:
+    def __init__(self, payload: dict[str, Any], status_code: int = 200) -> None:
+        self.payload = payload
+        self.status_code = status_code
+        self.text = json.dumps(payload)
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(response=self)
+
+    def json(self) -> dict[str, Any]:
+        return self.payload
 
 
 class NotificationSystemWarningTests(unittest.TestCase):
@@ -219,6 +235,71 @@ class NotificationSystemWarningTests(unittest.TestCase):
             self.assertEqual(stored["smtp_password"], "smtp-secret")
             self.assertEqual(stored["imap_password"], "imap-secret")
             self.assertEqual(stored["test_recipient"], "test@example.test")
+
+    def test_telegram_channel_can_be_saved_tested_and_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            service = NotificationService(mapping)
+            service.save_channel("telegram", False, {"bot_token": "telegram-secret", "default_chat_id": "12345"})
+
+            with patch("backend.services.notification_service.requests.post") as post:
+                post.return_value = FakeJsonResponse({"ok": True, "result": {"message_id": 42}})
+                result = service.test("telegram")
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(post.call_args.kwargs["json"]["chat_id"], "12345")
+            channel = next(item for item in service.channels()["channels"] if item["channel"] == "telegram")
+            self.assertTrue(channel["enabled"])
+            self.assertTrue(channel["configured"])
+            with mapping.connect() as con:
+                row = con.execute(
+                    "select outgoing_message_id from notification_logs where channel = 'telegram' and status = 'sent'"
+                ).fetchone()
+            self.assertEqual(row["outgoing_message_id"], "telegram:12345:42")
+
+    def test_whatsapp_channel_can_be_saved_tested_and_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            service = NotificationService(mapping)
+            service.save_channel(
+                "whatsapp",
+                False,
+                {
+                    "access_token": "wa-secret",
+                    "phone_number_id": "999",
+                    "business_account_id": "888",
+                    "test_recipient": "491701234567",
+                },
+            )
+
+            with patch("backend.services.notification_service.requests.post") as post:
+                post.return_value = FakeJsonResponse({"messages": [{"id": "wamid.test"}]})
+                result = service.test("whatsapp")
+
+            self.assertTrue(result["ok"])
+            self.assertIn("/v23.0/999/messages", post.call_args.args[0])
+            self.assertEqual(post.call_args.kwargs["json"]["to"], "491701234567")
+            channel = next(item for item in service.channels()["channels"] if item["channel"] == "whatsapp")
+            self.assertTrue(channel["enabled"])
+            self.assertTrue(channel["configured"])
+            with mapping.connect() as con:
+                row = con.execute(
+                    "select outgoing_message_id from notification_logs where channel = 'whatsapp' and status = 'sent'"
+                ).fetchone()
+            self.assertEqual(row["outgoing_message_id"], "wamid.test")
+
+    def test_telegram_http_errors_include_provider_description(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            service = NotificationService(mapping)
+            service.save_channel("telegram", False, {"bot_token": "telegram-secret", "default_chat_id": "Sentero_bot"})
+
+            with patch("backend.services.notification_service.requests.post") as post:
+                post.return_value = FakeJsonResponse({"ok": False, "description": "Bad Request: chat not found"}, status_code=400)
+                result = service.test("telegram")
+
+            self.assertFalse(result["ok"])
+            self.assertIn("chat not found", result["message"])
 
     def test_system_warnings_are_deduplicated_and_resolved(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

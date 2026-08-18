@@ -1,0 +1,392 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import requests
+
+from backend.agents.sentero.mail.intent_service import ACTION_RE, MailIntentService
+from backend.agents.sentero.mail.models import MailIntent, MailThreadContext
+from backend.agents.sentero.mail.query_service import MailQueryService
+from backend.agents.sentero.mail.response_service import MailResponseService
+from backend.agents.sentero.mail.service import sanitize_question
+from backend.agents.sentero.mail.store import contact_from_row
+from backend.logging_config import get_logger
+from backend.services.device_mapping_service import DeviceMappingService, now
+from backend.services.notification_service import NotificationService, _provider_message_id
+from backend.services.service import SenteroService
+
+logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class TelegramAssistantConfig:
+    enabled: bool = False
+    bot_token: str = ""
+    poll_interval_seconds: int = 10
+    timeout_seconds: int = 10
+    hourly_limit: int = 20
+    daily_limit: int = 50
+
+
+class TelegramApiClient:
+    def __init__(self, config: TelegramAssistantConfig) -> None:
+        self.config = config
+
+    def get_updates(self, offset: int | None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {
+            "timeout": self.config.timeout_seconds,
+            "allowed_updates": json.dumps(["message"]),
+        }
+        if offset is not None:
+            params["offset"] = offset
+        response = requests.get(self._url("getUpdates"), params=params, timeout=self.config.timeout_seconds + 5)
+        response.raise_for_status()
+        data = response.json()
+        result = data.get("result") if isinstance(data, dict) else None
+        return result if isinstance(result, list) else []
+
+    def _url(self, method: str) -> str:
+        return f"https://api.telegram.org/bot{self.config.bot_token}/{method}"
+
+
+class TelegramAssistantStore:
+    def __init__(self, mapping: DeviceMappingService) -> None:
+        self.mapping = mapping
+        self.ensure_schema()
+
+    def ensure_schema(self) -> None:
+        with self.mapping.connect() as con:
+            con.execute(
+                """create table if not exists sentero_telegram_assistant_state (
+                    id integer primary key check (id = 1),
+                    last_update_id integer not null default 0,
+                    updated_at text not null
+                )"""
+            )
+            con.execute(
+                """create table if not exists sentero_telegram_queries (
+                    id integer primary key autoincrement,
+                    received_at text not null,
+                    update_id integer not null unique,
+                    message_id integer,
+                    chat_id text not null,
+                    contact_id integer,
+                    intent text,
+                    confidence real,
+                    question_hash text,
+                    response_status text not null,
+                    response_sent_at text,
+                    error_code text,
+                    processing_ms integer,
+                    created_at text not null,
+                    foreign key(contact_id) references trusted_contacts(id)
+                )"""
+            )
+            con.execute("insert or ignore into sentero_telegram_assistant_state (id, last_update_id, updated_at) values (1, 0, ?)", (now(),))
+            con.commit()
+
+    def next_offset(self) -> int | None:
+        with self.mapping.connect() as con:
+            row = con.execute("select last_update_id from sentero_telegram_assistant_state where id = 1").fetchone()
+        last_update_id = int(row["last_update_id"] if row else 0)
+        return last_update_id + 1 if last_update_id else None
+
+    def mark_update(self, update_id: int) -> None:
+        with self.mapping.connect() as con:
+            con.execute(
+                "update sentero_telegram_assistant_state set last_update_id = max(last_update_id, ?), updated_at = ? where id = 1",
+                (update_id, now()),
+            )
+            con.commit()
+
+    def already_processed(self, update_id: int) -> bool:
+        with self.mapping.connect() as con:
+            row = con.execute("select id from sentero_telegram_queries where update_id = ?", (update_id,)).fetchone()
+        return row is not None
+
+    def find_authorized_contact(self, chat_id: str) -> tuple[dict[str, Any] | None, str | None]:
+        with self.mapping.connect() as con:
+            row = con.execute(
+                """select *
+                   from trusted_contacts
+                   where telegram_chat_id = ? and active = 1 and notification_enabled = 1""",
+                (chat_id,),
+            ).fetchone()
+        if not row:
+            return None, "unknown_chat"
+        data = dict(row)
+        channels = decode_json(data.get("preferred_channels"), [])
+        if "telegram" not in channels:
+            return None, "telegram_not_enabled_for_contact"
+        return data, None
+
+    def find_thread_context(self, chat_id: str, reply_to_message_id: int | None) -> MailThreadContext | None:
+        if reply_to_message_id is None:
+            return None
+        outgoing_id = f"telegram:{chat_id}:{reply_to_message_id}"
+        with self.mapping.connect() as con:
+            row = con.execute(
+                """select *
+                   from notification_logs
+                   where outgoing_message_id = ?
+                   order by created_at desc, id desc
+                   limit 1""",
+                (outgoing_id,),
+            ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        return MailThreadContext(
+            notification_log_id=int(data["id"]),
+            contact_id=int(data["contact_id"]) if data.get("contact_id") is not None else None,
+            channel=str(data.get("channel") or ""),
+            severity=str(data.get("severity") or ""),
+            status=str(data.get("status") or ""),
+            message_title=data.get("message_title"),
+            created_at=str(data.get("created_at") or ""),
+            outgoing_message_id=outgoing_id,
+        )
+
+    def rate_limit_exceeded(self, contact_id: int, hourly_limit: int, daily_limit: int) -> bool:
+        current = datetime.now(timezone.utc)
+        hour_since = (current - timedelta(hours=1)).isoformat(timespec="seconds")
+        day_since = (current - timedelta(days=1)).isoformat(timespec="seconds")
+        with self.mapping.connect() as con:
+            hour = con.execute(
+                """select count(*) as count
+                   from sentero_telegram_queries
+                   where contact_id = ? and received_at >= ? and response_status not in ('rejected', 'duplicate')""",
+                (contact_id, hour_since),
+            ).fetchone()
+            day = con.execute(
+                """select count(*) as count
+                   from sentero_telegram_queries
+                   where contact_id = ? and received_at >= ? and response_status not in ('rejected', 'duplicate')""",
+                (contact_id, day_since),
+            ).fetchone()
+        return int(hour["count"] if hour else 0) >= hourly_limit or int(day["count"] if day else 0) >= daily_limit
+
+    def record_query(
+        self,
+        *,
+        received_at: str,
+        update_id: int,
+        message_id: int | None,
+        chat_id: str,
+        contact_id: int | None,
+        intent: str | None,
+        confidence: float | None,
+        question: str,
+        response_status: str,
+        error_code: str | None = None,
+        processing_ms: int | None = None,
+        response_sent_at: str | None = None,
+    ) -> None:
+        from backend.agents.sentero.mail.store import question_hash
+
+        with self.mapping.connect() as con:
+            con.execute(
+                """insert or ignore into sentero_telegram_queries
+                   (received_at, update_id, message_id, chat_id, contact_id, intent, confidence, question_hash,
+                    response_status, response_sent_at, error_code, processing_ms, created_at)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    received_at,
+                    update_id,
+                    message_id,
+                    chat_id,
+                    contact_id,
+                    intent,
+                    confidence,
+                    question_hash(question) if question else None,
+                    response_status,
+                    response_sent_at,
+                    error_code,
+                    processing_ms,
+                    now(),
+                ),
+            )
+            con.commit()
+
+
+class SenteroTelegramAssistant:
+    def __init__(
+        self,
+        mapping: DeviceMappingService,
+        sentero: SenteroService,
+        notification: NotificationService,
+        config: TelegramAssistantConfig | None = None,
+        client: TelegramApiClient | None = None,
+    ) -> None:
+        self.mapping = mapping
+        self.sentero = sentero
+        self.notification = notification
+        self._fixed_config = config
+        self.config = config or config_from_notification_settings(mapping)
+        self.store = TelegramAssistantStore(mapping)
+        self.intent = MailIntentService()
+        self.query_service = MailQueryService(mapping, sentero)
+        self.response = MailResponseService()
+        self.client = client or TelegramApiClient(self.config)
+
+    def _refresh_runtime_config(self) -> None:
+        self.config = self._fixed_config or config_from_notification_settings(self.mapping)
+        self.client.config = self.config
+
+    def enabled(self) -> bool:
+        self._refresh_runtime_config()
+        return self.config.enabled
+
+    def poll_once(self) -> dict[str, Any]:
+        self._refresh_runtime_config()
+        if not self.enabled():
+            return {"processed": 0, "skipped": "disabled"}
+        updates = self.client.get_updates(self.store.next_offset())
+        processed = 0
+        for update in updates:
+            update_id = int(update.get("update_id") or 0)
+            try:
+                self.process_update(update)
+            except Exception:
+                logger.exception("Telegram message processing failed", extra={"component": "telegram_assistant", "update_id": update_id})
+            finally:
+                if update_id:
+                    self.store.mark_update(update_id)
+            processed += 1
+        return {"processed": processed}
+
+    def process_update(self, update: dict[str, Any]) -> dict[str, Any]:
+        started = time.perf_counter()
+        update_id = int(update.get("update_id") or 0)
+        message = update.get("message") if isinstance(update.get("message"), dict) else {}
+        chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+        from_user = message.get("from") if isinstance(message.get("from"), dict) else {}
+        chat_id = str(chat.get("id") or "").strip()
+        message_id = int(message.get("message_id") or 0) or None
+        received_at = now()
+        if not update_id or not chat_id:
+            return {"status": "ignored", "error": "invalid_update"}
+        if self.store.already_processed(update_id):
+            return {"status": "duplicate"}
+        if bool(from_user.get("is_bot")):
+            self._record(update_id, message_id, chat_id, None, None, None, "", "ignored", "bot_message", started, received_at)
+            return {"status": "ignored", "error": "bot_message"}
+        question = sanitize_question(str(message.get("text") or ""))
+        if not question:
+            self._record(update_id, message_id, chat_id, None, None, None, "", "ignored", "empty_message", started, received_at)
+            return {"status": "ignored", "error": "empty_message"}
+        contact_row, auth_error = self.store.find_authorized_contact(chat_id)
+        if not contact_row:
+            self._send(chat_id, "Dieser Telegram-Chat ist nicht für Sentero freigeschaltet.")
+            self._record(update_id, message_id, chat_id, None, None, None, question, "rejected", auth_error, started, received_at)
+            return {"status": "rejected", "error": auth_error}
+        contact = contact_from_row(contact_row)
+        if self.store.rate_limit_exceeded(contact.id, self.config.hourly_limit, self.config.daily_limit):
+            self._send(chat_id, "Das Anfrage-Limit für Telegram-Statusabfragen ist erreicht. Bitte versuchen Sie es später erneut.", contact_row)
+            self._record(update_id, message_id, chat_id, contact.id, None, None, question, "rate_limited", "rate_limit", started, received_at)
+            return {"status": "rate_limited"}
+        intent = self.intent.classify(question)
+        context = self.store.find_thread_context(chat_id, reply_to_message_id(message))
+        if getattr(context, "contact_id", contact.id) not in {None, contact.id}:
+            context = None
+        if ACTION_RE.search(question.lower()):
+            body = self.response.read_only_action_rejected()
+            intent_name = MailIntent.UNKNOWN.value
+        else:
+            query = self.query_service.query(intent.intent, contact, context=context)
+            body = self.response.build(query)
+            intent_name = intent.intent.value
+        try:
+            result = self._send(chat_id, telegram_text(body), contact_row)
+        except Exception as exc:
+            self._record(update_id, message_id, chat_id, contact.id, intent_name, intent.confidence, question, "failed", exc.__class__.__name__, started, received_at)
+            raise
+        self._record(update_id, message_id, chat_id, contact.id, intent_name, intent.confidence, question, "sent", None, started, received_at, response_sent_at=now())
+        self.notification._log(contact.id, "telegram", "green", "telegram_assistant_response", "Sentero Telegram Antwort", None, outgoing_message_id=_provider_message_id(result))
+        return {"status": "sent", "intent": intent_name, "thread_context": bool(context)}
+
+    def _send(self, chat_id: str, text: str, contact: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        recipient = dict(contact or {})
+        recipient["telegram_chat_id"] = chat_id
+        return self.notification.providers["telegram"].send(recipient, "Sentero Antwort", text, {"bot_token": self.config.bot_token})
+
+    def _record(
+        self,
+        update_id: int,
+        message_id: int | None,
+        chat_id: str,
+        contact_id: int | None,
+        intent: str | None,
+        confidence: float | None,
+        question: str,
+        status: str,
+        error: str | None,
+        started: float,
+        received_at: str,
+        response_sent_at: str | None = None,
+    ) -> None:
+        self.store.record_query(
+            received_at=received_at,
+            update_id=update_id,
+            message_id=message_id,
+            chat_id=chat_id,
+            contact_id=contact_id,
+            intent=intent,
+            confidence=confidence,
+            question=question,
+            response_status=status,
+            error_code=error,
+            processing_ms=round((time.perf_counter() - started) * 1000),
+            response_sent_at=response_sent_at,
+        )
+
+
+def config_from_notification_settings(mapping: DeviceMappingService) -> TelegramAssistantConfig:
+    with mapping.connect() as con:
+        row = con.execute("select * from notification_channel_settings where channel = 'telegram'").fetchone()
+    if not row:
+        return TelegramAssistantConfig(enabled=False)
+    config = decode_json(row["config_json"], {})
+    bot_token = str(config.get("bot_token") or "").strip()
+    return TelegramAssistantConfig(
+        enabled=bool(row["enabled"]) and bool(bot_token),
+        bot_token=bot_token,
+        poll_interval_seconds=int_value(config.get("poll_interval_seconds"), 10, minimum=3),
+        timeout_seconds=int_value(config.get("timeout_seconds"), 10, minimum=1),
+        hourly_limit=int_value(config.get("hourly_limit"), 20, minimum=1),
+        daily_limit=int_value(config.get("daily_limit"), 50, minimum=1),
+    )
+
+
+def decode_json(value: Any, fallback: Any) -> Any:
+    try:
+        decoded = json.loads(value or "")
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+    return decoded
+
+
+def int_value(value: Any, fallback: int, minimum: int) -> int:
+    try:
+        return max(int(value), minimum)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def reply_to_message_id(message: dict[str, Any]) -> int | None:
+    reply = message.get("reply_to_message")
+    if not isinstance(reply, dict):
+        return None
+    try:
+        return int(reply.get("message_id") or 0) or None
+    except (TypeError, ValueError):
+        return None
+
+
+def telegram_text(value: str) -> str:
+    return str(value or "").replace("Guten Tag,\n\n", "").replace("\n\nViele Grüße\nSentero", "").strip()[:4000]

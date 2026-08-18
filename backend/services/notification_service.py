@@ -98,7 +98,10 @@ class TelegramNotificationProvider(NotificationProvider):
             timeout=10,
         )
         response.raise_for_status()
-        return None
+        data = response.json()
+        message = data.get("result") if isinstance(data, dict) else None
+        message_id = message.get("message_id") if isinstance(message, dict) else None
+        return {"message_id": f"telegram:{chat_id}:{message_id}"} if message_id is not None else None
 
 
 class WhatsAppNotificationProvider(NotificationProvider):
@@ -108,7 +111,7 @@ class WhatsAppNotificationProvider(NotificationProvider):
         access_token = str(config.get("access_token") or "").strip()
         phone_number_id = str(config.get("phone_number_id") or "").strip()
         recipient = str(contact.get("whatsapp_phone_number") or config.get("test_recipient") or "").strip()
-        api_version = str(config.get("api_version") or "v20.0").strip()
+        api_version = str(config.get("api_version") or "v23.0").strip()
         if not access_token or not phone_number_id or not recipient:
             raise ValueError("whatsapp_not_configured")
         response = requests.post(
@@ -123,7 +126,11 @@ class WhatsAppNotificationProvider(NotificationProvider):
             timeout=10,
         )
         response.raise_for_status()
-        return None
+        data = response.json()
+        messages = data.get("messages") if isinstance(data, dict) else None
+        message = messages[0] if isinstance(messages, list) and messages else None
+        message_id = message.get("id") if isinstance(message, dict) else None
+        return {"message_id": str(message_id)} if message_id else None
 
 
 class NotificationService:
@@ -176,7 +183,7 @@ class NotificationService:
         existing = self._setting(channel).get("config") or {}
         clean_config = self._merge_secret_config(channel, config)
         still_valid = bool(self._setting(channel).get("enabled")) and clean_config == existing
-        enabled_after_save = still_valid and self._is_configured(channel, clean_config)
+        enabled_after_save = (bool(enabled) or still_valid) and self._is_configured(channel, clean_config)
         timestamp = now()
         with self.mapping.connect() as con:
             con.execute(
@@ -707,6 +714,10 @@ class NotificationService:
                 return "SMTP Host ist nicht konfiguriert."
             if detail == "email_recipient_missing":
                 return "Kein Testempfänger gefunden. Bitte Testempfänger oder Vertrauensperson mit E-Mail hinterlegen."
+            if detail == "telegram_not_configured":
+                return "Telegram Bot Token und Chat ID sind nicht vollständig konfiguriert."
+            if detail == "whatsapp_not_configured":
+                return "WhatsApp Access Token, Phone Number ID und Empfänger sind nicht vollständig konfiguriert."
             return detail or "Ungültige E-Mail-Konfiguration."
         if isinstance(exc, smtplib.SMTPAuthenticationError):
             return "SMTP Anmeldung fehlgeschlagen. Bitte Benutzername und Passwort prüfen."
@@ -716,6 +727,13 @@ class NotificationService:
             return "SMTP Server hat die Verbindung getrennt."
         if isinstance(exc, smtplib.SMTPException):
             return f"SMTP Fehler: {exc.__class__.__name__}"
+        if isinstance(exc, requests.HTTPError):
+            status_code = exc.response.status_code if exc.response is not None else ""
+            detail = http_error_detail(exc)
+            suffix = f": {detail}" if detail else ""
+            return f"HTTP Fehler beim Benachrichtigungskanal: {status_code or exc.__class__.__name__}{suffix}"
+        if isinstance(exc, requests.RequestException):
+            return f"Netzwerkfehler beim Benachrichtigungskanal: {exc.__class__.__name__}"
         if isinstance(exc, (TimeoutError, socket.timeout)):
             return "SMTP Verbindung ist abgelaufen."
         if isinstance(exc, OSError):
@@ -791,6 +809,25 @@ def _provider_message_id(result: dict[str, Any] | None) -> str | None:
         return None
     value = str(result.get("message_id") or "").strip()
     return value or None
+
+
+def http_error_detail(exc: requests.HTTPError) -> str:
+    response = exc.response
+    if response is None:
+        return ""
+    try:
+        data = response.json()
+    except ValueError:
+        text = str(getattr(response, "text", "") or "").strip()
+        return text[:200]
+    if not isinstance(data, dict):
+        return ""
+    error = data.get("error")
+    if isinstance(error, dict):
+        message = str(error.get("message") or error.get("error_user_msg") or "").strip()
+        return message[:200]
+    description = str(data.get("description") or data.get("message") or "").strip()
+    return description[:200]
 
 
 def add_mail_assistant_footer(text: str, config: dict[str, Any] | None = None) -> str:
