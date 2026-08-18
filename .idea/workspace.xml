@@ -5,31 +5,8 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="fdb978cf-ab20-4d2b-8e67-e27469e99a2d" name="Changes" comment="email status added">
-      <change beforePath="$PROJECT_DIR$/.env.example" beforeDir="false" afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/agents/sentero/mail/models.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/agents/sentero/mail/models.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/agents/sentero/mail/query_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/agents/sentero/mail/query_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/agents/sentero/mail/response_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/agents/sentero/mail/response_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/agents/sentero/mail/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/agents/sentero/mail/service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/api/routes.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/api/routes.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/main.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/services/device_mapping_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/services/device_mapping_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/services/notification_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/services/notification_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/services/sensor_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/services/sensor_manager.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/services/setup_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/services/setup_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/ARCHITECTURE.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/ARCHITECTURE.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/ARCHITECTURE_GUIDELINES.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/ARCHITECTURE_GUIDELINES.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/ARCHITECTURE_TARGET.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/ARCHITECTURE_TARGET.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/BOX_NETWORK_SETUP.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/BOX_NETWORK_SETUP.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/PRODUCTION_READINESS.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/PRODUCTION_READINESS.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/esp32/SENSOR_ARCHITECTURE.md" beforeDir="false" afterPath="$PROJECT_DIR$/esp32/SENSOR_ARCHITECTURE.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/frontend/src/components/SensorWizard.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/components/SensorWizard.tsx" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/frontend/src/components/SetupWizard.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/components/SetupWizard.tsx" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/frontend/src/pages/SettingsPage.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/pages/SettingsPage.tsx" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/frontend/src/shared/api/client.ts" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/shared/api/client.ts" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/frontend/src/styles/sentero.css" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/styles/sentero.css" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_mail_assistant.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_mail_assistant.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_notifications.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_notifications.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -75,61 +52,61 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.3148389374503737" />
-      <entry key="MS500" value="3.723807375145832" />
-      <entry key="S2" value="10.298072882395154" />
-      <entry key="S5" value="17.53997268094548" />
-      <entry key="S10" value="22.45489547300356" />
-      <entry key="S30" value="27.10590057387483" />
-      <entry key="S60" value="28.811771788241078" />
-      <entry key="M2" value="36.88767826580759" />
-      <entry key="M5" value="100.59933436111795" />
-      <entry key="M10" value="226.02802430984704" />
-      <entry key="M15" value="333.45921813437167" />
-      <entry key="M30" value="542.4095607535249" />
-      <entry key="H1" value="758.4313668343358" />
-      <entry key="H2" value="1054.9403661408692" />
-      <entry key="H4" value="1446.7430167272448" />
-      <entry key="D1" value="2174.44804395296" />
-      <entry key="W1" value="2369.6426514022405" />
+      <entry key="MS100" value="1.0" />
+      <entry key="MS500" value="1.0" />
+      <entry key="S2" value="1.0000000000137717" />
+      <entry key="S5" value="1.000045247606399" />
+      <entry key="S10" value="1.006737624548822" />
+      <entry key="S30" value="1.2968097895594806" />
+      <entry key="S60" value="4.102454001465562" />
+      <entry key="M2" value="19.779125151412742" />
+      <entry key="M5" value="84.71400506276086" />
+      <entry key="M10" value="205.31511491180953" />
+      <entry key="M15" value="322.5105989589596" />
+      <entry key="M30" value="589.5868303848362" />
+      <entry key="H1" value="887.6771618046533" />
+      <entry key="H2" value="1247.439897753167" />
+      <entry key="H4" value="1685.0858432104762" />
+      <entry key="D1" value="2484.180686456478" />
+      <entry key="W1" value="2699.031297309491" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
-      <entry key="MS500" value="0.0" />
-      <entry key="S2" value="0.0" />
-      <entry key="S5" value="0.0" />
-      <entry key="S10" value="0.0" />
-      <entry key="S30" value="2.9669318874439663E-279" />
-      <entry key="S60" value="5.446955009400793E-140" />
-      <entry key="M2" value="2.3338712495338854E-70" />
-      <entry key="M5" value="1.4035592723382965E-28" />
-      <entry key="M10" value="1.184719068951866E-14" />
-      <entry key="M15" value="5.196890735336389E-10" />
-      <entry key="M30" value="2.27966899688005E-5" />
-      <entry key="H1" value="0.004774587937068563" />
-      <entry key="H2" value="0.06909839315836737" />
-      <entry key="H4" value="0.26286573218731046" />
-      <entry key="D1" value="0.8003666715665565" />
-      <entry key="W1" value="0.9686884962005238" />
+      <entry key="MS500" value="8.090933434001282E-107" />
+      <entry key="S2" value="3.003570350658425E-27" />
+      <entry key="S5" value="2.640963790908099E-11" />
+      <entry key="S10" value="6.387425004449969E-6" />
+      <entry key="S30" value="0.03245199789425982" />
+      <entry key="S60" value="0.301681740097876" />
+      <entry key="M2" value="0.9424657404323357" />
+      <entry key="M5" value="1.883463790619962" />
+      <entry key="M10" value="2.3761054982153516" />
+      <entry key="M15" value="2.5679039627444022" />
+      <entry key="M30" value="2.7754460859306027" />
+      <entry key="H1" value="2.889271465883656" />
+      <entry key="H2" value="3.0035989915752563" />
+      <entry key="H4" value="3.2187687429115015" />
+      <entry key="D1" value="3.787680661042572" />
+      <entry key="W1" value="3.966634944478602" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="1.2877801527407298" />
-      <entry key="MS500" value="3.7085262971977633" />
-      <entry key="S2" value="10.287625600704155" />
-      <entry key="S5" value="17.532856181666716" />
-      <entry key="S10" value="22.450336462260967" />
-      <entry key="S30" value="27.104064509793727" />
-      <entry key="S60" value="28.810795333154317" />
-      <entry key="M2" value="36.88705200696708" />
-      <entry key="M5" value="100.5986522572384" />
-      <entry key="M10" value="226.02723664359016" />
-      <entry key="M15" value="333.4584315106698" />
-      <entry key="M30" value="542.4089344713458" />
-      <entry key="H1" value="758.4356793007646" />
-      <entry key="H2" value="1055.0091069379907" />
-      <entry key="H4" value="1447.0055902096728" />
-      <entry key="D1" value="2175.248318718121" />
-      <entry key="W1" value="2370.6113249570644" />
+      <entry key="MS100" value="0.12413656192962948" />
+      <entry key="MS500" value="0.65883997586707" />
+      <entry key="S2" value="0.9009381671332853" />
+      <entry key="S5" value="0.9591728230300863" />
+      <entry key="S10" value="0.9858240825464895" />
+      <entry key="S30" value="1.3168729737308071" />
+      <entry key="S60" value="4.3838803892217975" />
+      <entry key="M2" value="20.695718300518884" />
+      <entry key="M5" value="86.57778281651011" />
+      <entry key="M10" value="207.67865212388784" />
+      <entry key="M15" value="325.06925096876375" />
+      <entry key="M30" value="592.3570087254611" />
+      <entry key="H1" value="890.5635298391953" />
+      <entry key="H2" value="1250.4418816071143" />
+      <entry key="H4" value="1688.3036805652082" />
+      <entry key="D1" value="2487.9681657804636" />
+      <entry key="W1" value="2702.9979015471017" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -245,7 +222,31 @@
       <option name="project" value="LOCAL" />
       <updated>1787062563541</updated>
     </task>
-    <option name="localTasksCounter" value="6" />
+    <task id="LOCAL-00006" summary="email status added">
+      <option name="closed" value="true" />
+      <created>1787086401949</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1787086401949</updated>
+    </task>
+    <task id="LOCAL-00007" summary="email status added">
+      <option name="closed" value="true" />
+      <created>1787086509443</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1787086509443</updated>
+    </task>
+    <task id="LOCAL-00008" summary="email status added">
+      <option name="closed" value="true" />
+      <created>1787086903384</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1787086903384</updated>
+    </task>
+    <option name="localTasksCounter" value="9" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">

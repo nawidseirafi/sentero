@@ -681,18 +681,18 @@ function RoomsStep({ selected, customRooms, sensorPlan, lockedSensorPlan, custom
       <div className="sc-meter-choice-card">
         <div className="sc-meter-choice-head">
           <strong>Haushalt</strong>
-          <small>Strom, Wasser und Gas</small>
+          <small>Strom</small>
         </div>
         <div className="sc-room-sensor-toggles">
           <label className={`${(sensorPlan.home || defaultSensorPlan('home')).electricity ? 'active' : ''}${lockedSensorPlan.home?.electricity ? ' locked' : ''}`}>
             <input type="checkbox" checked={(sensorPlan.home || defaultSensorPlan('home')).electricity} disabled={lockedSensorPlan.home?.electricity} onChange={() => onToggleSensorType('home', 'electricity')} />
             <i aria-hidden="true" /> <span>Stromzähler{lockedSensorPlan.home?.electricity}</span>
           </label>
-          <label className={`${(sensorPlan.home || defaultSensorPlan('home')).water ? 'active' : ''}${lockedSensorPlan.home?.water ? ' locked' : ''}`}>
+          <label style={{ display: 'none' }} className={`${(sensorPlan.home || defaultSensorPlan('home')).water ? 'active' : ''}${lockedSensorPlan.home?.water ? ' locked' : ''}`}>
             <input type="checkbox" checked={(sensorPlan.home || defaultSensorPlan('home')).water} disabled={lockedSensorPlan.home?.water} onChange={() => onToggleSensorType('home', 'water')} />
             <i aria-hidden="true" /> <span>Wasserzähler{lockedSensorPlan.home?.water}</span>
           </label>
-          <label className={`${(sensorPlan.home || defaultSensorPlan('home')).gas ? 'active' : ''}${lockedSensorPlan.home?.gas ? ' locked' : ''}`}>
+          <label style={{ display: 'none' }} className={`${(sensorPlan.home || defaultSensorPlan('home')).gas ? 'active' : ''}${lockedSensorPlan.home?.gas ? ' locked' : ''}`}>
             <input type="checkbox" checked={(sensorPlan.home || defaultSensorPlan('home')).gas} disabled={lockedSensorPlan.home?.gas} onChange={() => onToggleSensorType('home', 'gas')} />
             <i aria-hidden="true" /> <span>Gaszähler{lockedSensorPlan.home?.gas}</span>
           </label>
