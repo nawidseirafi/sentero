@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, Copy, DoorClosed, DoorOpen, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, ShieldCheck, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
-import { api, type BoxNetworkStatus, type MailConfig, type SenteroConsent, type SenteroExportToken, type SenteroMailQuerySettings, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroTransparency } from '@shared/api/client';
+import QRCode from 'qrcode';
+import { api, type BoxNetworkStatus, type MailConfig, type SenteroConsent, type SenteroExportToken, type SenteroMailQuerySettings, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroTelegramBotInfo, type SenteroTransparency, type SenteroTrustedContact } from '@shared/api/client';
 import { UpdatePanel } from '../components/UpdatePanel';
 import { useSenteroAuth } from '../auth/SenteroAuthContext';
 import type { SenteroSettingsTab } from '../routes/routes';
@@ -86,6 +87,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [ledStates, setLedStates] = useState<Record<string, boolean>>({});
   const [ledBusyRole, setLedBusyRole] = useState<string | null>(null);
   const [channels, setChannels] = useState<SenteroNotificationChannel[]>([]);
+  const [telegramBot, setTelegramBot] = useState<SenteroTelegramBotInfo | null>(null);
   const [consents, setConsents] = useState<SenteroConsent[]>([]);
   const [exportTokens, setExportTokens] = useState<SenteroExportToken[]>([]);
   const [newExportToken, setNewExportToken] = useState<{ contactId: number; token: string } | null>(null);
@@ -175,10 +177,14 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         api.senteroEmailQuerySettings(),
         api.senteroEcoTrackerStatus(),
       ]);
+      const nextTelegramBot = nextChannels.channels.some((channel) => channel.channel === 'telegram' && channel.configured)
+        ? await api.senteroTelegramBot().catch(() => null)
+        : null;
       setStatus(nextStatus);
       setSensors(nextSensors.sensor_roles);
       hydrateLedStates(nextSensors.sensor_roles);
       setChannels(nextChannels.channels);
+      setTelegramBot(nextTelegramBot);
       setConsents(nextConsents.consents);
       setExportTokens(nextExportTokens.tokens);
       setTransparency(nextTransparency);
@@ -1148,7 +1154,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                 <label>Beziehung<input value={contactForm.relationship} onChange={(event) => setContactForm((value) => ({ ...value, relationship: event.target.value }))} /></label>
                 <label>AAL-Rolle<select value={contactForm.actor_role} onChange={(event) => setContactForm((value) => ({ ...value, actor_role: actorRoleForContact(event.target.value) }))}>{aalActorRoles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
                 {channelSelected(contactForm.preferred_channels, 'email', availableChannels) && <label>E-Mail<input type="email" value={contactForm.email} onChange={(event) => setContactForm((value) => ({ ...value, email: event.target.value }))} /></label>}
-                {channelSelected(contactForm.preferred_channels, 'telegram', availableChannels) && <label>Telegram Chat ID<input value={contactForm.telegram_chat_id} onChange={(event) => setContactForm((value) => ({ ...value, telegram_chat_id: event.target.value }))} /></label>}
+                {channelSelected(contactForm.preferred_channels, 'telegram', availableChannels) && <label>Telegram Chat ID<input value={contactForm.telegram_chat_id} onChange={(event) => setContactForm((value) => ({ ...value, telegram_chat_id: event.target.value }))} placeholder="Wird per Einladung automatisch gesetzt" /></label>}
                 {channelSelected(contactForm.preferred_channels, 'whatsapp', availableChannels) && <label>WhatsApp Telefonnummer<input value={contactForm.whatsapp_phone_number} onChange={(event) => setContactForm((value) => ({ ...value, whatsapp_phone_number: event.target.value, phone: event.target.value }))} /></label>}
               </div>
               <ChannelChecks value={contactForm.preferred_channels} available={availableChannels} onChange={(preferred_channels) => setContactForm((value) => ({ ...value, preferred_channels }))} />
@@ -1165,7 +1171,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                       <label>Beziehung<input value={editContactForm.relationship} onChange={(event) => setEditContactForm((value) => ({ ...value, relationship: event.target.value }))} /></label>
                       <label>AAL-Rolle<select value={editContactForm.actor_role} onChange={(event) => setEditContactForm((value) => ({ ...value, actor_role: actorRoleForContact(event.target.value) }))}>{aalActorRoles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
                       {channelSelected(editContactForm.preferred_channels, 'email', availableChannels) && <label>E-Mail<input type="email" value={editContactForm.email} onChange={(event) => setEditContactForm((value) => ({ ...value, email: event.target.value }))} /></label>}
-                      {channelSelected(editContactForm.preferred_channels, 'telegram', availableChannels) && <label>Telegram Chat ID<input value={editContactForm.telegram_chat_id} onChange={(event) => setEditContactForm((value) => ({ ...value, telegram_chat_id: event.target.value }))} /></label>}
+                      {channelSelected(editContactForm.preferred_channels, 'telegram', availableChannels) && <label>Telegram Chat ID<input value={editContactForm.telegram_chat_id} onChange={(event) => setEditContactForm((value) => ({ ...value, telegram_chat_id: event.target.value }))} placeholder="Wird per Einladung automatisch gesetzt" /></label>}
                       {channelSelected(editContactForm.preferred_channels, 'whatsapp', availableChannels) && <label>WhatsApp Telefonnummer<input value={editContactForm.whatsapp_phone_number} onChange={(event) => setEditContactForm((value) => ({ ...value, whatsapp_phone_number: event.target.value, phone: event.target.value }))} /></label>}
                     </div>
                     <ChannelChecks value={editContactForm.preferred_channels} available={availableChannels} onChange={(preferred_channels) => setEditContactForm((value) => ({ ...value, preferred_channels }))} />
@@ -1182,6 +1188,21 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                     <small className="sc-contact-role">{aalRoleLabel(contact.actor_role)}</small>
                     <small>{contact.email || 'Keine E-Mail hinterlegt'}</small>
                     <div className="sc-contact-channel-list">{normalizeChannels(contact.preferred_channels).map((channel) => <span key={channel}>{channelLabel(channel)}</span>)}</div>
+                    {normalizeChannels(contact.preferred_channels).includes('telegram') && (
+                      <TelegramPairingCard
+                        contact={contact}
+                        bot={telegramBot}
+                        onCopied={(message) => toast(message)}
+                        onError={(message) => setError(message)}
+                      />
+                    )}
+                    <ContactQueryCard
+                      contact={contact}
+                      query={emailQueries?.contacts.find((item) => item.id === contact.id) || null}
+                      mailEnabled={Boolean(emailQueries?.enabled)}
+                      onToggle={(enabled) => void toggleEmailQueries(contact.id, enabled)}
+                      onPermission={(permission, checked) => void updateEmailQueryPermission(contact.id, permission, checked)}
+                    />
                     <ContactDataSharingControl
                       behaviorConsent={activeBehaviorConsent(contact.id, consents)}
                       revokedBehaviorConsent={latestBehaviorConsent(contact.id, consents)}
@@ -1207,42 +1228,6 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
               </article>
             ))}
           </div>
-          <section className="sc-email-query-settings">
-            <div className="sc-section-title">
-              <div>
-                <h2>E-Mail-Anfragen</h2>
-                <p>Vertraute Personen können per Antwortmail ausschließlich Statusinformationen abfragen.</p>
-              </div>
-            </div>
-            {!emailQueries?.enabled && <p className="sc-muted-note">E-Mail-Antworten sind noch nicht verbunden. Die Freigaben unten sind vorbereitet und werden aktiv, sobald die Mail-Konfiguration eingerichtet ist.</p>}
-            <div className="sc-email-query-list">
-              {(emailQueries?.contacts || []).map((contact) => (
-                <article key={contact.id}>
-                  <header>
-                    <div>
-                      <strong>{contact.name}</strong>
-                      <small>{contact.email || 'Keine E-Mail hinterlegt'}</small>
-                    </div>
-                    <label className="sc-toggle-line">
-                      <input type="checkbox" checked={contact.email_queries_enabled} disabled={!contact.email} onChange={(event) => void toggleEmailQueries(contact.id, event.target.checked)} />
-                      <span>Anfragen erlauben</span>
-                    </label>
-                  </header>
-                  <div className="sc-email-permission-grid">
-                    {emailQueryPermissions.map((permission) => (
-                      <label key={permission.value} className={contact.email_permissions.includes(permission.value) ? 'active' : ''}>
-                        <input type="checkbox" checked={contact.email_permissions.includes(permission.value)} disabled={!contact.email_queries_enabled} onChange={(event) => void updateEmailQueryPermission(contact.id, permission.value, event.target.checked)} />
-                        <span>{permission.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                  <footer>
-                    <small>{contact.email_queries_enabled ? 'Rückfragen an die Sentero-Mailadresse sind erlaubt.' : 'Rückfragen sind für diesen Kontakt deaktiviert.'}</small>
-                  </footer>
-                </article>
-              ))}
-            </div>
-          </section>
         </section>
       )}
 
@@ -1330,7 +1315,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
             <TransparencyMetric label="Einträge" value={String(transparency?.summary.total || 0)} />
             <TransparencyMetric label="Exporte" value={String(transparency?.summary.exports || 0)} />
             <TransparencyMetric label="Benachrichtigungen" value={String(transparency?.summary.notifications || 0)} />
-            <TransparencyMetric label="E-Mail-Anfragen" value={String(transparency?.summary.mail_queries || 0)} />
+            <TransparencyMetric label="Anfragen" value={String(transparency?.summary.mail_queries || 0)} />
             <TransparencyMetric label="Freigaben" value={String(transparency?.summary.consents || 0)} />
           </section>
 
@@ -1992,6 +1977,118 @@ function ChannelChecks({
   );
 }
 
+function TelegramPairingCard({
+  contact,
+  bot,
+  onCopied,
+  onError,
+}: {
+  contact: SenteroTrustedContact;
+  bot: SenteroTelegramBotInfo | null;
+  onCopied: (message: string) => void;
+  onError: (message: string) => void;
+}) {
+  const inviteUrl = telegramInviteUrl(bot, contact);
+  const linked = Boolean(contact.telegram_linked || contact.telegram_chat_id);
+  const [qr, setQr] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    if (!inviteUrl) {
+      setQr('');
+      return;
+    }
+    QRCode.toDataURL(inviteUrl, { margin: 1, width: 164, color: { dark: '#16231f', light: '#ffffff' } })
+      .then((value) => {
+        if (active) setQr(value);
+      })
+      .catch(() => {
+        if (active) setQr('');
+      });
+    return () => {
+      active = false;
+    };
+  }, [inviteUrl]);
+
+  async function copyInvite() {
+    if (!inviteUrl) return;
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      onCopied('Telegram-Link kopiert');
+    } catch {
+      onError('Telegram-Link konnte nicht automatisch kopiert werden.');
+    }
+  }
+
+  return (
+    <section className={`sc-telegram-pairing${linked ? ' linked' : ''}`}>
+      <header>
+        <span><Send size={18} /></span>
+        <div>
+          <strong>{linked ? 'Telegram verbunden' : 'Telegram einladen'}</strong>
+          <small>{bot?.username ? `@${bot.username}` : 'Bot noch nicht erkannt'}</small>
+        </div>
+      </header>
+      {inviteUrl ? (
+        <div className="sc-telegram-invite">
+          {qr && <img src={qr} alt={`Telegram QR-Code für ${contact.name}`} />}
+          <div>
+            <p>{linked ? 'Dieser Chat ist gekoppelt. Der Link kann bei Gerätewechsel erneut genutzt werden.' : 'Link oder QR-Code an diese Person senden. Nach Start wird die Chat-ID automatisch gespeichert.'}</p>
+            <button type="button" onClick={() => void copyInvite()}><Copy size={17} /> Link kopieren</button>
+          </div>
+        </div>
+      ) : (
+        <p>Telegram-Bot zuerst im Bereich Benachrichtigungen verbinden.</p>
+      )}
+    </section>
+  );
+}
+
+function ContactQueryCard({
+  contact,
+  query,
+  mailEnabled,
+  onToggle,
+  onPermission,
+}: {
+  contact: SenteroTrustedContact;
+  query: SenteroMailQuerySettings['contacts'][number] | null;
+  mailEnabled: boolean;
+  onToggle: (enabled: boolean) => void;
+  onPermission: (permission: string, checked: boolean) => void;
+}) {
+  const channels = normalizeChannels(contact.preferred_channels);
+  const hasEmail = Boolean(contact.email);
+  const hasTelegram = channels.includes('telegram') || Boolean(contact.telegram_chat_id);
+  if (!hasEmail && !hasTelegram) return null;
+  const enabled = Boolean(query?.email_queries_enabled);
+  const permissions = query?.email_permissions || [];
+  const channelText = queryChannelText(hasEmail, hasTelegram, Boolean(contact.telegram_chat_id), mailEnabled);
+  return (
+    <section className={`sc-contact-query-card${enabled ? ' active' : ''}`}>
+      <header>
+        <span><MessageCircle size={18} /></span>
+        <div>
+          <strong>Anfragen</strong>
+          <small>{channelText}</small>
+        </div>
+        <label className="sc-contact-query-toggle">
+          <input type="checkbox" checked={enabled} onChange={(event) => onToggle(event.target.checked)} />
+          <span>{enabled ? 'Erlaubt' : 'Aus'}</span>
+        </label>
+      </header>
+      <div className="sc-email-permission-grid compact">
+        {emailQueryPermissions.map((permission) => (
+          <label key={permission.value} className={permissions.includes(permission.value) ? 'active' : ''}>
+            <input type="checkbox" checked={permissions.includes(permission.value)} disabled={!enabled} onChange={(event) => onPermission(permission.value, event.target.checked)} />
+            <span>{permission.label}</span>
+          </label>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function DoorContactStatus({ sensor }: { sensor: SenteroSensorRole }) {
   const status = doorContactStatus(sensor);
   const Icon = status.open ? DoorOpen : DoorClosed;
@@ -2184,7 +2281,7 @@ function emptyContactForm() {
 }
 
 function normalizeChannels(value?: string | string[] | null) {
-  if (Array.isArray(value)) return Array.from(new Set(['email', ...value.filter((item) => ['email', 'telegram', 'whatsapp'].includes(item))]));
+  if (Array.isArray(value)) return Array.from(new Set(value.filter((item) => ['email', 'telegram', 'whatsapp'].includes(item))));
   if (typeof value === 'string') {
     try {
       return normalizeChannels(JSON.parse(value));
@@ -2213,7 +2310,6 @@ function contactPayload(form: ReturnType<typeof emptyContactForm>, available: Re
 function validateContactPayload(payload: ReturnType<typeof contactPayload>) {
   if (payload.preferred_channels.length === 0) return 'Bitte richten Sie zuerst mindestens einen funktionierenden Benachrichtigungskanal ein.';
   if (payload.preferred_channels.includes('email') && !payload.email) return 'Bitte geben Sie eine E-Mail-Adresse ein.';
-  if (payload.preferred_channels.includes('telegram') && !payload.telegram_chat_id) return 'Bitte geben Sie die Telegram Chat ID ein.';
   if (payload.preferred_channels.includes('whatsapp') && !payload.whatsapp_phone_number) return 'Bitte geben Sie die WhatsApp Telefonnummer ein.';
   return '';
 }
@@ -2365,6 +2461,17 @@ function channelSelected(channels: string[], channel: 'email' | 'telegram' | 'wh
   return available[channel] && channels.includes(channel);
 }
 
+function telegramInviteUrl(bot: SenteroTelegramBotInfo | null, contact: SenteroTrustedContact) {
+  const username = bot?.username?.trim();
+  const code = contact.telegram_invite_code?.trim();
+  if (!username || !code) return '';
+  return `https://t.me/${encodeURIComponent(username)}?start=${encodeURIComponent(code)}`;
+}
+
+function queryChannelText(hasEmail: boolean, hasTelegram: boolean, telegramLinked: boolean, mailEnabled: boolean) {
+  return 'Gilt für freigeschaltete Fragekanäle';
+}
+
 function channelLabel(channel: string) {
   if (channel === 'email') return 'E-Mail';
   if (channel === 'telegram') return 'Telegram';
@@ -2385,10 +2492,10 @@ function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp'): ChannelSe
   if (channel === 'telegram') {
     return {
       title: 'Telegram einrichten',
-      text: 'Telegram kann zusätzlich zur E-Mail genutzt werden.',
+      text: 'Telegram kann über persönliche Einladungslinks mit Angehörigen verbunden werden.',
       fields: [
         { key: 'bot_token', label: 'Bot Token', hint: 'Token von BotFather.' },
-        { key: 'default_chat_id', label: 'Chat ID', hint: 'Numerische Chat-ID des Empfängers, nicht der Bot-Name.' },
+        { key: 'default_chat_id', label: 'Test Chat ID', hint: 'Optional für eine direkte Testnachricht.' },
       ],
     };
   }
@@ -2425,14 +2532,14 @@ function channelHelpContent(channel: 'email' | 'telegram' | 'whatsapp') {
   if (channel === 'telegram') {
     return {
       title: 'Telegram einrichten',
-      intro: 'Telegram kann zusätzlich zu E-Mail verwendet werden.',
+      intro: 'Telegram wird über einen eigenen Bot und persönliche Einladungslinks verbunden.',
       sections: [
-        { title: 'Was wird benötigt?', items: ['Bot Token', 'Chat ID'] },
+        { title: 'Was wird benötigt?', items: ['Bot Token von BotFather'] },
         { title: 'Schritt 1', text: ['Öffnen Sie Telegram und suchen Sie nach @BotFather.'] },
         { title: 'Schritt 2', text: ['Erstellen Sie mit BotFather einen neuen Bot. Danach erhalten Sie einen Bot Token.'] },
-        { title: 'Schritt 3', text: ['Senden Sie Ihrem neuen Bot mindestens eine Nachricht.'] },
-        { title: 'Schritt 4', text: ['Ermitteln Sie Ihre Chat ID. Diese kann über die Telegram Bot API oder über einen Telegram-ID-Helfer ermittelt werden.'] },
-        { title: 'Hinweis', text: ['Telegram ist optional. Für die meisten Sentero-Installationen reicht E-Mail aus.'] },
+        { title: 'Schritt 3', text: ['Token in Sentero eintragen und Telegram testen.'] },
+        { title: 'Schritt 4', text: ['Bei jeder vertrauten Person den persönlichen Link oder QR-Code teilen. Die Chat-ID wird nach dem Start automatisch gespeichert.'] },
+        { title: 'Hinweis', text: ['Der Bot Token bleibt geheim. Angehörige erhalten nur den Link oder QR-Code.'] },
       ],
     };
   }

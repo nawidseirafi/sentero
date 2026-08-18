@@ -87,6 +87,18 @@ class EmailNotificationProvider(NotificationProvider):
 class TelegramNotificationProvider(NotificationProvider):
     channel = "telegram"
 
+    def get_me(self, config: dict[str, Any]) -> dict[str, Any]:
+        token = str(config.get("bot_token") or "").strip()
+        if not token:
+            raise ValueError("telegram_not_configured")
+        response = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        result = data.get("result") if isinstance(data, dict) else None
+        if not isinstance(result, dict) or not result.get("username"):
+            raise ValueError("telegram_bot_not_found")
+        return result
+
     def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> dict[str, Any] | None:
         token = str(config.get("bot_token") or "").strip()
         chat_id = str(contact.get("telegram_chat_id") or config.get("default_chat_id") or "").strip()
@@ -178,6 +190,20 @@ class NotificationService:
         by_channel = {row["channel"]: self._public_channel(dict(row)) for row in rows}
         return {"channels": [by_channel.get(channel) or self._empty_channel(channel) for channel in CHANNELS]}
 
+    def telegram_bot_info(self) -> dict[str, Any]:
+        setting = self._setting("telegram")
+        provider = self.providers["telegram"]
+        if not isinstance(provider, TelegramNotificationProvider):
+            raise ValueError("telegram_not_configured")
+        bot = provider.get_me(setting.get("config") or {})
+        username = str(bot.get("username") or "").strip()
+        return {
+            "id": bot.get("id"),
+            "username": username,
+            "first_name": bot.get("first_name"),
+            "invite_base_url": f"https://t.me/{username}" if username else "",
+        }
+
     def save_channel(self, channel: str, enabled: bool, config: dict[str, Any]) -> dict[str, Any]:
         self._validate_channel(channel)
         existing = self._setting(channel).get("config") or {}
@@ -206,10 +232,18 @@ class NotificationService:
             "whatsapp": "Sentero Testnachricht: WhatsApp ist verbunden.",
         }[channel]
         try:
-            result = self.providers[channel].send(contact, title, text, setting.get("config") or {})
+            if channel == "telegram" and not contact.get("telegram_chat_id"):
+                provider = self.providers[channel]
+                if not isinstance(provider, TelegramNotificationProvider):
+                    raise ValueError("telegram_not_configured")
+                bot = provider.get_me(setting.get("config") or {})
+                result = {"message_id": f"telegram:bot:{bot.get('id')}"}
+            else:
+                result = self.providers[channel].send(contact, title, text, setting.get("config") or {})
             self._mark_channel_enabled(channel, True)
             self._log(contact.get("id"), channel, "yellow", "sent", title, None, outgoing_message_id=_provider_message_id(result))
-            return {"ok": True, "message": "Testnachricht gesendet."}
+            message = "Telegram Bot verbunden. Einladungslinks sind verfügbar." if channel == "telegram" and not contact.get("telegram_chat_id") else "Testnachricht gesendet."
+            return {"ok": True, "message": message}
         except Exception as exc:
             logger.exception("Notification test failed", extra={"component": "notification", "channel": channel})
             self._mark_channel_enabled(channel, False)
@@ -565,7 +599,7 @@ class NotificationService:
     def _channels_for_contact(self, contact: dict[str, Any], severity: str) -> list[str]:
         raw_channels = contact.get("preferred_channels")
         preferred = self._decode_json(raw_channels) if raw_channels else (["email"] if contact.get("email") else [])
-        channels = [channel for channel in preferred if channel in CHANNELS]
+        channels = [channel for channel in preferred if channel in CHANNELS and self._contact_channel_ready(contact, channel)]
         if not channels:
             return []
         if "email" not in channels and severity in {"yellow", "red"} and contact.get("email"):
@@ -573,6 +607,15 @@ class NotificationService:
         if severity == "yellow":
             return ["email"] if "email" in channels else []
         return channels
+
+    def _contact_channel_ready(self, contact: dict[str, Any], channel: str) -> bool:
+        if channel == "email":
+            return bool(contact.get("email"))
+        if channel == "telegram":
+            return bool(contact.get("telegram_chat_id"))
+        if channel == "whatsapp":
+            return bool(contact.get("whatsapp_phone_number"))
+        return False
 
     def _daily_summary_enabled(self) -> bool:
         with self.mapping.connect() as con:
@@ -664,7 +707,7 @@ class NotificationService:
         if channel == "email":
             return bool(config.get("smtp_host") and config.get("smtp_user") and config.get("smtp_password"))
         if channel == "telegram":
-            return bool(config.get("bot_token") and config.get("default_chat_id"))
+            return bool(config.get("bot_token"))
         if channel == "whatsapp":
             return bool(config.get("access_token") and config.get("phone_number_id"))
         return False
@@ -715,7 +758,9 @@ class NotificationService:
             if detail == "email_recipient_missing":
                 return "Kein Testempfänger gefunden. Bitte Testempfänger oder Vertrauensperson mit E-Mail hinterlegen."
             if detail == "telegram_not_configured":
-                return "Telegram Bot Token und Chat ID sind nicht vollständig konfiguriert."
+                return "Telegram Bot Token ist nicht konfiguriert."
+            if detail == "telegram_bot_not_found":
+                return "Telegram Bot konnte nicht erkannt werden. Bitte Token prüfen."
             if detail == "whatsapp_not_configured":
                 return "WhatsApp Access Token, Phone Number ID und Empfänger sind nicht vollständig konfiguriert."
             return detail or "Ungültige E-Mail-Konfiguration."

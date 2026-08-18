@@ -92,6 +92,9 @@ export type SenteroTrustedContact = {
   email?: string | null;
   phone?: string | null;
   telegram_chat_id?: string | null;
+  telegram_invite_code?: string | null;
+  telegram_linked_at?: string | null;
+  telegram_linked?: boolean;
   whatsapp_phone_number?: string | null;
   preferred_channels?: string | string[] | null;
   notification_enabled?: number | boolean;
@@ -141,6 +144,13 @@ export type SenteroNotificationChannel = {
   configured: boolean;
   config: Record<string, unknown>;
   updated_at?: string | null;
+};
+
+export type SenteroTelegramBotInfo = {
+  id?: number | string | null;
+  username: string;
+  first_name?: string | null;
+  invite_base_url: string;
 };
 
 export type MailConfig = {
@@ -650,6 +660,7 @@ export const api = {
   saveSenteroNotifications: (payload: { anomalies: boolean; critical: boolean; daily_summary: boolean }) =>
     request<SenteroSetupStatus>('/api/sentero/setup/notifications', { method: 'POST', body: JSON.stringify(payload) }),
   senteroNotificationChannels: () => request<{ channels: SenteroNotificationChannel[] }>('/api/sentero/notifications/channels'),
+  senteroTelegramBot: () => request<SenteroTelegramBotInfo>('/api/sentero/notifications/telegram/bot'),
   senteroConsents: () => request<{ consents: SenteroConsent[] }>('/api/sentero/consents'),
   grantSenteroConsent: (payload: { contact_id: number; recipient_type?: string; purpose?: string; data_classes?: string[]; valid_until?: string | null }) =>
     request<{ consents: SenteroConsent[] }>('/api/sentero/consents', { method: 'POST', body: JSON.stringify(payload) }),

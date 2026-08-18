@@ -756,6 +756,14 @@ def notification_channels():
     return get_services().notification.channels()
 
 
+@router.get("/notifications/telegram/bot", tags=[TAG_NOTIFICATIONS])
+def notification_telegram_bot():
+    try:
+        return get_services().notification.telegram_bot_info()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/notifications/channels/email", tags=[TAG_NOTIFICATIONS])
 def notification_channel_email(payload: ChannelSettingsPayload):
     return get_services().notification.save_channel("email", True, payload.config)

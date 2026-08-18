@@ -50,6 +50,13 @@ class TelegramApiClient:
         result = data.get("result") if isinstance(data, dict) else None
         return result if isinstance(result, list) else []
 
+    def get_me(self) -> dict[str, Any]:
+        response = requests.get(self._url("getMe"), timeout=self.config.timeout_seconds + 5)
+        response.raise_for_status()
+        data = response.json()
+        result = data.get("result") if isinstance(data, dict) else None
+        return result if isinstance(result, dict) else {}
+
     def _url(self, method: str) -> str:
         return f"https://api.telegram.org/bot{self.config.bot_token}/{method}"
 
@@ -120,10 +127,41 @@ class TelegramAssistantStore:
         if not row:
             return None, "unknown_chat"
         data = dict(row)
+        if not bool(data.get("email_queries_enabled")):
+            return None, "queries_disabled"
         channels = decode_json(data.get("preferred_channels"), [])
         if "telegram" not in channels:
             return None, "telegram_not_enabled_for_contact"
         return data, None
+
+    def link_invite(self, invite_code: str, chat_id: str) -> dict[str, Any] | None:
+        code = str(invite_code or "").strip()
+        if not code:
+            return None
+        with self.mapping.connect() as con:
+            row = con.execute(
+                "select * from trusted_contacts where telegram_invite_code = ? and active = 1",
+                (code,),
+            ).fetchone()
+            if not row:
+                return None
+            data = dict(row)
+            channels = decode_json(data.get("preferred_channels"), [])
+            if "telegram" not in channels:
+                channels.append("telegram")
+            con.execute(
+                """update trusted_contacts
+                   set telegram_chat_id = ?, telegram_linked_at = ?, preferred_channels = ?,
+                       notification_enabled = 1, updated_at = ?
+                   where id = ?""",
+                (chat_id, now(), json.dumps(channels), now(), data["id"]),
+            )
+            con.commit()
+        data["telegram_chat_id"] = chat_id
+        data["telegram_linked_at"] = now()
+        data["preferred_channels"] = json.dumps(channels)
+        data["notification_enabled"] = 1
+        return data
 
     def find_thread_context(self, chat_id: str, reply_to_message_id: int | None) -> MailThreadContext | None:
         if reply_to_message_id is None:
@@ -280,6 +318,17 @@ class SenteroTelegramAssistant:
         if not question:
             self._record(update_id, message_id, chat_id, None, None, None, "", "ignored", "empty_message", started, received_at)
             return {"status": "ignored", "error": "empty_message"}
+        invite_code = telegram_start_code(question)
+        if invite_code:
+            linked = self.store.link_invite(invite_code, chat_id)
+            if not linked:
+                self._send(chat_id, "Dieser Sentero-Einladungslink ist ungültig oder nicht mehr aktiv.")
+                self._record(update_id, message_id, chat_id, None, None, None, question, "rejected", "invalid_invite", started, received_at)
+                return {"status": "rejected", "error": "invalid_invite"}
+            self._send(chat_id, "Telegram ist jetzt mit Sentero verbunden. Sie erhalten wichtige Hinweise hier in diesem Chat.", linked)
+            self._record(update_id, message_id, chat_id, int(linked["id"]), MailIntent.UNKNOWN.value, None, question, "sent", None, started, received_at, response_sent_at=now())
+            self.notification._log(linked["id"], "telegram", "green", "telegram_pairing", "Sentero Telegram verbunden", None)
+            return {"status": "linked", "contact_id": int(linked["id"])}
         contact_row, auth_error = self.store.find_authorized_contact(chat_id)
         if not contact_row:
             self._send(chat_id, "Dieser Telegram-Chat ist nicht für Sentero freigeschaltet.")
@@ -386,6 +435,13 @@ def reply_to_message_id(message: dict[str, Any]) -> int | None:
         return int(reply.get("message_id") or 0) or None
     except (TypeError, ValueError):
         return None
+
+
+def telegram_start_code(text: str) -> str | None:
+    parts = str(text or "").strip().split(maxsplit=1)
+    if not parts or parts[0].lower() != "/start":
+        return None
+    return parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
 
 
 def telegram_text(value: str) -> str:

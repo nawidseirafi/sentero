@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from datetime import datetime
 from typing import Any
 from backend.logging_config import get_logger
@@ -22,6 +23,9 @@ class SenteroSetupService:
         with self.mapping.connect() as con:
             row = con.execute('select * from setup_state where id = 1').fetchone()
             profile = con.execute('select * from sentero_profile where id = 1').fetchone()
+            for contact in con.execute('select id from trusted_contacts where active = 1').fetchall():
+                ensure_contact_telegram_invite_code(con, int(contact['id']))
+            con.commit()
             contacts = con.execute('select * from trusted_contacts where active = 1 order by id').fetchall()
             notifications = con.execute('select * from notification_preferences where id = 1').fetchone()
         profile_data = dict(profile) if profile else None
@@ -129,6 +133,7 @@ class SenteroSetupService:
             existing = con.execute('select id from trusted_contacts where lower(email) = ? and active = 1', (email,)).fetchone() if email else None
             contact_id: int
             if existing:
+                ensure_contact_telegram_invite_code(con, int(existing['id']))
                 con.execute(
                     '''update trusted_contacts
                        set name = ?, relationship = ?, email = ?, phone = ?, telegram_chat_id = ?,
@@ -140,13 +145,14 @@ class SenteroSetupService:
                 con.execute("update trusted_contacts set actor_role = ? where id = ?", (actor_role, existing['id']))
                 contact_id = int(existing['id'])
             else:
+                invite_code = new_telegram_invite_code(con)
                 cur = con.execute(
                     '''insert into trusted_contacts
                        (name, relationship, email, phone, telegram_chat_id, whatsapp_phone_number, preferred_channels,
                         notification_enabled, primary_contact, actor_role, email_queries_enabled,
-                        email_permissions, active, created_at, updated_at)
-                       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)''',
-                    (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, actor_role, email_queries_enabled, json.dumps(email_permissions), timestamp, timestamp),
+                        email_permissions, telegram_invite_code, active, created_at, updated_at)
+                       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)''',
+                    (name, payload.get('relationship'), email, phone, telegram_chat_id, whatsapp_phone_number, json.dumps(channels), int(bool(payload.get('notification_enabled', True))), primary_contact, actor_role, email_queries_enabled, json.dumps(email_permissions), invite_code, timestamp, timestamp),
                 )
                 contact_id = int(cur.lastrowid)
             con.commit()
@@ -278,8 +284,6 @@ def normalize_channels(value: Any, email: str = '') -> list[str]:
 def validate_contact_channels(channels: list[str], email: str, telegram_chat_id: str, whatsapp_phone_number: str) -> None:
     if 'email' in channels and not email:
         raise ValueError('email is required')
-    if 'telegram' in channels and not telegram_chat_id:
-        raise ValueError('telegram chat id is required')
     if 'whatsapp' in channels and not whatsapp_phone_number:
         raise ValueError('whatsapp phone number is required')
 
@@ -306,5 +310,24 @@ def public_contact(contact: dict[str, Any]) -> dict[str, Any]:
     data["email_queries_enabled"] = bool(data.get("email_queries_enabled"))
     data["notification_enabled"] = bool(data.get("notification_enabled"))
     data["primary_contact"] = bool(data.get("primary_contact"))
+    data["telegram_linked"] = bool(data.get("telegram_chat_id"))
     data["email_permissions"] = normalize_email_permissions(data.get("email_permissions"))
     return data
+
+
+def ensure_contact_telegram_invite_code(con: Any, contact_id: int) -> str:
+    row = con.execute("select telegram_invite_code from trusted_contacts where id = ?", (contact_id,)).fetchone()
+    code = str(row["telegram_invite_code"] or "").strip() if row else ""
+    if code:
+        return code
+    code = new_telegram_invite_code(con)
+    con.execute("update trusted_contacts set telegram_invite_code = ?, updated_at = ? where id = ?", (code, now(), contact_id))
+    return code
+
+
+def new_telegram_invite_code(con: Any) -> str:
+    while True:
+        code = secrets.token_urlsafe(12).replace("-", "").replace("_", "")[:16]
+        exists = con.execute("select id from trusted_contacts where telegram_invite_code = ?", (code,)).fetchone()
+        if not exists:
+            return code

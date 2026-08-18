@@ -257,6 +257,22 @@ class NotificationSystemWarningTests(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(row["outgoing_message_id"], "telegram:12345:42")
 
+    def test_telegram_channel_can_be_enabled_with_bot_token_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            service = NotificationService(mapping)
+            service.save_channel("telegram", False, {"bot_token": "telegram-secret"})
+
+            with patch("backend.services.notification_service.requests.get") as get:
+                get.return_value = FakeJsonResponse({"ok": True, "result": {"id": 99, "username": "sentero_test_bot"}})
+                result = service.test("telegram")
+
+            self.assertTrue(result["ok"])
+            self.assertIn("Einladungslinks", result["message"])
+            channel = next(item for item in service.channels()["channels"] if item["channel"] == "telegram")
+            self.assertTrue(channel["enabled"])
+            self.assertTrue(channel["configured"])
+
     def test_whatsapp_channel_can_be_saved_tested_and_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())

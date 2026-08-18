@@ -30,7 +30,7 @@ class TelegramAssistantTests(unittest.TestCase):
     def test_authorized_telegram_contact_receives_answer(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
-            contact_id = insert_contact(mapping)
+            contact_id = insert_contact(mapping, queries_enabled=True)
             notification = NotificationService(mapping)
             provider = RecordingTelegramProvider()
             notification.providers["telegram"] = provider
@@ -55,15 +55,61 @@ class TelegramAssistantTests(unittest.TestCase):
             self.assertIsNotNone(query)
             self.assertIsNotNone(log)
 
+    def test_start_invite_links_contact_to_chat_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            contact_id = insert_contact(mapping, chat_id="", queries_enabled=True)
+            notification = NotificationService(mapping)
+            provider = RecordingTelegramProvider()
+            notification.providers["telegram"] = provider
+            assistant = SenteroTelegramAssistant(
+                mapping,
+                SenteroService(mapping),
+                notification,
+                config=TelegramAssistantConfig(enabled=True, bot_token="secret"),
+            )
+            with mapping.connect() as con:
+                code = con.execute("select telegram_invite_code from trusted_contacts where id = ?", (contact_id,)).fetchone()["telegram_invite_code"]
 
-def insert_contact(mapping: DeviceMappingService) -> int:
+            result = assistant.process_update(update(f"/start {code}"))
+
+            self.assertEqual(result["status"], "linked")
+            with mapping.connect() as con:
+                row = con.execute("select telegram_chat_id, preferred_channels from trusted_contacts where id = ?", (contact_id,)).fetchone()
+            self.assertEqual(row["telegram_chat_id"], "6516768203")
+            self.assertIn("telegram", json.loads(row["preferred_channels"]))
+            self.assertIn("Telegram ist jetzt mit Sentero verbunden", provider.sent[-1]["text"])
+
+
+    def test_telegram_contact_needs_queries_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            insert_contact(mapping, queries_enabled=False)
+            notification = NotificationService(mapping)
+            provider = RecordingTelegramProvider()
+            notification.providers["telegram"] = provider
+            assistant = SenteroTelegramAssistant(
+                mapping,
+                SenteroService(mapping),
+                notification,
+                config=TelegramAssistantConfig(enabled=True, bot_token="secret"),
+            )
+
+            result = assistant.process_update(update("Ist alles in Ordnung?"))
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertEqual(result["error"], "queries_disabled")
+
+
+def insert_contact(mapping: DeviceMappingService, chat_id: str = "6516768203", queries_enabled: bool = False) -> int:
     timestamp = now()
     with mapping.connect() as con:
         cur = con.execute(
             """insert into trusted_contacts
                (name, relationship, email, active, created_at, updated_at, preferred_channels,
-                notification_enabled, primary_contact, actor_role, telegram_chat_id, email_permissions)
-               values (?, ?, ?, 1, ?, ?, ?, 1, 1, 'relative', ?, ?)""",
+                notification_enabled, primary_contact, actor_role, telegram_chat_id, telegram_invite_code,
+                email_queries_enabled, email_permissions)
+               values (?, ?, ?, 1, ?, ?, ?, 1, 1, 'relative', ?, ?, ?, ?)""",
             (
                 "Nawid",
                 "owner",
@@ -71,7 +117,9 @@ def insert_contact(mapping: DeviceMappingService) -> int:
                 timestamp,
                 timestamp,
                 json.dumps(["email", "telegram"]),
-                "6516768203",
+                chat_id,
+                "invitecode123",
+                int(queries_enabled),
                 json.dumps(["STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT", "TECHNICAL_HEALTH"]),
             ),
         )

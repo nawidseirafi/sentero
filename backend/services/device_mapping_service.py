@@ -1433,6 +1433,8 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     for statement in [
         "alter table trusted_contacts add column phone text",
         "alter table trusted_contacts add column telegram_chat_id text",
+        "alter table trusted_contacts add column telegram_invite_code text",
+        "alter table trusted_contacts add column telegram_linked_at text",
         "alter table trusted_contacts add column whatsapp_phone_number text",
         "alter table trusted_contacts add column preferred_channels text not null default '[\"email\"]'",
         "alter table trusted_contacts add column notification_enabled integer not null default 1",
