@@ -107,6 +107,22 @@ def draw_check(draw: ImageDraw.ImageDraw, center: tuple[int, int], radius: int) 
     draw.line((x - 9, y, x - 2, y + 8, x + 12, y - 11), fill=(255, 255, 255), width=5, joint="curve")
 
 
+def draw_ai_disclosure(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int]) -> None:
+    x1, y1, x2, y2 = box
+    label = "KI-generiertes Bildmaterial · Fiktive Personen"
+    label_font = font(21, "bold")
+    x = x1 + 34
+    y = y1 + 8
+    draw.rounded_rectangle(
+        box,
+        radius=18,
+        fill=(244, 248, 245, 242),
+        outline=(221, 232, 224),
+        width=1,
+    )
+    draw.text((x, y), label, font=label_font, fill=(101, 112, 105))
+
+
 def gf_tables() -> tuple[list[int], list[int]]:
     exp = [0] * 512
     log = [0] * 256
@@ -374,6 +390,9 @@ def main() -> None:
         draw.rounded_rectangle((x, y, x + tw + 78, y + 50), radius=25, fill=(255, 255, 255, 226))
         draw.ellipse((x + 20, y + 18, x + 34, y + 32), fill=SAGE)
         draw.text((x + 48, y + 10), label, font=label_font, fill=(36, 49, 41))
+
+    disclosure_y = hero_y + hero_h + 12
+    draw_ai_disclosure(draw, (margin, disclosure_y, W - margin, disclosure_y + 46))
 
     status_w, status_h = 540, 126
     status_x = (W - status_w) // 2
