@@ -80,6 +80,29 @@ class TelegramAssistantTests(unittest.TestCase):
             self.assertIn("telegram", json.loads(row["preferred_channels"]))
             self.assertIn("Telegram ist jetzt mit Sentero verbunden", provider.sent[-1]["text"])
 
+    def test_start_invite_moves_chat_id_from_other_contact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            first_id = insert_contact(mapping, chat_id="6516768203", invite_code="firstinvite", queries_enabled=True)
+            second_id = insert_contact(mapping, name="Steve", email="steve@example.test", chat_id="", invite_code="secondinvite", queries_enabled=True)
+            notification = NotificationService(mapping)
+            provider = RecordingTelegramProvider()
+            notification.providers["telegram"] = provider
+            assistant = SenteroTelegramAssistant(
+                mapping,
+                SenteroService(mapping),
+                notification,
+                config=TelegramAssistantConfig(enabled=True, bot_token="secret"),
+            )
+
+            result = assistant.process_update(update("/start secondinvite"))
+
+            self.assertEqual(result["status"], "linked")
+            with mapping.connect() as con:
+                first = con.execute("select telegram_chat_id from trusted_contacts where id = ?", (first_id,)).fetchone()
+                second = con.execute("select telegram_chat_id from trusted_contacts where id = ?", (second_id,)).fetchone()
+            self.assertIsNone(first["telegram_chat_id"])
+            self.assertEqual(second["telegram_chat_id"], "6516768203")
 
     def test_telegram_contact_needs_queries_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -101,7 +124,14 @@ class TelegramAssistantTests(unittest.TestCase):
             self.assertEqual(result["error"], "queries_disabled")
 
 
-def insert_contact(mapping: DeviceMappingService, chat_id: str = "6516768203", queries_enabled: bool = False) -> int:
+def insert_contact(
+    mapping: DeviceMappingService,
+    name: str = "Nawid",
+    email: str = "nawid@example.test",
+    chat_id: str = "6516768203",
+    invite_code: str = "invitecode123",
+    queries_enabled: bool = False,
+) -> int:
     timestamp = now()
     with mapping.connect() as con:
         cur = con.execute(
@@ -111,14 +141,14 @@ def insert_contact(mapping: DeviceMappingService, chat_id: str = "6516768203", q
                 email_queries_enabled, email_permissions)
                values (?, ?, ?, 1, ?, ?, ?, 1, 1, 'relative', ?, ?, ?, ?)""",
             (
-                "Nawid",
+                name,
                 "owner",
-                "nawid@example.test",
+                email,
                 timestamp,
                 timestamp,
                 json.dumps(["email", "telegram"]),
                 chat_id,
-                "invitecode123",
+                invite_code,
                 int(queries_enabled),
                 json.dumps(["STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT", "TECHNICAL_HEALTH"]),
             ),

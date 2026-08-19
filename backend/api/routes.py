@@ -144,7 +144,7 @@ class ContactPayload(BaseModel):
     preferred_channels: list[str] | None = None
     notification_enabled: bool = True
     primary_contact: bool = False
-    email_queries_enabled: bool = False
+    email_queries_enabled: bool | None = None
     email_permissions: list[str] | None = None
 
 

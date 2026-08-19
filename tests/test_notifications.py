@@ -18,6 +18,7 @@ from backend.services.device_mapping_service import DeviceMappingService, ensure
 from backend.services.aal_roles import can_access_data_classes
 from backend.services.consent_service import ConsentService
 from backend.services.notification_service import NotificationService, mail_assistant_reply_to, sentero_mail_from
+from backend.services.setup_service import SenteroSetupService
 
 
 class DummyHomeAssistant:
@@ -272,6 +273,26 @@ class NotificationSystemWarningTests(unittest.TestCase):
             channel = next(item for item in service.channels()["channels"] if item["channel"] == "telegram")
             self.assertTrue(channel["enabled"])
             self.assertTrue(channel["configured"])
+
+    def test_contact_update_preserves_query_settings_when_not_in_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            setup = SenteroSetupService(mapping)
+            setup.contact({"name": "Nawid", "email": "nawid@example.test", "preferred_channels": ["email"]})
+            with mapping.connect() as con:
+                contact_id = int(con.execute("select id from trusted_contacts").fetchone()["id"])
+                con.execute(
+                    "update trusted_contacts set email_queries_enabled = 1, email_permissions = ? where id = ?",
+                    (json.dumps(["STATUS", "ACTIVITY"]), contact_id),
+                )
+                con.commit()
+
+            setup.update_contact(contact_id, {"name": "Nawid", "email": "nawid@example.test", "preferred_channels": ["email"]})
+
+            with mapping.connect() as con:
+                row = con.execute("select email_queries_enabled, email_permissions from trusted_contacts where id = ?", (contact_id,)).fetchone()
+            self.assertEqual(row["email_queries_enabled"], 1)
+            self.assertEqual(json.loads(row["email_permissions"]), ["STATUS", "ACTIVITY"])
 
     def test_whatsapp_channel_can_be_saved_tested_and_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

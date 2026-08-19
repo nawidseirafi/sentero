@@ -151,6 +151,12 @@ class TelegramAssistantStore:
                 channels.append("telegram")
             con.execute(
                 """update trusted_contacts
+                   set telegram_chat_id = null, telegram_linked_at = null, updated_at = ?
+                   where active = 1 and telegram_chat_id = ? and id != ?""",
+                (now(), chat_id, data["id"]),
+            )
+            con.execute(
+                """update trusted_contacts
                    set telegram_chat_id = ?, telegram_linked_at = ?, preferred_channels = ?,
                        notification_enabled = 1, updated_at = ?
                    where id = ?""",

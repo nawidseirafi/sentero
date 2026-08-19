@@ -1175,6 +1175,19 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                       {channelSelected(editContactForm.preferred_channels, 'whatsapp', availableChannels) && <label>WhatsApp Telefonnummer<input value={editContactForm.whatsapp_phone_number} onChange={(event) => setEditContactForm((value) => ({ ...value, whatsapp_phone_number: event.target.value, phone: event.target.value }))} /></label>}
                     </div>
                     <ChannelChecks value={editContactForm.preferred_channels} available={availableChannels} onChange={(preferred_channels) => setEditContactForm((value) => ({ ...value, preferred_channels }))} />
+                    <ContactQueryCard
+                      contact={{
+                        ...contact,
+                        email: editContactForm.email,
+                        preferred_channels: editContactForm.preferred_channels,
+                        telegram_chat_id: editContactForm.telegram_chat_id,
+                      }}
+                      query={emailQueries?.contacts.find((item) => item.id === contact.id) || null}
+                      mailEnabled={Boolean(emailQueries?.enabled)}
+                      editable
+                      onToggle={(enabled) => void toggleEmailQueries(contact.id, enabled)}
+                      onPermission={(permission, checked) => void updateEmailQueryPermission(contact.id, permission, checked)}
+                    />
                     <footer>
                       <button type="button" onClick={() => void saveEditedContact()}><Save size={18} /> Speichern</button>
                       <button type="button" onClick={() => setEditingContactId(null)}><X size={18} /> Abbrechen</button>
@@ -1182,12 +1195,19 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                   </>
                 ) : (
                   <>
-                    <span className="sc-avatar">{contact.name[0]}</span>
-                    <h3>{contact.name}</h3>
-                    <p>{contact.relationship || 'Kontakt'}</p>
-                    <small className="sc-contact-role">{aalRoleLabel(contact.actor_role)}</small>
-                    <small>{contact.email || 'Keine E-Mail hinterlegt'}</small>
-                    <div className="sc-contact-channel-list">{normalizeChannels(contact.preferred_channels).map((channel) => <span key={channel}>{channelLabel(channel)}</span>)}</div>
+                    <header className="sc-contact-card-head">
+                      <span className="sc-avatar">{contact.name[0]}</span>
+                      <div className="sc-contact-card-identity">
+                        <div>
+                          <h3>
+                            {contact.name}
+                            <span className="relationship"> · {contact.relationship || 'Kontakt'}</span>
+                          </h3>
+                        </div>
+                        <small>{contact.email || 'Keine E-Mail hinterlegt'}</small>
+                        <small className="sc-contact-role">{aalRoleLabel(contact.actor_role)}</small>
+                      </div>
+                    </header>
                     {normalizeChannels(contact.preferred_channels).includes('telegram') && (
                       <TelegramPairingCard
                         contact={contact}
@@ -1196,13 +1216,6 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                         onError={(message) => setError(message)}
                       />
                     )}
-                    <ContactQueryCard
-                      contact={contact}
-                      query={emailQueries?.contacts.find((item) => item.id === contact.id) || null}
-                      mailEnabled={Boolean(emailQueries?.enabled)}
-                      onToggle={(enabled) => void toggleEmailQueries(contact.id, enabled)}
-                      onPermission={(permission, checked) => void updateEmailQueryPermission(contact.id, permission, checked)}
-                    />
                     <ContactDataSharingControl
                       behaviorConsent={activeBehaviorConsent(contact.id, consents)}
                       revokedBehaviorConsent={latestBehaviorConsent(contact.id, consents)}
@@ -1218,6 +1231,14 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                       onCreateToken={() => void createExportToken(contact.id)}
                       onRevokeToken={(tokenId) => void revokeExportToken(tokenId)}
                       onOpenPackage={() => setExportDialogContactId(contact.id)}
+                      queryControl={(
+                        <ContactQueryCard
+                          contact={contact}
+                          query={emailQueries?.contacts.find((item) => item.id === contact.id) || null}
+                          mailEnabled={Boolean(emailQueries?.enabled)}
+                          onToggle={(enabled) => void toggleEmailQueries(contact.id, enabled)}
+                        />
+                      )}
                     />
                     <footer>
                       <button type="button" onClick={() => startEditContact(contact)}><Pencil size={18} /> </button>
@@ -1494,6 +1515,7 @@ function ContactDataSharingControl({
   onCreateToken,
   onRevokeToken,
   onOpenPackage,
+  queryControl,
 }: {
   behaviorConsent?: SenteroConsent | null;
   revokedBehaviorConsent?: SenteroConsent | null;
@@ -1509,6 +1531,7 @@ function ContactDataSharingControl({
   onCreateToken: () => void;
   onRevokeToken: (tokenId: number) => void;
   onOpenPackage: () => void;
+  queryControl?: React.ReactNode;
 }) {
   const currentBehavior = behaviorConsent || revokedBehaviorConsent || null;
   const currentExport = exportConsent || revokedExportConsent || null;
@@ -1546,6 +1569,7 @@ function ContactDataSharingControl({
           </div>
         )}
       />
+      {queryControl}
     </section>
   );
 }
@@ -2048,14 +2072,16 @@ function ContactQueryCard({
   contact,
   query,
   mailEnabled,
+  editable = false,
   onToggle,
   onPermission,
 }: {
   contact: SenteroTrustedContact;
   query: SenteroMailQuerySettings['contacts'][number] | null;
   mailEnabled: boolean;
-  onToggle: (enabled: boolean) => void;
-  onPermission: (permission: string, checked: boolean) => void;
+  editable?: boolean;
+  onToggle?: (enabled: boolean) => void;
+  onPermission?: (permission: string, checked: boolean) => void;
 }) {
   const channels = normalizeChannels(contact.preferred_channels);
   const hasEmail = Boolean(contact.email);
@@ -2063,24 +2089,39 @@ function ContactQueryCard({
   if (!hasEmail && !hasTelegram) return null;
   const enabled = Boolean(query?.email_queries_enabled);
   const permissions = query?.email_permissions || [];
+  const visiblePermissions = editable ? emailQueryPermissions : emailQueryPermissions.filter((permission) => permissions.includes(permission.value));
   const channelText = queryChannelText(hasEmail, hasTelegram, Boolean(contact.telegram_chat_id), mailEnabled);
+  const summary = queryPermissionSummary(permissions);
+  if (!editable) {
+    return (
+      <SharingRow
+        active={enabled}
+        icon={enabled ? <MessageCircle size={16} /> : <ShieldAlert size={16} />}
+        title="Anfragen"
+        detail={enabled ? `${summary.countLabel}: ${summary.names}` : `Aus · ${channelText}`}
+        action={onToggle
+          ? <button type="button" className={`sc-binary-toggle ${enabled ? 'active' : ''}`} onClick={() => onToggle(!enabled)} aria-pressed={enabled}>{enabled ? 'Ein' : 'Aus'}</button>
+          : <span className={`sc-binary-status ${enabled ? 'active' : ''}`}>{enabled ? 'Ein' : 'Aus'}</span>}
+      />
+    );
+  }
   return (
-    <section className={`sc-contact-query-card${enabled ? ' active' : ''}`}>
+    <section className={`sc-contact-query-card sc-contact-query-card-edit${enabled ? ' active' : ''}`}>
       <header>
         <span><MessageCircle size={18} /></span>
-        <div>
-          <strong>Anfragen</strong>
-          <small>{channelText}</small>
-        </div>
-        <label className="sc-contact-query-toggle">
-          <input type="checkbox" checked={enabled} onChange={(event) => onToggle(event.target.checked)} />
-          <span>{enabled ? 'Erlaubt' : 'Aus'}</span>
-        </label>
+          <div>
+            <strong>Anfragen</strong>
+            <small>{channelText}</small>
+          </div>
+        <button type="button" className={`sc-binary-toggle ${enabled ? 'active' : ''}`} onClick={() => onToggle?.(!enabled)} aria-pressed={enabled}>
+          {enabled ? 'Ein' : 'Aus'}
+        </button>
       </header>
       <div className="sc-email-permission-grid compact">
-        {emailQueryPermissions.map((permission) => (
+        {enabled && visiblePermissions.length === 0 && <span className="sc-query-empty">Keine Bereiche freigegeben</span>}
+        {(enabled || editable) && visiblePermissions.map((permission) => (
           <label key={permission.value} className={permissions.includes(permission.value) ? 'active' : ''}>
-            <input type="checkbox" checked={permissions.includes(permission.value)} disabled={!enabled} onChange={(event) => onPermission(permission.value, event.target.checked)} />
+            {editable && <input type="checkbox" checked={permissions.includes(permission.value)} disabled={!enabled} onChange={(event) => onPermission?.(permission.value, event.target.checked)} />}
             <span>{permission.label}</span>
           </label>
         ))}
@@ -2469,7 +2510,19 @@ function telegramInviteUrl(bot: SenteroTelegramBotInfo | null, contact: SenteroT
 }
 
 function queryChannelText(hasEmail: boolean, hasTelegram: boolean, telegramLinked: boolean, mailEnabled: boolean) {
+  if (hasEmail && hasTelegram) return telegramLinked ? 'Antwortmail und Telegram' : 'Antwortmail, Telegram nach Kopplung';
+  if (hasTelegram) return telegramLinked ? 'Telegram-Fragen' : 'Telegram nach Kopplung';
+  if (hasEmail) return mailEnabled ? 'Antwortmail an Sentero' : 'E-Mail-Verbindung ausstehend';
   return 'Gilt für freigeschaltete Fragekanäle';
+}
+
+function queryPermissionSummary(permissions: string[]) {
+  const labels = emailQueryPermissions.filter((permission) => permissions.includes(permission.value)).map((permission) => permission.label);
+  if (!labels.length) return { countLabel: 'Keine Bereiche', names: 'Keine Bereiche freigegeben' };
+  return {
+    countLabel: labels.length === 1 ? '1 Bereich' : `${labels.length} Bereiche`,
+    names: labels.join(', '),
+  };
 }
 
 function channelLabel(channel: string) {

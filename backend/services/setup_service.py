@@ -117,8 +117,8 @@ class SenteroSetupService:
         whatsapp_phone_number = normalize_text(payload.get('whatsapp_phone_number') or payload.get('phone'))
         actor_role = normalize_aal_role(payload.get('actor_role'), default=DEFAULT_CONTACT_AAL_ROLE)
         primary_contact = int(bool(payload.get('primary_contact', False)))
-        email_queries_enabled = int(bool(payload.get('email_queries_enabled', False)))
-        email_permissions = normalize_email_permissions(payload.get('email_permissions'))
+        requested_email_queries_enabled = payload.get('email_queries_enabled')
+        requested_email_permissions = payload.get('email_permissions')
         validate_contact_channels(channels, email, telegram_chat_id, whatsapp_phone_number)
         if not name:
             raise ValueError('name is required')
@@ -130,10 +130,12 @@ class SenteroSetupService:
             existing_primary = con.execute('select id from trusted_contacts where active = 1 and primary_contact = 1').fetchone()
             if not existing_primary:
                 primary_contact = 1
-            existing = con.execute('select id from trusted_contacts where lower(email) = ? and active = 1', (email,)).fetchone() if email else None
+            existing = con.execute('select * from trusted_contacts where lower(email) = ? and active = 1', (email,)).fetchone() if email else None
             contact_id: int
             if existing:
                 ensure_contact_telegram_invite_code(con, int(existing['id']))
+                email_queries_enabled = int(bool(requested_email_queries_enabled)) if requested_email_queries_enabled is not None else int(bool(existing["email_queries_enabled"]))
+                email_permissions = normalize_email_permissions(requested_email_permissions) if requested_email_permissions is not None else normalize_email_permissions(existing["email_permissions"])
                 con.execute(
                     '''update trusted_contacts
                        set name = ?, relationship = ?, email = ?, phone = ?, telegram_chat_id = ?,
@@ -146,6 +148,8 @@ class SenteroSetupService:
                 contact_id = int(existing['id'])
             else:
                 invite_code = new_telegram_invite_code(con)
+                email_queries_enabled = int(bool(requested_email_queries_enabled))
+                email_permissions = normalize_email_permissions(requested_email_permissions)
                 cur = con.execute(
                     '''insert into trusted_contacts
                        (name, relationship, email, phone, telegram_chat_id, whatsapp_phone_number, preferred_channels,
@@ -170,17 +174,19 @@ class SenteroSetupService:
         whatsapp_phone_number = normalize_text(payload.get('whatsapp_phone_number') or payload.get('phone'))
         actor_role = normalize_aal_role(payload.get('actor_role'), default=DEFAULT_CONTACT_AAL_ROLE)
         primary_contact = int(bool(payload.get('primary_contact', False)))
-        email_queries_enabled = int(bool(payload.get('email_queries_enabled', False)))
-        email_permissions = normalize_email_permissions(payload.get('email_permissions'))
+        requested_email_queries_enabled = payload.get('email_queries_enabled')
+        requested_email_permissions = payload.get('email_permissions')
         validate_contact_channels(channels, email, telegram_chat_id, whatsapp_phone_number)
         if not name:
             raise ValueError('name is required')
         if 'email' in channels and not is_valid_email(email):
             raise ValueError('valid email is required')
         with self.mapping.connect() as con:
-            row = con.execute('select id from trusted_contacts where id = ? and active = 1', (contact_id,)).fetchone()
+            row = con.execute('select * from trusted_contacts where id = ? and active = 1', (contact_id,)).fetchone()
             if not row:
                 raise ValueError('contact not found')
+            email_queries_enabled = int(bool(requested_email_queries_enabled)) if requested_email_queries_enabled is not None else int(bool(row["email_queries_enabled"]))
+            email_permissions = normalize_email_permissions(requested_email_permissions) if requested_email_permissions is not None else normalize_email_permissions(row["email_permissions"])
             if email:
                 duplicate = con.execute('select id from trusted_contacts where lower(email) = ? and active = 1 and id != ?', (email, contact_id)).fetchone()
                 if duplicate:
