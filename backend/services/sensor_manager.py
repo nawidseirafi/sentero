@@ -66,6 +66,16 @@ class SensorManager:
                 "insert or ignore into ecotracker_settings (id, created_at, updated_at) values (1, ?, ?)",
                 (self.mapping_now(), self.mapping_now()),
             )
+            con.execute(
+                """update sensor_roles
+                   set entity_id = 'ecotracker.power',
+                       device_class = 'power',
+                       updated_at = ?
+                   where active = 1
+                     and source = 'ecotracker'
+                     and entity_id = 'ecotracker.energyCounterIn'""",
+                (self.mapping_now(),),
+            )
             con.commit()
 
     def status(self) -> dict[str, Any]:
@@ -124,7 +134,7 @@ class SensorManager:
             con.execute(
                 """insert into sensor_roles
                    (role, room, entity_id, device_id, friendly_name, device_class, domain, source, confidence, active, created_at, updated_at)
-                   values ('home_energy', 'home', 'ecotracker.energyCounterIn', ?, 'everHome EcoTracker IR', 'energy', 'sensor', 'ecotracker', 100, 1, ?, ?)
+                   values ('home_energy', 'home', 'ecotracker.power', ?, 'everHome EcoTracker IR', 'power', 'sensor', 'ecotracker', 100, 1, ?, ?)
                    on conflict(role) where active = 1 do update set
                      room = excluded.room,
                      entity_id = excluded.entity_id,

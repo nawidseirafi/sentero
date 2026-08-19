@@ -49,8 +49,8 @@ def ecotracker_snapshot_rows(host: str, payload: dict[str, Any], timestamp: str 
     occurred_at = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
     rows: list[dict[str, Any]] = []
     for key, device_class, unit, label, state in [
-        ("power", "power", "W", "EcoTracker Leistung", payload.get("power")),
-        ("powerAvg", "power", "W", "EcoTracker Leistung Durchschnitt", payload.get("powerAvg")),
+        ("power", "power", "W", "EcoTracker Verbrauch", payload.get("power")),
+        ("powerAvg", "power", "W", "EcoTracker Verbrauch Durchschnitt", payload.get("powerAvg")),
         ("powerPhase1", "power", "W", "EcoTracker Leistung Phase 1", payload.get("powerPhase1")),
         ("powerPhase2", "power", "W", "EcoTracker Leistung Phase 2", payload.get("powerPhase2")),
         ("powerPhase3", "power", "W", "EcoTracker Leistung Phase 3", payload.get("powerPhase3")),

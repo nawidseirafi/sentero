@@ -55,8 +55,28 @@ class EcoTrackerServiceTests(unittest.TestCase):
             self.assertEqual(len(roles), 1)
             self.assertEqual(roles[0]["role"], "home_energy")
             self.assertEqual(roles[0]["source"], "ecotracker")
-            self.assertEqual(roles[0]["state"], 145000)
+            self.assertEqual(roles[0]["state"], 125)
+            self.assertEqual(roles[0]["device_class"], "power")
             self.assertTrue(roles[0]["reachable"])
+
+    def test_existing_ecotracker_energy_role_is_migrated_to_power(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            timestamp = "2026-08-19T10:00:00+00:00"
+            with mapping.connect() as con:
+                con.execute(
+                    """insert into sensor_roles
+                       (role, room, entity_id, device_id, friendly_name, device_class, domain, source, confidence, active, created_at, updated_at)
+                       values ('home_energy', 'home', 'ecotracker.energyCounterIn', 'ecotracker:192.168.1.42', 'everHome EcoTracker IR', 'energy', 'sensor', 'ecotracker', 100, 1, ?, ?)""",
+                    (timestamp, timestamp),
+                )
+                con.commit()
+
+            SensorManager(mapping)
+            roles = mapping.roles(dev=True, include_state=False)
+
+            self.assertEqual(roles[0]["entity_id"], "ecotracker.power")
+            self.assertEqual(roles[0]["device_class"], "power")
 
     def test_snapshot_contains_ecotracker_rows_without_home_assistant(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -74,6 +94,7 @@ class EcoTrackerServiceTests(unittest.TestCase):
 
             by_entity = {row["entity_id"]: row for row in rows}
             self.assertEqual(by_entity["ecotracker.power"]["state"], 125)
+            self.assertEqual(by_entity["ecotracker.power"]["friendly_name"], "EcoTracker Verbrauch")
             self.assertEqual(by_entity["ecotracker.energyCounterIn"]["device_class"], "energy")
 
 
