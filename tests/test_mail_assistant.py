@@ -210,10 +210,27 @@ class MailAssistantTest(unittest.TestCase):
 
         text = self.notification.sent[-1]["text"]
         self.assertEqual(result["intent"], MailIntent.POWER_USAGE.value)
-        self.assertIn("aktuelle Leistung: 328 W", text)
-        self.assertIn("Stromzählerstand: 1235,7 kWh", text)
+        self.assertIn("Der aktuelle Stromverbrauch liegt bei 328 W", text)
+        self.assertIn("Der Stromzählerstand liegt bei 1235,7 kWh", text)
         self.assertIn("Heutiger Stromverbrauch seit dem ersten Tageswert: 1,7 kWh", text)
         self.assertNotIn("nicht genügend aktuelle Sensordaten", text)
+
+    def test_power_usage_prefers_ecotracker_total_import_over_tariff_counter(self) -> None:
+        with self.mapping.connect() as con:
+            con.execute("delete from sentero_sensor_events")
+            con.commit()
+        self._meter(minutes_ago=2, role="energy_consumption", state="40646666.8", device_class="energy", entity_id="ecotracker.energyCounterIn")
+        self._meter(minutes_ago=2, role="energy_consumption", state="40646447.6", device_class="energy", entity_id="ecotracker.energyCounterInT1")
+        self._meter(minutes_ago=2, role="energy_consumption", state="219.2", device_class="energy", entity_id="ecotracker.energyCounterInT2")
+        self._meter(minutes_ago=2, role="power_usage", state="361", device_class="power", entity_id="ecotracker.power")
+
+        result = self.assistant.process_message(self._mail("aktueller Stromverbrauch?", message_id="<ecotracker-power@example.test>"))
+
+        text = self.notification.sent[-1]["text"]
+        self.assertEqual(result["intent"], MailIntent.POWER_USAGE.value)
+        self.assertIn("Der aktuelle Stromverbrauch liegt bei 361 W", text)
+        self.assertIn("Der Stromzählerstand liegt bei 40646,7 kWh", text)
+        self.assertNotIn("219,2 kWh", text)
 
     def test_contact_status_intent_uses_latest_door_states(self) -> None:
         with self.mapping.connect() as con:
@@ -541,14 +558,14 @@ diese Frage konnte ich noch nicht sicher einordnen. Sie können mich zum Beispie
             )
             con.commit()
 
-    def _meter(self, *, minutes_ago: int, role: str, state: str, device_class: str) -> None:
+    def _meter(self, *, minutes_ago: int, role: str, state: str, device_class: str, entity_id: str | None = None) -> None:
         event_time = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
         with self.mapping.connect() as con:
             con.execute(
                 """insert into sentero_sensor_events
                    (event_time, role, room, entity_id, state, device_class, source, data_class, aggregation_level, created_at)
                    values (?, ?, 'home', ?, ?, ?, 'test', 'utility', 'raw', ?)""",
-                (event_time, role, f"sensor.{role}", state, device_class, now()),
+                (event_time, role, entity_id or f"sensor.{role}", state, device_class, now()),
             )
             con.commit()
 

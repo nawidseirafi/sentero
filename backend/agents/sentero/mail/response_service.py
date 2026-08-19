@@ -144,8 +144,12 @@ class MailResponseService:
             value = reading.get("value")
             if value is None:
                 continue
-            unit = "W" if reading.get("kind") == "power_usage" else "kWh"
-            lines.append(f"{reading.get('label') or 'Messwert'}: {_decimal_label(value)} {unit}.")
+            if reading.get("kind") == "power_usage":
+                lines.append(f"Der aktuelle Stromverbrauch liegt bei {_decimal_label(value)} W.")
+            elif reading.get("kind") == "energy_consumption":
+                lines.append(f"Der Stromzählerstand liegt bei {_decimal_label(value)} kWh.")
+            else:
+                lines.append(f"{reading.get('label') or 'Messwert'}: {_decimal_label(value)}.")
             lines.append(_freshness_sentence(reading.get("freshness")))
         energy_delta = deltas.get("energy_consumption")
         if energy_delta is not None:

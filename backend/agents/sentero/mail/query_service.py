@@ -136,16 +136,16 @@ class MailQueryService:
             return QueryResult(intent=MailIntent.POWER_USAGE, status="no_data", data_available=False)
         today = datetime.now(timezone.utc).date()
         deltas: dict[str, float | None] = {}
-        by_type: dict[str, list[dict[str, Any]]] = {}
-        for event in events:
-            kind = self._meter_kind(event)
-            if not kind:
+        for reading in readings:
+            if reading.get("kind") != "energy_consumption":
                 continue
-            parsed = self._parse_time(event.get("event_time"))
-            if parsed and parsed.date() == today:
-                by_type.setdefault(kind, []).append(event)
-        for kind, items in by_type.items():
-            deltas[kind] = self._meter_delta(items)
+            entity_id = reading.get("entity_id")
+            entity_events = []
+            for event in events:
+                parsed = self._parse_time(event.get("event_time"))
+                if parsed and parsed.date() == today and event.get("entity_id") == entity_id:
+                    entity_events.append(event)
+            deltas["energy_consumption"] = self._meter_delta(entity_events)
         return QueryResult(intent=MailIntent.POWER_USAGE, status="ok", facts={"readings": readings, "today_deltas": deltas})
 
     def _contact_status(self) -> QueryResult:
@@ -371,14 +371,22 @@ class MailQueryService:
             parsed = self._parse_time(event.get("event_time"))
             current = latest.get(kind)
             current_time = self._parse_time(current.get("event_time")) if current else None
-            if parsed and (not current_time or parsed >= current_time):
+            current_priority = int(current.get("priority") or 0) if current else -1
+            priority = self._meter_priority(event, kind)
+            if parsed and (
+                not current_time
+                or parsed > current_time
+                or (parsed == current_time and priority >= current_priority)
+            ):
                 latest[kind] = {
                     "kind": kind,
-                    "value": _number(event.get("state")),
+                    "value": self._meter_value(event, kind),
+                    "entity_id": event.get("entity_id"),
                     "event_time": event.get("event_time"),
                     "freshness": self._freshness(event.get("event_time")),
                     "room_label": self._room_label(event.get("room")),
                     "label": self._meter_label(kind),
+                    "priority": priority,
                 }
         return [latest[key] for key in ["power_usage", "energy_consumption"] if key in latest]
 
@@ -386,6 +394,8 @@ class MailQueryService:
         role = str(event.get("role") or "").lower()
         device_class = str(event.get("device_class") or "").lower()
         text = f"{role} {event.get('entity_id') or ''}".lower()
+        if "counterout" in text or "einspeis" in text:
+            return None
         if role in POWER_ROLES:
             return role
         if device_class == "power" or "power" in text or "leistung" in text or "watt" in text:
@@ -394,11 +404,36 @@ class MailQueryService:
             return "energy_consumption"
         return None
 
+    def _meter_priority(self, event: dict[str, Any], kind: str) -> int:
+        text = f"{event.get('entity_id') or ''} {event.get('role') or ''}".lower()
+        if kind == "power_usage":
+            if "avg" in text or "durchschnitt" in text:
+                return 10
+            if text.endswith("power") or "leistung" in text:
+                return 30
+            return 20
+        if kind == "energy_consumption":
+            if "counterint1" in text or "counterint2" in text:
+                return 10
+            if "netzbezug" in text or text.endswith("counterin") or "energycounterin " in text:
+                return 30
+            return 20
+        return 0
+
+    def _meter_value(self, event: dict[str, Any], kind: str) -> float | None:
+        value = _number(event.get("state"))
+        if value is None or kind != "energy_consumption":
+            return value
+        entity_id = str(event.get("entity_id") or "").lower()
+        if entity_id.startswith("ecotracker.") and value >= 100000:
+            return round(value / 1000, 1)
+        return value
+
     def _meter_delta(self, events: list[dict[str, Any]]) -> float | None:
         values = []
         for event in events:
             parsed = self._parse_time(event.get("event_time"))
-            value = _number(event.get("state"))
+            value = self._meter_value(event, "energy_consumption")
             if parsed and value is not None:
                 values.append((parsed, value))
         if len(values) < 2:
