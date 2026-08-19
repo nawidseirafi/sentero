@@ -9,6 +9,7 @@ from typing import Any
 
 import requests
 
+from backend.agents.sentero.mail.conversation_service import ConversationService
 from backend.agents.sentero.mail.intent_service import ACTION_RE, MailIntentService
 from backend.agents.sentero.mail.models import MailIntent, MailThreadContext
 from backend.agents.sentero.mail.query_service import MailQueryService
@@ -266,6 +267,7 @@ class SenteroTelegramAssistant:
         notification: NotificationService,
         config: TelegramAssistantConfig | None = None,
         client: TelegramApiClient | None = None,
+        conversation: ConversationService | None = None,
     ) -> None:
         self.mapping = mapping
         self.sentero = sentero
@@ -276,6 +278,7 @@ class SenteroTelegramAssistant:
         self.intent = MailIntentService()
         self.query_service = MailQueryService(mapping, sentero)
         self.response = MailResponseService()
+        self.conversation = conversation or ConversationService()
         self.client = client or TelegramApiClient(self.config)
 
     def _refresh_runtime_config(self) -> None:
@@ -345,25 +348,27 @@ class SenteroTelegramAssistant:
             self._send(chat_id, "Das Anfrage-Limit für Telegram-Statusabfragen ist erreicht. Bitte versuchen Sie es später erneut.", contact_row)
             self._record(update_id, message_id, chat_id, contact.id, None, None, question, "rate_limited", "rate_limit", started, received_at)
             return {"status": "rate_limited"}
-        intent = self.intent.classify(question)
+        routed = self.conversation.classify(question, self.intent)
         context = self.store.find_thread_context(chat_id, reply_to_message_id(message))
         if getattr(context, "contact_id", contact.id) not in {None, contact.id}:
             context = None
-        if ACTION_RE.search(question.lower()):
+        if routed.is_action_request or ACTION_RE.search(question.lower()):
             body = self.response.read_only_action_rejected()
             intent_name = MailIntent.UNKNOWN.value
+            confidence = routed.confidence
         else:
-            query = self.query_service.query(intent.intent, contact, context=context)
-            body = self.response.build(query)
-            intent_name = intent.intent.value
+            query = self.query_service.query(routed.intent, contact, context=context)
+            body = self.conversation.build_response(query, self.response)
+            intent_name = routed.intent.value
+            confidence = routed.confidence
         try:
             result = self._send(chat_id, telegram_text(body), contact_row)
         except Exception as exc:
-            self._record(update_id, message_id, chat_id, contact.id, intent_name, intent.confidence, question, "failed", exc.__class__.__name__, started, received_at)
+            self._record(update_id, message_id, chat_id, contact.id, intent_name, confidence, question, "failed", exc.__class__.__name__, started, received_at)
             raise
-        self._record(update_id, message_id, chat_id, contact.id, intent_name, intent.confidence, question, "sent", None, started, received_at, response_sent_at=now())
+        self._record(update_id, message_id, chat_id, contact.id, intent_name, confidence, question, "sent", None, started, received_at, response_sent_at=now())
         self.notification._log(contact.id, "telegram", "green", "telegram_assistant_response", "Sentero Telegram Antwort", None, outgoing_message_id=_provider_message_id(result))
-        return {"status": "sent", "intent": intent_name, "thread_context": bool(context)}
+        return {"status": "sent", "intent": intent_name, "intent_source": routed.source, "thread_context": bool(context)}
 
     def _send(self, chat_id: str, text: str, contact: dict[str, Any] | None = None) -> dict[str, Any] | None:
         recipient = dict(contact or {})

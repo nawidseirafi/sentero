@@ -10,6 +10,8 @@ from backend.services.service import SenteroService
 
 ACTIVITY_CLASSES = {"presence", "motion", "occupancy"}
 ENV_CLASSES = {"temperature", "humidity"}
+POWER_ROLES = {"energy_consumption", "power_usage"}
+CONTACT_CLASSES = {"contact", "door", "window", "opening"}
 
 
 class MailQueryService:
@@ -28,6 +30,10 @@ class MailQueryService:
             return self._with_context(QueryResult(intent=intent, status="ok"), context)
         if intent == MailIntent.STATUS_SUMMARY:
             return self._with_context(self._status_summary(contact), context)
+        if intent == MailIntent.POWER_USAGE:
+            return self._with_context(self._power_usage(), context)
+        if intent == MailIntent.CONTACT_STATUS:
+            return self._with_context(self._contact_status(), context)
         if intent == MailIntent.CURRENT_ACTIVITY:
             return self._with_context(self._current_activity(), context)
         if intent == MailIntent.LAST_ACTIVITY:
@@ -113,6 +119,72 @@ class MailQueryService:
             return QueryResult(intent=MailIntent.ENVIRONMENT, status="no_data", data_available=False)
         return QueryResult(intent=MailIntent.ENVIRONMENT, status="ok", facts={"environment": env})
 
+    def _power_usage(self) -> QueryResult:
+        with self.mapping.connect() as con:
+            rows = con.execute(
+                """select * from sentero_sensor_events
+                   where role in ('energy_consumption', 'power_usage')
+                      or device_class in ('energy', 'power')
+                      or lower(coalesce(role, '') || ' ' || coalesce(entity_id, '')) like '%strom%'
+                      or lower(coalesce(role, '') || ' ' || coalesce(entity_id, '')) like '%energy%'
+                      or lower(coalesce(role, '') || ' ' || coalesce(entity_id, '')) like '%power%'
+                   order by event_time asc, id asc"""
+            ).fetchall()
+        events = [dict(row) for row in rows if _number(row["state"]) is not None]
+        readings = self._latest_meter_readings(events)
+        if not readings:
+            return QueryResult(intent=MailIntent.POWER_USAGE, status="no_data", data_available=False)
+        today = datetime.now(timezone.utc).date()
+        deltas: dict[str, float | None] = {}
+        by_type: dict[str, list[dict[str, Any]]] = {}
+        for event in events:
+            kind = self._meter_kind(event)
+            if not kind:
+                continue
+            parsed = self._parse_time(event.get("event_time"))
+            if parsed and parsed.date() == today:
+                by_type.setdefault(kind, []).append(event)
+        for kind, items in by_type.items():
+            deltas[kind] = self._meter_delta(items)
+        return QueryResult(intent=MailIntent.POWER_USAGE, status="ok", facts={"readings": readings, "today_deltas": deltas})
+
+    def _contact_status(self) -> QueryResult:
+        with self.mapping.connect() as con:
+            rows = con.execute(
+                """select * from sentero_sensor_events
+                   where device_class in ('contact', 'door', 'window', 'opening')
+                      or lower(coalesce(role, '') || ' ' || coalesce(entity_id, '')) like '%door%'
+                      or lower(coalesce(role, '') || ' ' || coalesce(entity_id, '')) like '%tuer%'
+                      or lower(coalesce(role, '') || ' ' || coalesce(entity_id, '')) like '%tür%'
+                      or lower(coalesce(role, '') || ' ' || coalesce(entity_id, '')) like '%fenster%'
+                      or lower(coalesce(role, '') || ' ' || coalesce(entity_id, '')) like '%contact%'
+                   order by event_time asc, id asc"""
+            ).fetchall()
+        latest_by_contact: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            event = dict(row)
+            if not self._is_contact_event(event):
+                continue
+            key = str(event.get("entity_id") or event.get("role") or event.get("id"))
+            current = latest_by_contact.get(key)
+            current_time = self._parse_time(current.get("event_time")) if current else None
+            event_time = self._parse_time(event.get("event_time"))
+            if event_time and (not current_time or event_time >= current_time):
+                event["room_label"] = self._room_label(event.get("room"))
+                event["contact_state"] = self._contact_state(event.get("state"))
+                event["freshness"] = self._freshness(event.get("event_time"))
+                latest_by_contact[key] = event
+        contacts = sorted(latest_by_contact.values(), key=lambda item: str(item.get("role") or item.get("entity_id") or ""))
+        if not contacts:
+            return QueryResult(intent=MailIntent.CONTACT_STATUS, status="no_data", data_available=False)
+        open_contacts = [item for item in contacts if item.get("contact_state") == "open"]
+        unknown_contacts = [item for item in contacts if item.get("contact_state") == "unknown"]
+        return QueryResult(
+            intent=MailIntent.CONTACT_STATUS,
+            status="ok",
+            facts={"contacts": contacts, "open_contacts": open_contacts, "unknown_contacts": unknown_contacts},
+        )
+
     def _night_summary(self) -> QueryResult:
         now_dt = datetime.now(timezone.utc)
         start = datetime.combine(now_dt.date(), time(22, 0), tzinfo=timezone.utc) - timedelta(days=1)
@@ -190,7 +262,17 @@ class MailQueryService:
 
     def _latest_activity_event(self) -> dict[str, Any] | None:
         with self.mapping.connect() as con:
-            rows = con.execute("select * from sentero_sensor_events order by event_time desc, id desc limit 50").fetchall()
+            rows = con.execute(
+                """select *
+                   from sentero_sensor_events
+                   where (device_class in ('presence', 'motion', 'occupancy')
+                          or role like '%presence%'
+                          or role like '%motion%'
+                          or role like '%occupancy%')
+                     and lower(coalesce(state, '')) not in ('off', 'false', '0', 'clear', 'none', 'unknown', 'unavailable')
+                   order by event_time desc, id desc
+                   limit 1"""
+            ).fetchall()
         for row in rows:
             event = dict(row)
             if self._is_activity_event(event):
@@ -279,6 +361,72 @@ class MailQueryService:
             result[f"{key}_at"] = event.get("event_time")
             result[f"{key}_freshness"] = self._freshness(event.get("event_time"))
         return result or None
+
+    def _latest_meter_readings(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        latest: dict[str, dict[str, Any]] = {}
+        for event in events:
+            kind = self._meter_kind(event)
+            if not kind:
+                continue
+            parsed = self._parse_time(event.get("event_time"))
+            current = latest.get(kind)
+            current_time = self._parse_time(current.get("event_time")) if current else None
+            if parsed and (not current_time or parsed >= current_time):
+                latest[kind] = {
+                    "kind": kind,
+                    "value": _number(event.get("state")),
+                    "event_time": event.get("event_time"),
+                    "freshness": self._freshness(event.get("event_time")),
+                    "room_label": self._room_label(event.get("room")),
+                    "label": self._meter_label(kind),
+                }
+        return [latest[key] for key in ["power_usage", "energy_consumption"] if key in latest]
+
+    def _meter_kind(self, event: dict[str, Any]) -> str | None:
+        role = str(event.get("role") or "").lower()
+        device_class = str(event.get("device_class") or "").lower()
+        text = f"{role} {event.get('entity_id') or ''}".lower()
+        if role in POWER_ROLES:
+            return role
+        if device_class == "power" or "power" in text or "leistung" in text or "watt" in text:
+            return "power_usage"
+        if device_class == "energy" or "energy" in text or "strom" in text or "kwh" in text:
+            return "energy_consumption"
+        return None
+
+    def _meter_delta(self, events: list[dict[str, Any]]) -> float | None:
+        values = []
+        for event in events:
+            parsed = self._parse_time(event.get("event_time"))
+            value = _number(event.get("state"))
+            if parsed and value is not None:
+                values.append((parsed, value))
+        if len(values) < 2:
+            return None
+        values.sort(key=lambda item: item[0])
+        delta = values[-1][1] - values[0][1]
+        return round(delta, 1) if delta >= 0 else None
+
+    def _meter_label(self, kind: str) -> str:
+        if kind == "power_usage":
+            return "aktuelle Leistung"
+        if kind == "energy_consumption":
+            return "Stromzählerstand"
+        return kind
+
+    def _is_contact_event(self, event: dict[str, Any]) -> bool:
+        role = str(event.get("role") or "").lower()
+        device_class = str(event.get("device_class") or "").lower()
+        text = f"{role} {event.get('entity_id') or ''}".lower()
+        return device_class in CONTACT_CLASSES or any(term in text for term in ["door", "tuer", "tür", "fenster", "contact"])
+
+    def _contact_state(self, state: Any) -> str:
+        value = str(state or "").strip().lower()
+        if value in {"on", "open", "true", "1", "opened"}:
+            return "open"
+        if value in {"off", "closed", "false", "0", "zu"}:
+            return "closed"
+        return "unknown"
 
     def _is_activity_event(self, event: dict[str, Any]) -> bool:
         device_class = str(event.get("device_class") or "").lower()

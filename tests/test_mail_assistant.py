@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from backend.agents.sentero.mail.conversation_service import ConversationService
 from backend.agents.sentero.mail.intent_service import MailIntentService
 from backend.agents.sentero.mail.models import InboundMail, MailAssistantConfig, MailIntent
 from backend.agents.sentero.mail.query_service import MailQueryService
@@ -29,8 +30,25 @@ class FakeNotification:
         return {"message_id": f"<sentero-response-{len(self.sent)}@sentero.local>"}
 
 
+class FakeLLM:
+    provider = "test"
+
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = responses
+        self.prompts: list[dict[str, Any]] = []
+
+    def generate(self, prompt: str, **kwargs: Any) -> Any:
+        self.prompts.append({"prompt": prompt, "kwargs": kwargs})
+        return type("LLMResponse", (), {"text": self.responses.pop(0)})()
+
+    def complete(self, prompt: str, **kwargs: Any) -> Any:
+        return self.generate(prompt, **kwargs)
+
+
 class MailAssistantTest(unittest.TestCase):
     def setUp(self) -> None:
+        self.env_patch = patch.dict("os.environ", {"SENTERO_LLM_PROVIDER": "rule_based"})
+        self.env_patch.start()
         self.tmp = tempfile.TemporaryDirectory()
         self.mapping = DeviceMappingService(database_path=Path(self.tmp.name) / "sentero.db")
         self.sentero = SenteroService(self.mapping)
@@ -51,6 +69,7 @@ class MailAssistantTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+        self.env_patch.stop()
 
     def test_allowed_contact_status_intent_receives_answer(self) -> None:
         result = self.assistant.process_message(self._mail("Ist alles in Ordnung?"))
@@ -127,6 +146,42 @@ class MailAssistantTest(unittest.TestCase):
         self.assertIn("Die letzte erkannte Aktivität war vor 3 Minuten im Wohnzimmer", text)
         self.assertNotIn("Ihre Mutter ist", text)
 
+    def test_where_was_question_uses_last_known_room_even_when_stale(self) -> None:
+        with self.mapping.connect() as con:
+            con.execute("delete from sentero_sensor_events")
+            con.commit()
+        self._activity(minutes_ago=90, room="keller")
+
+        result = self.assistant.process_message(self._mail("Wo war meine Mutter?"))
+
+        text = self.notification.sent[-1]["text"]
+        self.assertEqual(result["intent"], MailIntent.LAST_ROOM.value)
+        self.assertIn("Die letzte sichere Aktivität wurde vor 1 Stunde und 30 Minuten im keller erkannt", text)
+        self.assertNotIn("nicht genügend aktuelle Sensordaten", text)
+
+    def test_last_room_ignores_newer_meter_events_when_activity_is_older(self) -> None:
+        with self.mapping.connect() as con:
+            con.execute("delete from sentero_sensor_events")
+            con.commit()
+        self._activity(minutes_ago=90, room="keller")
+        timestamp = now()
+        with self.mapping.connect() as con:
+            for index in range(70):
+                con.execute(
+                    """insert into sentero_sensor_events
+                       (event_time, role, room, entity_id, state, device_class, source, data_class, aggregation_level, created_at)
+                       values (?, 'power_usage', 'home', ?, ?, 'power', 'test', 'utility', 'raw', ?)""",
+                    (timestamp, f"sensor.power_{index}", str(200 + index), now()),
+                )
+            con.commit()
+
+        result = self.assistant.process_message(self._mail("Wo war meine Mutter?"))
+
+        text = self.notification.sent[-1]["text"]
+        self.assertEqual(result["intent"], MailIntent.LAST_ROOM.value)
+        self.assertIn("im keller", text)
+        self.assertNotIn("nicht genügend aktuelle Sensordaten", text)
+
     def test_long_activity_age_is_formatted_as_hours(self) -> None:
         with self.mapping.connect() as con:
             con.execute("delete from sentero_sensor_events")
@@ -143,6 +198,37 @@ class MailAssistantTest(unittest.TestCase):
         self.assistant.process_message(self._mail("Wie warm ist es?"))
         self.assertIn("22,4 °C", self.notification.sent[-1]["text"])
 
+    def test_power_usage_intent_uses_meter_events(self) -> None:
+        with self.mapping.connect() as con:
+            con.execute("delete from sentero_sensor_events")
+            con.commit()
+        self._meter(minutes_ago=60, role="energy_consumption", state="1234.0", device_class="energy")
+        self._meter(minutes_ago=5, role="energy_consumption", state="1235.7", device_class="energy")
+        self._meter(minutes_ago=2, role="power_usage", state="328", device_class="power")
+
+        result = self.assistant.process_message(self._mail("Wie hoch ist der Stromverbrauch?", message_id="<power@example.test>"))
+
+        text = self.notification.sent[-1]["text"]
+        self.assertEqual(result["intent"], MailIntent.POWER_USAGE.value)
+        self.assertIn("aktuelle Leistung: 328 W", text)
+        self.assertIn("Stromzählerstand: 1235,7 kWh", text)
+        self.assertIn("Heutiger Stromverbrauch seit dem ersten Tageswert: 1,7 kWh", text)
+        self.assertNotIn("nicht genügend aktuelle Sensordaten", text)
+
+    def test_contact_status_intent_uses_latest_door_states(self) -> None:
+        with self.mapping.connect() as con:
+            con.execute("delete from sentero_sensor_events")
+            con.commit()
+        self._contact_event(minutes_ago=6, role="main_door", state="on", room="entrance")
+        self._contact_event(minutes_ago=1, role="window_contact", state="off", room="living_room")
+
+        result = self.assistant.process_message(self._mail("Sind alle Türen zu?", message_id="<doors@example.test>"))
+
+        text = self.notification.sent[-1]["text"]
+        self.assertEqual(result["intent"], MailIntent.CONTACT_STATUS.value)
+        self.assertIn("Offen gemeldet: main door", text)
+        self.assertNotIn("nicht genügend aktuelle Sensordaten", text)
+
     def test_night_intent_no_diagnosis(self) -> None:
         self.assistant.process_message(self._mail("Wie war die Nacht?"))
         self.assertNotIn("schläft schlecht", self.notification.sent[-1]["text"])
@@ -150,6 +236,45 @@ class MailAssistantTest(unittest.TestCase):
     def test_unknown_intent(self) -> None:
         self.assistant.process_message(self._mail("Kannst du mir das erklären?"))
         self.assertIn("nicht sicher einordnen", self.notification.sent[-1]["text"])
+
+    def test_llm_maps_free_question_to_catalog_and_writes_natural_answer(self) -> None:
+        llm = FakeLLM(
+            [
+                '{"intent":"LAST_ROOM","confidence":0.93,"is_action_request":false,"slots":{"time_range":"today"}}',
+                "Heute wurde zuletzt Aktivität im Wohnzimmer erkannt. Die letzte sichere Bewegung war vor wenigen Minuten.",
+            ]
+        )
+        assistant = SenteroMailAssistant(
+            self.mapping,
+            self.sentero,
+            self.notification,
+            self.config,
+            conversation=ConversationService(llm),
+        )
+
+        result = assistant.process_message(self._mail("Hey Sentero, ich mache mir Sorgen. War Mama heute schon irgendwo unterwegs?"))
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["intent"], MailIntent.LAST_ROOM.value)
+        self.assertEqual(result["intent_source"], "llm")
+        self.assertIn("Heute wurde zuletzt Aktivität im Wohnzimmer erkannt", self.notification.sent[-1]["text"])
+        self.assertEqual(len(llm.prompts), 2)
+
+    def test_llm_action_route_still_rejects_write_request(self) -> None:
+        llm = FakeLLM(['{"intent":"UNKNOWN","confidence":0.99,"is_action_request":true,"slots":{}}'])
+        assistant = SenteroMailAssistant(
+            self.mapping,
+            self.sentero,
+            self.notification,
+            self.config,
+            conversation=ConversationService(llm),
+        )
+
+        result = assistant.process_message(self._mail("Kannst du bitte die Haustür öffnen?"))
+
+        self.assertEqual(result["intent"], MailIntent.UNKNOWN.value)
+        self.assertIn("ausschließlich Informationen", self.notification.sent[-1]["text"])
+        self.assertEqual(len(llm.prompts), 1)
 
     def test_sanitize_question_strips_german_reply_quote(self) -> None:
         body = """Alles gut?
@@ -278,6 +403,10 @@ diese Frage konnte ich noch nicht sicher einordnen. Sie können mich zum Beispie
     def test_intent_fallback_survives_without_llm(self) -> None:
         result = MailIntentService().classify("Wann hat sie sich zuletzt bewegt?")
         self.assertEqual(result.intent, MailIntent.LAST_ACTIVITY)
+
+    def test_intent_fallback_recognizes_power_and_contacts(self) -> None:
+        self.assertEqual(MailIntentService().classify("Wie ist der Stromverbrauch?").intent, MailIntent.POWER_USAGE)
+        self.assertEqual(MailIntentService().classify("Sind alle Tueren zu?").intent, MailIntent.CONTACT_STATUS)
 
     def test_mail_config_comes_from_saved_email_channel(self) -> None:
         with self.mapping.connect() as con:
@@ -409,6 +538,28 @@ diese Frage konnte ich noch nicht sicher einordnen. Sie können mich zum Beispie
                    (event_time, role, room, entity_id, state, device_class, source, data_class, aggregation_level, created_at)
                    values (?, 'living_room_temperature', 'living_room', 'sensor.temp', ?, 'temperature', 'test', 'environmental', 'raw', ?)""",
                 (event_time, value, now()),
+            )
+            con.commit()
+
+    def _meter(self, *, minutes_ago: int, role: str, state: str, device_class: str) -> None:
+        event_time = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
+        with self.mapping.connect() as con:
+            con.execute(
+                """insert into sentero_sensor_events
+                   (event_time, role, room, entity_id, state, device_class, source, data_class, aggregation_level, created_at)
+                   values (?, ?, 'home', ?, ?, ?, 'test', 'utility', 'raw', ?)""",
+                (event_time, role, f"sensor.{role}", state, device_class, now()),
+            )
+            con.commit()
+
+    def _contact_event(self, *, minutes_ago: int, role: str, state: str, room: str) -> None:
+        event_time = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
+        with self.mapping.connect() as con:
+            con.execute(
+                """insert into sentero_sensor_events
+                   (event_time, role, room, entity_id, state, device_class, source, data_class, aggregation_level, created_at)
+                   values (?, ?, ?, ?, ?, 'opening', 'test', 'personal_behavior', 'raw', ?)""",
+                (event_time, role, room, f"binary_sensor.{role}", state, now()),
             )
             con.commit()
 

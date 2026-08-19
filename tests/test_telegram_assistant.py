@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from backend.agents.sentero.telegram.service import SenteroTelegramAssistant, TelegramAssistantConfig
 from backend.services.device_mapping_service import DeviceMappingService, now
@@ -27,6 +28,13 @@ class RecordingTelegramProvider:
 
 
 class TelegramAssistantTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env_patch = patch.dict("os.environ", {"SENTERO_LLM_PROVIDER": "rule_based"})
+        self.env_patch.start()
+
+    def tearDown(self) -> None:
+        self.env_patch.stop()
+
     def test_authorized_telegram_contact_receives_answer(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())

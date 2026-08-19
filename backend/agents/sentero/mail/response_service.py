@@ -18,6 +18,10 @@ class MailResponseService:
             return "Guten Tag,\n\nmomentan liegen nicht genügend aktuelle Sensordaten für eine zuverlässige Antwort vor. Sentero überwacht die Sensorverbindung weiter.\n\nViele Grüße\nSentero"
         if result.intent == MailIntent.STATUS_SUMMARY:
             return self._status(result)
+        if result.intent == MailIntent.POWER_USAGE:
+            return self._power_usage(result)
+        if result.intent == MailIntent.CONTACT_STATUS:
+            return self._contact_status(result)
         if result.intent in {MailIntent.CURRENT_ACTIVITY, MailIntent.LAST_ACTIVITY, MailIntent.LAST_ROOM}:
             return self._activity(result)
         if result.intent == MailIntent.TODAY_SUMMARY:
@@ -127,6 +131,50 @@ class MailResponseService:
         lines.extend(["", "Viele Grüße", "Sentero"])
         return "\n".join(line for line in lines if line)
 
+    def _power_usage(self, result: QueryResult) -> str:
+        readings = result.facts.get("readings") or []
+        deltas = result.facts.get("today_deltas") or {}
+        lines = ["Guten Tag,", ""]
+        context = _context_sentence(result)
+        if context:
+            lines.append(context)
+        if not readings:
+            return self.build(QueryResult(result.intent, "no_data", data_available=False))
+        for reading in readings:
+            value = reading.get("value")
+            if value is None:
+                continue
+            unit = "W" if reading.get("kind") == "power_usage" else "kWh"
+            lines.append(f"{reading.get('label') or 'Messwert'}: {_decimal_label(value)} {unit}.")
+            lines.append(_freshness_sentence(reading.get("freshness")))
+        energy_delta = deltas.get("energy_consumption")
+        if energy_delta is not None:
+            lines.append(f"Heutiger Stromverbrauch seit dem ersten Tageswert: {_decimal_label(energy_delta)} kWh.")
+        lines.extend(["", "Viele Grüße", "Sentero"])
+        return "\n".join(line for line in lines if line)
+
+    def _contact_status(self, result: QueryResult) -> str:
+        contacts = result.facts.get("contacts") or []
+        open_contacts = result.facts.get("open_contacts") or []
+        unknown_contacts = result.facts.get("unknown_contacts") or []
+        lines = ["Guten Tag,", ""]
+        context = _context_sentence(result)
+        if context:
+            lines.append(context)
+        if not contacts:
+            return self.build(QueryResult(result.intent, "no_data", data_available=False))
+        if open_contacts:
+            lines.append(f"Nicht alle Türen oder Fenster sind als geschlossen bekannt. Offen gemeldet: {', '.join(_contact_label(item) for item in open_contacts[:6])}.")
+        elif unknown_contacts:
+            lines.append("Es wird aktuell kein offener Kontakt gemeldet, aber bei einzelnen Kontakten ist der letzte Zustand unklar.")
+        else:
+            lines.append("Alle bekannten Tür- und Fensterkontakte melden zuletzt geschlossen.")
+        stale = [item for item in contacts if (item.get("freshness") or {}).get("bucket") in {"old", "stale", "unknown"}]
+        if stale:
+            lines.append(f"Hinweis: {len(stale)} Kontaktwerte sind nicht mehr ganz frisch und sollten nicht als Live-Zustand verstanden werden.")
+        lines.extend(["", "Viele Grüße", "Sentero"])
+        return "\n".join(lines)
+
     def _night(self, result: QueryResult) -> str:
         count = int(result.facts.get("night_activity_count") or 0)
         lines = ["Guten Tag,", ""]
@@ -167,6 +215,8 @@ Sie können Sentero zum Beispiel fragen:
 • Wo wurde zuletzt Aktivität erkannt?
 • Gab es heute Auffälligkeiten?
 • Wie ist die Temperatur in der Wohnung?
+• Wie hoch ist der Stromverbrauch?
+• Sind alle Türen und Fenster zu?
 • Wie war die vergangene Nacht?
 
 Viele Grüße
@@ -263,6 +313,21 @@ def _sensor_label(item: dict[str, Any], include_battery: bool = False) -> str:
     if include_battery and isinstance(battery, (int, float)):
         text += f" {int(battery)} %"
     return text
+
+
+def _contact_label(item: dict[str, Any]) -> str:
+    label = str(item.get("role") or item.get("entity_id") or "Kontakt").replace("_", " ").strip()
+    room = str(item.get("room_label") or "").strip()
+    return f"{label} ({room})" if room and room != "unbekannter Raum" else label
+
+
+def _decimal_label(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    text = f"{number:.1f}" if number % 1 else str(int(number))
+    return text.replace(".", ",")
 
 
 def _time_label(value: Any) -> str:

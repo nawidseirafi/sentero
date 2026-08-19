@@ -30,6 +30,8 @@ class MailConfig(BaseModel):
 
 class MailIntent(str, Enum):
     STATUS_SUMMARY = "STATUS_SUMMARY"
+    POWER_USAGE = "POWER_USAGE"
+    CONTACT_STATUS = "CONTACT_STATUS"
     CURRENT_ACTIVITY = "CURRENT_ACTIVITY"
     LAST_ACTIVITY = "LAST_ACTIVITY"
     LAST_ROOM = "LAST_ROOM"
@@ -54,6 +56,8 @@ class MailPermission(str, Enum):
 
 INTENT_PERMISSIONS: dict[MailIntent, set[MailPermission]] = {
     MailIntent.STATUS_SUMMARY: {MailPermission.STATUS},
+    MailIntent.POWER_USAGE: {MailPermission.STATUS},
+    MailIntent.CONTACT_STATUS: {MailPermission.STATUS},
     MailIntent.CURRENT_ACTIVITY: {MailPermission.ACTIVITY, MailPermission.ROOM},
     MailIntent.LAST_ACTIVITY: {MailPermission.ACTIVITY},
     MailIntent.LAST_ROOM: {MailPermission.ROOM},

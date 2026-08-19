@@ -6,8 +6,9 @@ import re
 from email.utils import parseaddr
 from typing import Any
 
+from backend.agents.sentero.mail.conversation_service import ConversationService
 from backend.agents.sentero.mail.imap_client import ImapMailClient
-from backend.agents.sentero.mail.intent_service import ACTION_RE, MailIntentService
+from backend.agents.sentero.mail.intent_service import MailIntentService
 from backend.agents.sentero.mail.models import InboundMail, MailAssistantConfig, MailIntent
 from backend.agents.sentero.mail.query_service import MailQueryService
 from backend.agents.sentero.mail.response_service import MailResponseService
@@ -37,6 +38,7 @@ class SenteroMailAssistant:
         notification: NotificationService,
         config: MailAssistantConfig | None = None,
         imap_client: ImapMailClient | None = None,
+        conversation: ConversationService | None = None,
     ) -> None:
         self.mapping = mapping
         self.sentero = sentero
@@ -53,6 +55,7 @@ class SenteroMailAssistant:
             stale_seconds=self.config.stale_seconds,
         )
         self.response = MailResponseService()
+        self.conversation = conversation or ConversationService()
         self.imap = imap_client or ImapMailClient(self.config)
 
     def _refresh_runtime_config(self) -> None:
@@ -113,23 +116,25 @@ class SenteroMailAssistant:
         if context and context.contact_id not in {None, contact.id}:
             context = None
         question = sanitize_question(message.body or message.subject)
-        intent = self.intent.classify(question)
-        if ACTION_RE.search(question.lower()):
+        routed = self.conversation.classify(question, self.intent)
+        if routed.is_action_request:
             body = self.response.read_only_action_rejected()
             intent_name = MailIntent.UNKNOWN.value
+            confidence = routed.confidence
         else:
-            query = self.query_service.query(intent.intent, contact, context=context)
-            body = self.response.build(query if intent.intent != MailIntent.UNKNOWN else query)
-            intent_name = intent.intent.value
+            query = self.query_service.query(routed.intent, contact, context=context)
+            body = self.conversation.build_response(query, self.response)
+            intent_name = routed.intent.value
+            confidence = routed.confidence
         try:
             self._send_response(message, contact.email, body, contact_id=contact.id)
         except Exception as exc:
-            self.store.record_query(received_at=message.received_at, message_id=message.message_id, contact_id=contact.id, sender_email=message.sender_email, intent=intent_name, confidence=intent.confidence, question=question, response_status="failed", error_code=exc.__class__.__name__, processing_ms=_elapsed_ms(started))
+            self.store.record_query(received_at=message.received_at, message_id=message.message_id, contact_id=contact.id, sender_email=message.sender_email, intent=intent_name, confidence=confidence, question=question, response_status="failed", error_code=exc.__class__.__name__, processing_ms=_elapsed_ms(started))
             logger.exception("Mail query response failed", extra={"component": "mail_assistant", "contact_id": contact.id, "intent": intent_name})
             return {"status": "failed", "intent": intent_name, "error": exc.__class__.__name__}
-        self.store.record_query(received_at=message.received_at, message_id=message.message_id, contact_id=contact.id, sender_email=message.sender_email, intent=intent_name, confidence=intent.confidence, question=question, response_status="sent", processing_ms=_elapsed_ms(started), response_sent_at=now())
-        logger.info("Mail query answered", extra={"component": "mail_assistant", "contact_id": contact.id, "intent": intent_name})
-        return {"status": "sent", "intent": intent_name, "thread_context": bool(context)}
+        self.store.record_query(received_at=message.received_at, message_id=message.message_id, contact_id=contact.id, sender_email=message.sender_email, intent=intent_name, confidence=confidence, question=question, response_status="sent", processing_ms=_elapsed_ms(started), response_sent_at=now())
+        logger.info("Mail query answered", extra={"component": "mail_assistant", "contact_id": contact.id, "intent": intent_name, "intent_source": routed.source})
+        return {"status": "sent", "intent": intent_name, "intent_source": routed.source, "thread_context": bool(context)}
 
     def _send_response(self, message: InboundMail, recipient: str, body: str, contact_id: int | None = None) -> None:
         incoming_subject = sanitize_header_value(message.subject)
