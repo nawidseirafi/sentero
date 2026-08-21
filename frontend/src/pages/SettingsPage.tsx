@@ -10,10 +10,8 @@ import { senteroRouteToPath } from '../routes/routes';
 import PersonIcon from '@mui/icons-material/Person';
 import PersonOutlineIcon from '@mui/icons-material/PersonOff';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
-import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlined';
 import DirectionsRunIcon from '@mui/icons-material/DirectionsRun';
 import AccessibilityNewIcon from '@mui/icons-material/AccessibilityNew';
-import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutlined';
 
 type MeterAddType = 'electricity_meter' | 'water_meter' | 'gas_meter';
@@ -859,9 +857,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       await load();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Sensor konnte nicht entfernt werden.';
-      if (esp32Presence && message.includes('nicht erreichbar')) {
+      if (canOfferLocalOnlySensorDelete(sensor, message)) {
         const localOnly = window.confirm(
-          'Der Sensor ist derzeit nicht erreichbar.\n\nEr kann deshalb nicht auf Werkseinstellungen zurückgesetzt werden.\n\nMöchten Sie ihn trotzdem nur aus Sentero entfernen?',
+          'Der Sensor konnte nicht zurückgesetzt oder aus dem Sensornetzwerk entfernt werden.\n\nNur aus Sentero entfernen?\n\nDer Sensor bleibt dann technisch unverändert und muss bei Bedarf separat zurückgesetzt oder entfernt werden.',
         );
         if (localOnly) {
           try {
@@ -2185,58 +2183,20 @@ function DoorContactStatus({ sensor }: { sensor: SenteroSensorRole }) {
     </div>
   );
 }
-function formatFallDetected(sensor: SenteroSensorRole) {
-  return sensor.fall_detected ? 'Sturz erkannt' : 'Kein Sturz';
-}
-
-function formatMotion(sensor: SenteroSensorRole) {
-  switch (sensor.motion) {
-    case 'Active':
-      return 'Aktive Bewegung';
-    case 'Still':
-      return 'Ruhig / regungslos';
-    case 'None':
-      return 'Keine Bewegung';
-    default:
-      return 'Unbekannt';
-  }
-}
-
-function motionIcon(sensor: SenteroSensorRole) {
-  switch (sensor.motion) {
-    case 'Active':
-      return <DirectionsRunIcon fontSize="small" />;
-    case 'Still':
-      return <AccessibilityNewIcon fontSize="small" />;
-    case 'None':
-      return <RadioButtonUncheckedIcon fontSize="small" />;
-    default:
-      return <HelpOutlineIcon fontSize="small" />;
-  }
-}
 function C1001Telemetry({ sensor }: { sensor: SenteroSensorRole }) {
+  const status = presenceMotionStatus(sensor);
   return (
-    <>
-      <span className={sensor.presence ? 'presence active' : 'presence inactive'}>
-        {sensor.presence ? <PersonIcon fontSize="small" /> : <PersonOutlineIcon fontSize="small" />}
-        {sensor.presence ? 'Anwesend' : 'Abwesend'}
-      </span>
-      <span className={sensor.fall_detected ? 'fall detected' : 'fall clear'}>
-        {sensor.fall_detected ? <WarningAmberIcon fontSize="small" /> : <CheckCircleOutlineIcon fontSize="small" />}
-        {formatFallDetected(sensor)}
-      </span>
-      <span className={`motion motion-${(sensor.motion || 'unknown').toLowerCase()}`}>
-        {motionIcon(sensor)}
-        {formatMotion(sensor)}
-      </span>
-    </>
+    <span className={`presence-status ${status.tone}`}>
+      {status.icon}
+      {status.label}
+    </span>
   );
 }
 
 function MotionStatus({ sensor }: { sensor: SenteroSensorRole }) {
   const status = presenceMotionStatus(sensor);
   return (
-    <span className={`presence ${status.tone}`}>
+    <span className={`presence-status ${status.tone}`}>
       {status.icon}
       {status.label}
     </span>
@@ -2327,27 +2287,30 @@ function isMotionSensor(sensor: SenteroSensorRole) {
 }
 
 function presenceMotionStatus(sensor: SenteroSensorRole) {
+  if (sensor.fall_detected) {
+    return { tone: 'alert', label: 'Sturz', icon: <WarningAmberIcon fontSize="small" /> };
+  }
   if (sensor.presence === false) {
-    return { tone: 'inactive', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
+    return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
   }
   if (sensor.presence === true) {
     const motion = String(sensor.motion || '').toLowerCase();
     if (['active', 'move', 'moving'].includes(motion)) {
-      return { tone: 'active', label: 'Bewegung', icon: <DirectionsRunIcon fontSize="small" /> };
+      return { tone: 'motion', label: 'Bewegung', icon: <DirectionsRunIcon fontSize="small" /> };
     }
-    if (['still', 'static', 'stationary'].includes(motion)) {
-      return { tone: 'inactive', label: 'Still', icon: <AccessibilityNewIcon fontSize="small" /> };
+    if (['still', 'static', 'stationary', 'none'].includes(motion)) {
+      return { tone: 'still', label: 'Still', icon: <AccessibilityNewIcon fontSize="small" /> };
     }
-    return { tone: 'active', label: 'Anwesend', icon: <PersonIcon fontSize="small" /> };
+    return { tone: 'motion', label: 'Bewegung', icon: <PersonIcon fontSize="small" /> };
   }
   const value = String(sensor.state || '').toLowerCase();
   if (['on', 'true', '1', 'active', 'occupied', 'detected'].includes(value)) {
-    return { tone: 'active', label: 'Anwesend', icon: <PersonIcon fontSize="small" /> };
+    return { tone: 'motion', label: 'Bewegung', icon: <PersonIcon fontSize="small" /> };
   }
   if (['off', 'false', '0', 'clear', 'none'].includes(value)) {
-    return { tone: 'inactive', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
+    return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
   }
-  return { tone: 'inactive', label: 'Unbekannt', icon: <HelpOutlineIcon fontSize="small" /> };
+  return { tone: 'unknown', label: 'Unbekannt', icon: <HelpOutlineIcon fontSize="small" /> };
 }
 
 function isZigbeeSensor(sensor: SenteroSensorRole) {
@@ -2355,8 +2318,18 @@ function isZigbeeSensor(sensor: SenteroSensorRole) {
 }
 
 function canOfferLocalOnlySensorDelete(sensor: SenteroSensorRole, message: string) {
-  if (!isZigbeeSensor(sensor)) return false;
   const lower = message.toLowerCase();
+  if (isEsp32PresenceSensor(sensor)) {
+    return (
+      lower.includes('nicht erreichbar') ||
+      lower.includes('factory reset') ||
+      lower.includes('zurückgesetzt') ||
+      lower.includes('connection refused') ||
+      lower.includes('mqtt') ||
+      lower.includes('errno 61')
+    );
+  }
+  if (!isZigbeeSensor(sensor)) return false;
   return (
     lower.includes('permit join') ||
     lower.includes('sensornetzwerk') ||

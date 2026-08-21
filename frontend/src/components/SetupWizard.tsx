@@ -453,6 +453,42 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     updateSensor(sensor.id, { status: 'skipped' });
   }
 
+  async function deleteSensor(sensor: SensorBinding) {
+    if (sensor.sessionId) {
+      activeDiscoverySessions.current.delete(sensor.sessionId);
+      window.clearTimeout(timers.current[sensor.id]);
+      void api.cancelSenteroSensorDiscovery(sensor.sessionId).catch(() => undefined);
+    }
+    const message = isPresenceBinding(sensor)
+      ? 'Präsenzsensor wirklich entfernen?\n\nWenn der Sensor erreichbar ist, wird er zurückgesetzt. Falls das nicht möglich ist, kann er nur aus Sentero entfernt werden.'
+      : 'Sensor aus Sentero entfernen?';
+    if (!window.confirm(message)) return;
+    try {
+      await deleteSensorRoleWithLocalFallback(sensor);
+      updateSensor(sensor.id, { status: 'idle', sessionId: undefined, score: undefined, sensorManagerId: undefined });
+      setDiscovery((current) => ({ ...current, [sensor.id]: {} }));
+      setLockedSensorPlan((current) => unlockSensorPlan(current, sensor));
+    } catch (err) {
+      setDiscovery((current) => ({
+        ...current,
+        [sensor.id]: { ...(current[sensor.id] || {}), error: err instanceof Error ? err.message : 'Sensor konnte nicht entfernt werden.' },
+      }));
+    }
+  }
+
+  async function deleteSensorRoleWithLocalFallback(sensor: SensorBinding) {
+    try {
+      return await api.deleteSenteroSensorRole(sensor.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Sensor konnte nicht entfernt werden.';
+      const localOnly = window.confirm(
+        `${message}\n\nNur aus Sentero entfernen?\n\nDer Sensor bleibt dann im Sensornetzwerk erhalten und muss bei Bedarf separat zurückgesetzt oder entfernt werden.`,
+      );
+      if (!localOnly) throw err;
+      return api.deleteSenteroSensorRole(sensor.id, { localOnly: true });
+    }
+  }
+
   function addContact() {
     const nextErrors = [];
     if (!contactForm.name.trim()) nextErrors.push('Bitte geben Sie einen Namen ein.');
@@ -483,7 +519,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
         {step === 1 && <NetworkStep status={networkStatus} choice={networkChoice} networks={wifiNetworks} wifiForm={wifiForm} busy={networkBusy} message={networkMessage} onChoice={setNetworkChoice} onWifiForm={setWifiForm} onRefresh={() => void refreshNetwork()} />}
         {step === 2 && <ProfileStep profile={profile} calculatedAge={calculatedAge} onChange={setProfile} />}
         {step === 3 && <RoomsStep selected={selectedRooms} customRooms={customRooms} sensorPlan={sensorPlan} lockedSensorPlan={lockedSensorPlan} customRoom={customRoom} onToggle={toggleRoom} onCustomChange={setCustomRoom} onCustomAdd={addCustomRoom} onToggleSensorType={toggleSensorType} />}
-        {step === 4 && <SensorWizard sensors={sensorBindings} discovery={discovery} roomLabel={roomLabel} devMode={devMode} connected={connectedSensors} total={sensorBindings.length} presenceTransport={presenceTransport} onChange={updateSensor} onSearch={searchSensor} onSkip={skipSensor} />}
+        {step === 4 && <SensorWizard sensors={sensorBindings} discovery={discovery} roomLabel={roomLabel} devMode={devMode} connected={connectedSensors} total={sensorBindings.length} presenceTransport={presenceTransport} onChange={updateSensor} onSearch={searchSensor} onDelete={(sensor) => void deleteSensor(sensor)} onSkip={skipSensor} />}
         {step === 5 && <ContactsStep contacts={contacts} form={contactForm} formOpen={contactFormOpen} onOpen={() => setContactFormOpen(true)} onClose={() => setContactFormOpen(false)} onFormChange={setContactForm} onAdd={addContact} onDelete={(id) => setContacts((current) => {
           const nextContacts = current.filter((contact) => contact.id !== id);
           if (nextContacts.length && !nextContacts.some((contact) => contact.primary)) {
@@ -909,6 +945,13 @@ function lockedPlanFromRoles(roles: SenteroSensorRole[]) {
 function roomHasLockedSensor(lockedSensorPlan: Record<string, SensorPlan>, roomId: string) {
   const locked = lockedSensorPlan[roomId];
   return Boolean(locked?.motion || locked?.door || locked?.electricity || locked?.water || locked?.gas);
+}
+
+function unlockSensorPlan(current: Record<string, SensorPlan>, sensor: SensorBinding) {
+  const key = sensorPlanKey(sensor.type);
+  const plan = current[sensor.roomId];
+  if (!plan || !key) return current;
+  return { ...current, [sensor.roomId]: { ...plan, [key]: false } };
 }
 
 function sensorTypeFromRole(role: string): SensorBinding['type'] | null {

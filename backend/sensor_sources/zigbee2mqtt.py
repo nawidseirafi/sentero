@@ -286,7 +286,9 @@ class Zigbee2MqttSensorSource:
     def _availability_entity(self, device: str, payload: dict[str, Any], enriched_payload: dict[str, Any], timestamp: str) -> dict[str, Any]:
         slug = slugify(device)
         source = enriched_payload.get("source") or self.name
-        device_id = device if source == "mqtt" else slug
+        ieee = str(enriched_payload.get("ieee_address") or "").strip()
+        device_id = device if source == "mqtt" else ieee if ieee else slug
+        identifier_value = ieee if source == self.name and ieee else device
         status = str(payload.get("status") or payload.get("state") or "").strip().lower()
         online = status in {"online", "on", "true", "1", "available"}
         return {
@@ -307,11 +309,11 @@ class Zigbee2MqttSensorSource:
             "device_name": device,
             "manufacturer": payload.get("manufacturer") or enriched_payload.get("manufacturer"),
             "model": payload.get("model") or enriched_payload.get("model"),
-            "identifiers": [[source, device]],
+            "identifiers": [[source, identifier_value]],
             "last_changed": timestamp,
             "last_updated": timestamp,
             "source": source,
-            "attributes": {**payload, "availability": status or None},
+            "attributes": {**payload, **{k: v for k, v in enriched_payload.items() if k not in payload}, "availability": status or None},
         }
 
     def _device_class(self, key: str, is_binary: bool) -> str | None:

@@ -168,6 +168,7 @@ class DeviceMappingService:
         except Exception:
             logger.exception("Sentero pairing baseline failed. ha_url=%s reachable=no", ha_url)
             raise
+        baseline_device_ids = sorted(stable_physical_device_ids(baseline))
         detail = self._open_zigbee_permit_join(duration)
         homeassistant_fallback = self.source_mode == 'homeassistant' and not detail.get('ok')
         status = 'pairing_started' if detail.get('ok') else 'waiting_for_signal' if homeassistant_fallback else 'pairing_needs_manual_action'
@@ -189,8 +190,8 @@ class DeviceMappingService:
             cur = con.execute(
                 '''insert into sensor_discovery_sessions
                    (target_role, target_room, target_sensor_type, target_transport, timeout_seconds,
-                    started_at, status, baseline_snapshot_json, pairing_code_provided, pairing_detail_json)
-                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                    started_at, status, baseline_snapshot_json, baseline_device_ids_json, pairing_code_provided, pairing_detail_json)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                 (
                     role,
                     room,
@@ -200,6 +201,7 @@ class DeviceMappingService:
                     now(),
                     status,
                     json.dumps(baseline, ensure_ascii=False),
+                    json.dumps(baseline_device_ids, ensure_ascii=False),
                     0,
                     json.dumps(detail, ensure_ascii=False),
                 ),
@@ -233,6 +235,7 @@ class DeviceMappingService:
         except Exception:
             logger.exception("MQTT discovery baseline failed", extra={"component": "wizard", "sensor_source": self.source_mode})
             baseline = []
+        baseline_device_ids = sorted(stable_physical_device_ids(baseline))
         permit_join = self._open_zigbee_permit_join(duration)
         detail = {
             **permit_join,
@@ -271,6 +274,7 @@ class DeviceMappingService:
                 "room_id": room,
                 "sensor_source": self.source_mode,
                 "baseline_states": len(baseline),
+                "baseline_device_ids": baseline_device_ids,
                 "permit_join": bool(permit_join.get('ok')),
             },
         )
@@ -312,7 +316,12 @@ class DeviceMappingService:
             current = cached_candidate_snapshot
         else:
             current = self._mqtt_snapshot() if mqtt_discovery else self.snapshot()
+        current_device_ids = stable_physical_device_ids(current)
+        baseline_device_ids = stable_physical_device_ids(baseline)
+        new_device_ids = current_device_ids - baseline_device_ids
         assigned_identities = self._assigned_sensor_identities()
+        if mqtt_discovery:
+            self._log_discovery_device_sets(int(session_id), baseline, current)
         scored = score_candidates(
             baseline,
             current,
@@ -321,6 +330,7 @@ class DeviceMappingService:
             row['started_at'],
             require_new=mqtt_discovery,
             assigned_identities=assigned_identities,
+            discovery_session=int(session_id),
         )
         raw_changed_count = count_changed_entities(baseline, current, row['started_at'])
         changed_count = len(scored)
@@ -337,8 +347,18 @@ class DeviceMappingService:
         )
         with self.connect() as con:
             con.execute(
-                '''update sensor_discovery_sessions set ended_at = ?, status = ?, candidate_snapshot_json = ? where id = ?''',
-                (now() if best or timed_out else None, status, json.dumps(current, ensure_ascii=False), session_id),
+                '''update sensor_discovery_sessions
+                   set ended_at = ?, status = ?, candidate_snapshot_json = ?,
+                       current_device_ids_json = ?, new_device_ids_json = ?
+                   where id = ?''',
+                (
+                    now() if best or timed_out else None,
+                    status,
+                    json.dumps(current, ensure_ascii=False),
+                    json.dumps(sorted(current_device_ids), ensure_ascii=False),
+                    json.dumps(sorted(new_device_ids), ensure_ascii=False),
+                    session_id,
+                ),
             )
             con.commit()
         stop_detail = None
@@ -402,6 +422,8 @@ class DeviceMappingService:
         mqtt_discovery = detail.get('mode') == 'mqtt_discovery'
         current = json.loads(session['candidate_snapshot_json'] or '[]') or (self._mqtt_snapshot() if mqtt_discovery else self.snapshot())
         assigned_identities = self._assigned_sensor_identities()
+        if mqtt_discovery:
+            self._log_discovery_device_sets(int(session_id), baseline, current)
         scored = score_candidates(
             baseline,
             current,
@@ -410,6 +432,7 @@ class DeviceMappingService:
             session['started_at'],
             require_new=mqtt_discovery,
             assigned_identities=assigned_identities,
+            discovery_session=int(session_id),
         )
         entity = next(
             (
@@ -421,6 +444,20 @@ class DeviceMappingService:
         )
         if not entity:
             raise ValueError('entity does not match this pairing session')
+        if mqtt_discovery:
+            selected_device_id = stable_physical_device_id(entity)
+            baseline_device_ids = stable_physical_device_ids(baseline)
+            if not selected_device_id or selected_device_id in baseline_device_ids:
+                logger.warning(
+                    "Discovery confirm rejected baseline device",
+                    extra={
+                        "component": "wizard",
+                        "discovery_session": int(session_id),
+                        "selected_device_id": selected_device_id,
+                        "baseline_device_ids": sorted(baseline_device_ids),
+                    },
+                )
+                raise ValueError("Device existed before this discovery session and cannot be registered as a newly paired sensor.")
         attrs = entity.get('attributes') or {}
         target_room = str(room or session['target_room'] or '').strip() or None
         desired_name = str(name or '').strip() or attrs.get('friendly_name') or entity.get('friendly_name') or 'Sensor'
@@ -454,7 +491,10 @@ class DeviceMappingService:
         role = self.upsert_role(payload)
         self.upsert_sensor_device(payload)
         with self.connect() as con:
-            con.execute('update sensor_discovery_sessions set status = ?, selected_entity_id = ?, ended_at = ? where id = ?', ('confirmed', entity_id, now(), session_id))
+            con.execute(
+                'update sensor_discovery_sessions set status = ?, selected_entity_id = ?, selected_device_id = ?, ended_at = ? where id = ?',
+                ('confirmed', entity_id, stable_physical_device_id(entity) or entity.get('device_id'), now(), session_id),
+            )
             con.commit()
         logger.info(
             "Sentero discovery confirmed session=%s role=%s room=%s entity=%s device=%s name=%s metadata=%s",
@@ -470,6 +510,20 @@ class DeviceMappingService:
         if dev:
             response['metadata'] = metadata_detail
         return response
+
+    def _log_discovery_device_sets(self, session_id: int, baseline: list[dict[str, Any]], current: list[dict[str, Any]]) -> None:
+        baseline_device_ids = stable_physical_device_ids(baseline)
+        current_device_ids = stable_physical_device_ids(current)
+        logger.info(
+            "Discovery physical device sets",
+            extra={
+                "component": "wizard",
+                "discovery_session": session_id,
+                "baseline_device_ids": sorted(baseline_device_ids),
+                "current_device_ids": sorted(current_device_ids),
+                "new_device_ids": sorted(current_device_ids - baseline_device_ids),
+            },
+        )
 
     def cancel_discovery(self, session_id: int | None = None) -> dict[str, Any]:
         return self.stop_zigbee_pairing(session_id=session_id, reason='cancel')
@@ -1640,6 +1694,10 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         "alter table sensor_discovery_sessions add column target_sensor_type text",
         "alter table sensor_discovery_sessions add column target_transport text",
         "alter table sensor_discovery_sessions add column timeout_seconds integer",
+        "alter table sensor_discovery_sessions add column baseline_device_ids_json text",
+        "alter table sensor_discovery_sessions add column current_device_ids_json text",
+        "alter table sensor_discovery_sessions add column new_device_ids_json text",
+        "alter table sensor_discovery_sessions add column selected_device_id text",
     ]:
         try:
             con.execute(statement)
@@ -1675,9 +1733,12 @@ def score_candidates(
     started_at: str | datetime,
     require_new: bool = False,
     assigned_identities: set[str] | None = None,
+    discovery_session: int | None = None,
 ) -> list[dict[str, Any]]:
     before = {item.get('entity_id'): item for item in baseline}
-    baseline_device_ids = {value for item in baseline for value in physical_device_identity_values(item)}
+    baseline_device_ids = stable_physical_device_ids(baseline)
+    current_device_ids = stable_physical_device_ids(current)
+    new_device_ids = current_device_ids - baseline_device_ids
     assigned_identities = assigned_identities or set()
     started = parse_time(started_at)
     scored = []
@@ -1685,20 +1746,68 @@ def score_candidates(
         entity_id = str(item.get('entity_id') or '')
         if not entity_id:
             continue
-        device_id = str(item.get('device_id') or '')
+        stable_device_id = stable_physical_device_id(item)
         physical_identities = physical_device_identity_values(item)
         identities = mqtt_identity_values(item)
         if identities and identities.intersection(assigned_identities):
             continue
         old = before.get(entity_id, {})
         is_new = entity_id not in before
-        is_new_device = bool(physical_identities and not physical_identities.intersection(baseline_device_ids))
+        is_new_device = bool(stable_device_id and stable_device_id in new_device_ids)
+        if require_new:
+            if not stable_device_id:
+                logger.info(
+                    "Discovery candidate rejected",
+                    extra={
+                        "component": "wizard",
+                        "discovery_session": discovery_session,
+                        "candidate_device_id": None,
+                        "candidate_entity_id": entity_id,
+                        "candidate_is_new": False,
+                        "candidate_rejected_reason": "missing_stable_device_id",
+                    },
+                )
+                continue
+            if stable_device_id in baseline_device_ids:
+                logger.info(
+                    "Discovery candidate rejected",
+                    extra={
+                        "component": "wizard",
+                        "discovery_session": discovery_session,
+                        "candidate_device_id": stable_device_id,
+                        "candidate_entity_id": entity_id,
+                        "candidate_is_new": False,
+                        "candidate_rejected_reason": "device_existed_before_discovery",
+                    },
+                )
+                continue
+            if stable_device_id not in new_device_ids:
+                logger.info(
+                    "Discovery candidate rejected",
+                    extra={
+                        "component": "wizard",
+                        "discovery_session": discovery_session,
+                        "candidate_device_id": stable_device_id,
+                        "candidate_entity_id": entity_id,
+                        "candidate_is_new": False,
+                        "candidate_rejected_reason": "device_not_in_current_new_device_set",
+                    },
+                )
+                continue
+            logger.info(
+                "Discovery candidate accepted for scoring",
+                extra={
+                    "component": "wizard",
+                    "discovery_session": discovery_session,
+                    "candidate_device_id": stable_device_id,
+                    "candidate_entity_id": entity_id,
+                    "candidate_is_new": True,
+                },
+            )
         state_changed = bool(old) and item.get('state') != old.get('state')
         last_changed_updated = is_after(item.get('last_changed'), started)
         last_updated_updated = is_after(item.get('last_updated'), started)
         changed = is_new or is_new_device or state_changed or last_changed_updated or last_updated_updated
-        if require_new and not is_new_device:
-            continue
         if not changed:
             continue
 
@@ -1747,8 +1856,11 @@ def score_candidates(
             confidence -= 10
             reasons.append(f'state_{state_value}')
         if confidence >= 40:
-            scored.append({**item, 'confidence': confidence, 'reasons': reasons, 'is_new': is_new, 'is_new_device': is_new_device, 'entity_priority': priority})
-    return sorted(scored, key=lambda x: (bool(x.get('is_new_device')), role_state_priority(role, x), bool(x.get('is_new')), x['confidence'], parse_time(x.get('last_updated')).timestamp()), reverse=True)
+            scored.append({**item, 'confidence': confidence, 'reasons': reasons, 'is_new': is_new, 'is_new_device': is_new_device, 'stable_device_id': stable_device_id, 'entity_priority': priority})
+    sorted_scored = sorted(scored, key=lambda x: (bool(x.get('is_new_device')), role_state_priority(role, x), bool(x.get('is_new')), x['confidence'], parse_time(x.get('last_updated')).timestamp()), reverse=True)
+    if require_new:
+        return best_candidate_per_physical_device(sorted_scored, current)
+    return sorted_scored
 
 
 def count_changed_entities(baseline: list[dict[str, Any]], current: list[dict[str, Any]], started_at: str | datetime) -> int:
@@ -2045,14 +2157,15 @@ def sensor_type_from_role(role: str) -> str:
 
 def entity_ids_for_physical_device(states: list[dict[str, Any]], selected: dict[str, Any]) -> list[str]:
     selected_entity_id = str(selected.get('entity_id') or '').strip()
-    device_id = str(selected.get('device_id') or '').strip()
+    device_id = stable_physical_device_id(selected) or str(selected.get('device_id') or '').strip()
     identities = mqtt_identity_values(selected)
     grouped: list[str] = []
     for item in states:
         entity_id = str(item.get('entity_id') or '').strip()
         if not entity_id:
             continue
-        same_device = bool(device_id and str(item.get('device_id') or '').strip() == device_id)
+        item_device_id = stable_physical_device_id(item) or str(item.get('device_id') or '').strip()
+        same_device = bool(device_id and item_device_id == device_id)
         same_mqtt_device = bool(identities and identities.intersection(mqtt_identity_values(item)))
         if same_device or same_mqtt_device or entity_id == selected_entity_id:
             grouped.append(entity_id)
@@ -2406,6 +2519,55 @@ def physical_device_identity_values(item: dict[str, Any]) -> set[str]:
         if normalize(domain) in {'mqtt', 'zigbee2mqtt', 'zha'}:
             add_physical_identity(values, value)
     return {value for value in values if value}
+
+
+def stable_physical_device_ids(items: list[dict[str, Any]]) -> set[str]:
+    return {device_id for item in items if (device_id := stable_physical_device_id(item))}
+
+
+def stable_physical_device_id(item: dict[str, Any]) -> str:
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    for raw in (
+        item.get('ieee_address'),
+        attrs.get('ieee_address'),
+        item.get('ieee'),
+        attrs.get('ieee'),
+        item.get('device_id'),
+        attrs.get('device_id'),
+    ):
+        ieee = ieee_address_from_value(raw)
+        if ieee:
+            return ieee
+    for _domain, value in parse_identifiers(item.get('identifiers')):
+        ieee = ieee_address_from_value(value)
+        if ieee:
+            return ieee
+    device_id = str(item.get('device_id') or attrs.get('device_id') or '').strip()
+    return device_id.lower() if device_id else ""
+
+
+def ieee_address_from_value(value: Any) -> str:
+    match = re.search(r'0x[0-9a-fA-F]{8,16}', str(value or ''))
+    return match.group(0).lower() if match else ""
+
+
+def best_candidate_per_physical_device(candidates: list[dict[str, Any]], current: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped_entities: dict[str, list[str]] = {}
+    for item in current:
+        device_id = stable_physical_device_id(item)
+        entity_id = str(item.get('entity_id') or '').strip()
+        if device_id and entity_id:
+            grouped_entities.setdefault(device_id, []).append(entity_id)
+    result: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        device_id = stable_physical_device_id(candidate)
+        if not device_id:
+            continue
+        enriched = {**candidate, 'device_id': device_id, 'stable_device_id': device_id, 'entity_ids': sorted(set(grouped_entities.get(device_id, [])))}
+        existing = result.get(device_id)
+        if not existing or float(enriched.get('confidence') or 0) > float(existing.get('confidence') or 0):
+            result[device_id] = enriched
+    return sorted(result.values(), key=lambda x: (x['confidence'], role_state_priority(str(x.get('role') or ''), x), parse_time(x.get('last_updated')).timestamp()), reverse=True)
 
 
 def add_physical_identity(values: set[str], raw: Any) -> None:

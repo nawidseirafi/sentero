@@ -1531,6 +1531,14 @@ button:disabled {
   width: 100%;
 }
 
+.sc-sensor-buttons .danger {
+  background: #fff5f5;
+  border: 1px solid #efc4c4;
+  color: var(--sc-red);
+  min-height: 42px;
+  width: 100%;
+}
+
 .sc-sensor-state.searching {
   background: var(--sc-blue);
   color: var(--sc-blue-strong);
@@ -2550,18 +2558,30 @@ button:disabled {
   color: var(--sc-muted);
 }
 
-.sc-sensor-health .presence.active {
+.sc-sensor-health .presence-status {
+  min-width: 132px;
+}
+
+.sc-sensor-health .presence-status.motion {
   background: #eef8ff;
   border-color: #c7e5f7;
   color: #176b89;
 }
 
-.sc-sensor-health .presence.inactive {
+.sc-sensor-health .presence-status.still {
+  background: #f7f7f2;
+  border-color: #dadfd6;
+  color: #596a61;
+}
+
+.sc-sensor-health .presence-status.away,
+.sc-sensor-health .presence-status.unknown {
   background: #edf2f0;
   border-color: #dbe6e1;
   color: var(--sc-muted);
 }
 
+.sc-sensor-health .presence-status.alert,
 .sc-sensor-health .fall.detected {
   background: var(--sc-red-soft);
   border-color: #f1c6c6;

@@ -87,6 +87,24 @@ class FailingFactoryResetMqtt(FactoryResetMqtt):
         raise RuntimeError("mqtt publish failed")
 
 
+def zigbee_bridge_device(ieee: str, friendly_name: str, model: str) -> dict:
+    return {
+        "ieee_address": ieee,
+        "friendly_name": friendly_name,
+        "definition": {
+            "model": model,
+            "vendor": "HOBEIAN",
+            "exposes": [
+                {"type": "binary", "name": "occupancy", "property": "occupancy"},
+                {"type": "numeric", "name": "temperature", "property": "temperature"},
+                {"type": "numeric", "name": "humidity", "property": "humidity"},
+                {"type": "numeric", "name": "illuminance", "property": "illuminance"},
+                {"type": "numeric", "name": "battery", "property": "battery"},
+            ],
+        },
+    }
+
+
 def esp32_presence_messages(device_id: str, availability: str = "online") -> list[FakeMessage]:
     return [
         FakeMessage(f"sentero/{device_id}/state", {
@@ -367,6 +385,59 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertEqual(found["status"], "searching")
         self.assertIsNone(found["sensor"])
         self.assertIsNone(raw["candidate"])
+
+    def test_zigbee_discovery_only_scores_physical_devices_added_after_session_start(self) -> None:
+        old_ieee = "0x111"
+        new_ieee = "0xa4c1389a3e0a13e3"
+        old_name = "Guest WC Presence Sensor"
+        mqtt = SnapshotMqtt([
+            FakeMessage("zigbee2mqtt/bridge/devices", [
+                zigbee_bridge_device(old_ieee, old_name, "ZG-204ZX"),
+            ]),
+            FakeMessage(f"zigbee2mqtt/{old_name}", {"occupancy": False, "temperature": 21.5, "humidity": 44, "illuminance": 30}),
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"SENTERO_SENSOR_SOURCE": "mqtt", "SENTERO_MQTT_BOOTSTRAP_EVENTS": ""},
+            clear=False,
+        ):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            manager = SensorManager(mapping)
+            started = manager.start_discovery("presence", room_id="hallway", role="hallway_presence", duration=60)
+
+            mqtt.messages = [
+                FakeMessage("zigbee2mqtt/bridge/devices", [
+                    zigbee_bridge_device(old_ieee, old_name, "ZG-204ZX"),
+                    zigbee_bridge_device(new_ieee, new_ieee, "ZG-204ZH"),
+                ]),
+                FakeMessage(f"zigbee2mqtt/{old_name}", {"occupancy": True, "temperature": 22.1, "humidity": 45, "illuminance": 40}),
+                FakeMessage(f"zigbee2mqtt/{new_ieee}", {"occupancy": True, "temperature": 21.0, "humidity": 48, "illuminance": 15, "battery": 100}),
+            ]
+
+            raw = mapping.candidates(started["discovery_id"], dev=True)
+            found = manager.discovered(started["discovery_id"], dev=True)
+
+            with self.assertRaises(ValueError):
+                mapping.confirm(started["discovery_id"], old_ieee, name="Flur Präsenz", room="hallway")
+
+        self.assertEqual([item["device_id"] for item in raw["candidates"]], [new_ieee])
+        self.assertEqual(raw["candidate"]["device_id"], new_ieee)
+        self.assertEqual(found["sensor"]["id"], new_ieee)
+        self.assertNotIn(old_ieee, [item["device_id"] for item in raw["candidates"]])
+        self.assertEqual(len(raw["candidates"]), 1)
+        self.assertCountEqual(
+            raw["candidate"]["entity_ids"],
+            [
+                f"binary_sensor.{new_ieee}",
+                f"sensor.{new_ieee}_temperature",
+                f"sensor.{new_ieee}_humidity",
+                f"sensor.{new_ieee}_illuminance",
+                f"sensor.{new_ieee}_battery",
+            ],
+        )
+        self.assertFalse(any(request[0].endswith("/device/rename") for request in mqtt.requests))
 
     def test_mqtt_discovery_does_not_offer_existing_assigned_presence_device(self) -> None:
         ieee = "0xa4c1389a3e0a13e3"

@@ -1,4 +1,4 @@
-import { Check, Loader2, Search, ShieldCheck } from 'lucide-react';
+import { Check, Loader2, Search, ShieldCheck, Trash2 } from 'lucide-react';
 import type { SenteroDiscoveredSensor } from '@shared/api/client';
 import { SetupWifiQr } from './SetupWifiQr';
 
@@ -30,10 +30,11 @@ type Props = {
   roomLabel: (roomId: string) => string;
   onChange: (id: string, patch: Partial<SensorBinding>) => void;
   onSearch: (sensor: SensorBinding) => void;
+  onDelete: (sensor: SensorBinding) => void;
   onSkip: (sensor: SensorBinding) => void;
 };
 
-export function SensorWizard({ sensors, discovery, devMode, connected, total, presenceTransport = 'zigbee', roomLabel, onChange, onSearch, onSkip }: Props) {
+export function SensorWizard({ sensors, discovery, devMode, connected, total, presenceTransport = 'zigbee', roomLabel, onChange, onSearch, onDelete, onSkip }: Props) {
   const grouped = sensors.reduce<Record<string, SensorBinding[]>>((acc, sensor) => {
     acc[sensor.roomId] = [...(acc[sensor.roomId] || []), sensor];
     return acc;
@@ -73,6 +74,7 @@ export function SensorWizard({ sensors, discovery, devMode, connected, total, pr
               presenceTransport={presenceTransport}
               onChange={onChange}
               onSearch={onSearch}
+              onDelete={onDelete}
               onSkip={onSkip}
             />
           ))}
@@ -82,13 +84,14 @@ export function SensorWizard({ sensors, discovery, devMode, connected, total, pr
   );
 }
 
-function SensorSetupCard({ sensor, state, devMode, presenceTransport, onChange, onSearch, onSkip }: {
+function SensorSetupCard({ sensor, state, devMode, presenceTransport, onChange, onSearch, onDelete, onSkip }: {
   sensor: SensorBinding;
   state?: SensorDiscoveryState;
   devMode: boolean;
   presenceTransport: 'zigbee' | 'wifi_esphome';
   onChange: (id: string, patch: Partial<SensorBinding>) => void;
   onSearch: (sensor: SensorBinding) => void;
+  onDelete: (sensor: SensorBinding) => void;
   onSkip: (sensor: SensorBinding) => void;
 }) {
   const label = sensorLabel(sensor);
@@ -121,10 +124,15 @@ function SensorSetupCard({ sensor, state, devMode, presenceTransport, onChange, 
           <button className="primary" type="button" onClick={() => void onSearch(sensor)} disabled={sensor.status === 'searching' || sensor.status === 'connected'}>
             <Search size={19} /> {sensor.status === 'connected' ? 'Verbunden' : isEcoTracker ? 'EcoTracker verbinden' : 'Sensor suchen'}
           </button>
+          {sensor.status === 'connected' && (
+            <button className="danger" type="button" onClick={() => onDelete(sensor)}>
+              <Trash2 size={18} /> Entfernen
+            </button>
+          )}
           <button className="secondary" type="button" onClick={() => onSkip(sensor)} disabled={sensor.status === 'connected'}>Überspringen</button>
         </div>
       </div>
-      {state?.error && <p className="sc-sensor-error">{state.error}</p>}
+      {state?.error && sensor.status !== 'missing' && <p className="sc-sensor-error">{state.error}</p>}
       {devMode && <code className="sc-dev-line">Score {sensor.score ?? state?.sensor?.confidence ?? '-'} · Rest {state?.remainingSeconds ?? '-'}s</code>}
     </div>
   );
