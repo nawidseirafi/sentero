@@ -851,6 +851,112 @@ class MqttSensorSourceTests(unittest.TestCase):
             {"id": "0xa4c1381219fcffff", "force": "true", "block": "false"},
         ))
 
+    def test_delete_zigbee2mqtt_sensor_uses_ieee_when_homeassistant_name_differs(self) -> None:
+        mqtt = SnapshotMqtt([])
+        ieee = "0xa4c1389a3e0a13e3"
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"SENTERO_SENSOR_SOURCE": "homeassistant", "SENTERO_MQTT_BOOTSTRAP_EVENTS": ""},
+            clear=False,
+        ):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.snapshot = lambda: [{
+                "entity_id": f"binary_sensor.{ieee}_presence",
+                "device_id": "ha-device-id",
+                "friendly_name": "Guest WC Presence Sensor Belegung",
+                "device_class": "presence",
+                "domain": "binary_sensor",
+                "source": "homeassistant",
+                "identifiers": [["zigbee2mqtt", ieee]],
+            }]
+            mapping.upsert_role({
+                "role": "toilet_presence",
+                "room": "toilet",
+                "entity_id": f"binary_sensor.{ieee}_presence",
+                "device_id": "ha-device-id",
+                "friendly_name": "Toilette Präsenz",
+                "device_class": "presence",
+                "domain": "binary_sensor",
+                "source": "zigbee2mqtt",
+                "confidence": 100,
+            })
+            result = mapping.delete_role("toilet_presence")
+
+        self.assertTrue(result["deleted"])
+        self.assertEqual(mqtt.requests[1], (
+            "zigbee2mqtt/bridge/request/device/remove",
+            "zigbee2mqtt/bridge/response/device/remove",
+            {"id": ieee, "force": "true", "block": "false"},
+        ))
+
+    def test_delete_zigbee2mqtt_sensor_uses_homeassistant_mqtt_fallback_when_direct_mqtt_refused(self) -> None:
+        mqtt = FailingMqtt()
+        ha = FakeHomeAssistant()
+        ieee = "0xa4c1389a3e0a13e3"
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"SENTERO_SENSOR_SOURCE": "homeassistant", "SENTERO_MQTT_BOOTSTRAP_EVENTS": ""},
+            clear=False,
+        ):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=ha)
+            mapping.mqtt = mqtt
+            mapping.snapshot = lambda: [{
+                "entity_id": f"binary_sensor.{ieee}_presence",
+                "device_id": "ha-device-id",
+                "friendly_name": "Guest WC Presence Sensor Belegung",
+                "device_class": "presence",
+                "domain": "binary_sensor",
+                "source": "homeassistant",
+                "identifiers": [["zigbee2mqtt", ieee]],
+            }]
+            mapping.upsert_role({
+                "role": "toilet_presence",
+                "room": "toilet",
+                "entity_id": f"binary_sensor.{ieee}_presence",
+                "device_id": "ha-device-id",
+                "friendly_name": "Toilette Präsenz",
+                "device_class": "presence",
+                "domain": "binary_sensor",
+                "source": "zigbee2mqtt",
+                "confidence": 100,
+            })
+            result = mapping.delete_role("toilet_presence")
+
+        self.assertTrue(result["deleted"])
+        published = [(payload["topic"], payload["payload"]) for domain, service, payload in ha.service_calls if (domain, service) == ("mqtt", "publish")]
+        self.assertIn(("zigbee2mqtt/bridge/request/permit_join", '{"value": false, "time": 0}'), published)
+        self.assertIn(("zigbee2mqtt/bridge/request/device/remove", '{"id": "0xa4c1389a3e0a13e3", "force": "true", "block": "false"}'), published)
+
+    def test_delete_mqtt_mapping_with_ieee_uses_zigbee_remove_not_factory_reset(self) -> None:
+        mqtt = SnapshotMqtt([])
+        ieee = "0xa4c1389a3e0a13e3"
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"SENTERO_SENSOR_SOURCE": "mqtt", "SENTERO_MQTT_BOOTSTRAP_EVENTS": ""},
+            clear=False,
+        ):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            mapping.upsert_role({
+                "role": "office_presence",
+                "room": "office",
+                "entity_id": f"binary_sensor.{ieee}_presence",
+                "device_id": ieee,
+                "friendly_name": "Arbeitszimmer Präsenz",
+                "device_class": "presence",
+                "domain": "binary_sensor",
+                "source": "mqtt",
+                "confidence": 100,
+            })
+            result = mapping.delete_role("office_presence")
+
+        self.assertTrue(result["deleted"])
+        request_topics = [request[0] for request in mqtt.requests]
+        self.assertIn("zigbee2mqtt/bridge/request/device/remove", request_topics)
+        self.assertNotIn(f"sentero/{ieee}/command", request_topics)
+
     def test_delete_zigbee2mqtt_sensor_does_not_try_child_entity_names(self) -> None:
         mqtt = RemoveFailingSnapshotMqtt([
             FakeMessage(
@@ -1396,6 +1502,40 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertEqual(result["status"], "waiting_for_signal")
         self.assertEqual(result["detail"]["provider"], "homeassistant")
         self.assertFalse(result["detail"]["permit_join_available"])
+
+    def test_homeassistant_zigbee_pairing_does_not_offer_existing_unassigned_sensor(self) -> None:
+        class MutableHomeAssistant(FakeHomeAssistant):
+            def __init__(self) -> None:
+                super().__init__()
+                self.state = "off"
+
+            def get_states(self) -> list[dict]:
+                timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                return [{
+                    "entity_id": "binary_sensor.guest_wc_presence_sensor_occupancy",
+                    "state": self.state,
+                    "last_changed": timestamp,
+                    "last_updated": timestamp,
+                    "attributes": {
+                        "friendly_name": "Guest WC Presence Sensor Belegung",
+                        "device_class": "occupancy",
+                        "device_id": "ha-existing-presence-device",
+                    },
+                }]
+
+        ha = MutableHomeAssistant()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"SENTERO_SENSOR_SOURCE": "homeassistant"}, clear=False):
+            service = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=ha)
+            service.mqtt = FakeMqtt()
+            started = service.start_zigbee_pairing("hallway_presence", "hallway", duration=60)
+            ha.state = "on"
+            found = service.candidates(started["session_id"], dev=True)
+
+            with self.assertRaises(ValueError):
+                service.confirm(started["session_id"], "binary_sensor.guest_wc_presence_sensor_occupancy", name="Flur Präsenz", room="hallway")
+
+        self.assertEqual(found["status"], "waiting_for_signal")
+        self.assertIsNone(found["candidate"])
 
 
 if __name__ == "__main__":

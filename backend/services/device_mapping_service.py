@@ -310,6 +310,7 @@ class DeviceMappingService:
             }
         detail = discovery_detail(row)
         mqtt_discovery = detail.get('mode') == 'mqtt_discovery'
+        require_new_device = discovery_requires_new_physical_device(row, detail)
         baseline = json.loads(row['baseline_snapshot_json'] or '[]')
         cached_candidate_snapshot = json.loads(row['candidate_snapshot_json'] or '[]')
         if row['status'] in {'found', 'signal_detected', 'completed', 'confirmed'} and cached_candidate_snapshot:
@@ -328,7 +329,7 @@ class DeviceMappingService:
             row['target_role'],
             row['target_room'],
             row['started_at'],
-            require_new=mqtt_discovery,
+            require_new=require_new_device,
             assigned_identities=assigned_identities,
             discovery_session=int(session_id),
         )
@@ -420,6 +421,7 @@ class DeviceMappingService:
         baseline = json.loads(session['baseline_snapshot_json'] or '[]')
         detail = discovery_detail(session)
         mqtt_discovery = detail.get('mode') == 'mqtt_discovery'
+        require_new_device = discovery_requires_new_physical_device(session, detail)
         current = json.loads(session['candidate_snapshot_json'] or '[]') or (self._mqtt_snapshot() if mqtt_discovery else self.snapshot())
         assigned_identities = self._assigned_sensor_identities()
         if mqtt_discovery:
@@ -430,7 +432,7 @@ class DeviceMappingService:
             session['target_role'],
             session['target_room'],
             session['started_at'],
-            require_new=mqtt_discovery,
+            require_new=require_new_device,
             assigned_identities=assigned_identities,
             discovery_session=int(session_id),
         )
@@ -444,7 +446,7 @@ class DeviceMappingService:
         )
         if not entity:
             raise ValueError('entity does not match this pairing session')
-        if mqtt_discovery:
+        if require_new_device:
             selected_device_id = stable_physical_device_id(entity)
             baseline_device_ids = stable_physical_device_ids(baseline)
             if not selected_device_id or selected_device_id in baseline_device_ids:
@@ -627,8 +629,8 @@ class DeviceMappingService:
         if not mapped:
             raise ValueError('sensor role not found')
         source = str(mapped.get('source') or '').strip()
-        zigbee_sensor = source == 'zigbee2mqtt' or str(mapped.get('entity_id') or '').startswith('zigbee2mqtt/')
-        esp32_sensor = source == 'mqtt' and not zigbee_sensor
+        zigbee_sensor = is_zigbee2mqtt_mapping(mapped)
+        esp32_sensor = is_esp32_mqtt_mapping(mapped) and not zigbee_sensor
         if local_only:
             removal = {
                 'ok': True,
@@ -930,11 +932,16 @@ class DeviceMappingService:
         except Exception:
             logger.exception("Zigbee2MQTT remove snapshot failed", extra={"component": "device_mapping", "source_ref": entity_id, "device_id": device_id})
             states = []
-        device_entities = [item for item in states if device_id and str(item.get('device_id') or '') == device_id]
-        if not device_entities:
-            mapped_identities = mqtt_identity_values(mapped)
-            device_entities = [item for item in states if mapped_identities.intersection(mqtt_identity_values(item))]
-        identifiers = []
+        mapped_identities = mqtt_identity_values(mapped)
+        device_entities = []
+        for item in states:
+            item_entity_id = str(item.get('entity_id') or '').strip()
+            same_device = bool(device_id and str(item.get('device_id') or '').strip() == device_id)
+            same_entity = bool(entity_id and item_entity_id == entity_id)
+            same_identity = bool(mapped_identities and mapped_identities.intersection(mqtt_identity_values(item)))
+            if same_device or same_entity or same_identity:
+                device_entities.append(item)
+        identifiers = parse_identifiers(mapped.get('identifiers'))
         for item in device_entities:
             identifiers.extend(parse_identifiers(item.get('identifiers')))
         ieee = first_identifier_value(identifiers, {'zha'})
@@ -1335,8 +1342,26 @@ class DeviceMappingService:
             "Zigbee2MQTT request",
             extra={"component": "device_mapping", "topic": request_topic, "action": action, "payload": payload},
         )
-        response = self.mqtt.request_response(request_topic, response_topic, payload, timeout=8.0, response_filter=response_filter)
-        response_payload = response.payload if isinstance(response.payload, dict) else {}
+        try:
+            response = self.mqtt.request_response(request_topic, response_topic, payload, timeout=8.0, response_filter=response_filter)
+            response_payload = response.payload if isinstance(response.payload, dict) else {}
+        except Exception as exc:
+            if self.source_mode not in {'homeassistant', 'mixed'}:
+                raise
+            try:
+                publish = self._mqtt_publish(request_topic, payload)
+            except Exception:
+                raise exc
+            response_payload = {
+                'status': 'ok',
+                'provider': publish.get('provider') or 'homeassistant_mqtt',
+                'unconfirmed': True,
+                'data': payload if isinstance(payload, dict) else {'payload': payload},
+            }
+            logger.info(
+                "Zigbee2MQTT request published without response confirmation",
+                extra={"component": "device_mapping", "action": action, "topic": request_topic, "provider": response_payload.get('provider')},
+            )
         if response_payload.get('status') != 'ok':
             message = str(response_payload.get('error') or response_payload or 'Zigbee2MQTT request failed')
             logger.warning("Zigbee2MQTT request not confirmed", extra={"component": "device_mapping", "action": action, "response": response_payload})
@@ -1723,6 +1748,17 @@ def discovery_detail(row: Any) -> dict[str, Any]:
     except (TypeError, json.JSONDecodeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def discovery_requires_new_physical_device(row: Any, detail: dict[str, Any] | None = None) -> bool:
+    detail = detail or discovery_detail(row)
+    if detail.get('mode') == 'mqtt_discovery':
+        return True
+    try:
+        transport = str(row['target_transport'] or '').strip()
+    except (KeyError, IndexError, TypeError):
+        transport = ''
+    return transport == SensorTransport.ZIGBEE.value
 
 
 def score_candidates(
@@ -2521,6 +2557,43 @@ def physical_device_identity_values(item: dict[str, Any]) -> set[str]:
     return {value for value in values if value}
 
 
+def is_zigbee2mqtt_mapping(item: dict[str, Any]) -> bool:
+    source = str(item.get('source') or '').strip().lower()
+    if source == 'zigbee2mqtt':
+        return True
+    for field in ('device_id', 'entity_id', 'primary_entity_id', 'source_ref', 'topic'):
+        value = str(item.get(field) or '').strip()
+        if value.startswith('zigbee2mqtt/'):
+            return True
+        if is_ieee_address(value) or ieee_address_from_value(value):
+            return True
+    entity_ids = item.get('entity_ids')
+    if isinstance(entity_ids, list) and any(is_ieee_address(value) or ieee_address_from_value(value) or str(value).startswith('zigbee2mqtt/') for value in entity_ids):
+        return True
+    try:
+        entity_ids_json = json.loads(str(item.get('entity_ids_json') or '[]'))
+    except (TypeError, json.JSONDecodeError):
+        entity_ids_json = []
+    if isinstance(entity_ids_json, list) and any(is_ieee_address(value) or ieee_address_from_value(value) or str(value).startswith('zigbee2mqtt/') for value in entity_ids_json):
+        return True
+    for _domain, value in parse_identifiers(item.get('identifiers')):
+        if is_ieee_address(value) or ieee_address_from_value(value):
+            return True
+    return False
+
+
+def is_esp32_mqtt_mapping(item: dict[str, Any]) -> bool:
+    source = str(item.get('source') or '').strip().lower()
+    if source != 'mqtt':
+        return False
+    prefix = esp32_topic_prefix().strip('/')
+    for field in ('entity_id', 'primary_entity_id', 'source_ref', 'topic'):
+        value = str(item.get(field) or '').strip().strip('/')
+        if value.startswith(f'{prefix}/') or value.startswith('sentero/'):
+            return True
+    return False
+
+
 def stable_physical_device_ids(items: list[dict[str, Any]]) -> set[str]:
     return {device_id for item in items if (device_id := stable_physical_device_id(item))}
 
@@ -2563,7 +2636,8 @@ def best_candidate_per_physical_device(candidates: list[dict[str, Any]], current
         device_id = stable_physical_device_id(candidate)
         if not device_id:
             continue
-        enriched = {**candidate, 'device_id': device_id, 'stable_device_id': device_id, 'entity_ids': sorted(set(grouped_entities.get(device_id, [])))}
+        display_device_id = str(candidate.get('device_id') or device_id).strip() or device_id
+        enriched = {**candidate, 'device_id': display_device_id, 'stable_device_id': device_id, 'entity_ids': sorted(set(grouped_entities.get(device_id, [])))}
         existing = result.get(device_id)
         if not existing or float(enriched.get('confidence') or 0) > float(existing.get('confidence') or 0):
             result[device_id] = enriched
@@ -2744,9 +2818,9 @@ def expand_zigbee2mqtt_id(value: Any) -> list[str]:
     text = str(value or '').strip()
     if not text:
         return []
-    ieee_match = re.search(r'0x[0-9a-fA-F]{12,16}', text)
-    if ieee_match:
-        return [ieee_match.group(0)]
+    ieee_matches = [match.group(0).lower() for match in re.finditer(r'0x[0-9a-fA-F]{12,16}', text)]
+    if ieee_matches:
+        return dedupe(ieee_matches)
     normalized = text
     for prefix in ('zigbee2mqtt_', 'mqtt_'):
         if normalized.startswith(prefix):
