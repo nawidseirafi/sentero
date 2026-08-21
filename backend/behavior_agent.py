@@ -520,6 +520,9 @@ class SenteroBehaviorAgent:
         if status not in {"orange", "red"}:
             self.notifications.resolve_behavior_notification()
             return
+        notification_result = self.notifications.notify_assessment(assessment, contacts)
+        if not int(notification_result.get("sent") or 0):
+            return
         severity = "critical" if status == "red" else "warning"
         self.messaging.create_message(
             source="sentero",
@@ -534,7 +537,6 @@ class SenteroBehaviorAgent:
                 "email_subject": assessment.get("email_subject") or "Sentero Hinweis",
             },
         )
-        self.notifications.notify_assessment(assessment, contacts)
 
     def _learning_days(self) -> int:
         config = load_agent_section("sentero")

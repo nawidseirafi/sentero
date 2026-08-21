@@ -17,6 +17,7 @@ from backend.services.audit_service import AuditService
 from backend.services.device_mapping_service import DeviceMappingService, ensure_schema, now
 from backend.services.aal_roles import can_access_data_classes
 from backend.services.consent_service import ConsentService
+from backend.behavior_agent import SenteroBehaviorAgent
 from backend.services.notification_service import NotificationService, mail_assistant_reply_to, sentero_mail_from
 from backend.services.setup_service import SenteroSetupService
 from backend.agents.sentero.mail.store import MailAssistantStore
@@ -34,6 +35,35 @@ class RecordingProvider:
     def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> dict[str, Any]:
         self.sent.append({"contact": contact, "title": title, "text": text, "config": config})
         return {"message_id": f"<sentero-recording-{len(self.sent)}@sentero.local>"}
+
+
+class RecordingMessaging:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, Any]] = []
+
+    def create_message(self, **payload: Any) -> dict[str, Any]:
+        self.messages.append(payload)
+        return payload
+
+
+class FakeRolesMapping:
+    def __init__(self) -> None:
+        self.has_roles = True
+
+    def roles(self, dev: bool = False, include_state: bool = False) -> list[dict[str, Any]]:
+        return [{"role": "living_presence"}] if self.has_roles else []
+
+
+class FakeAssessmentNotifications:
+    def __init__(self) -> None:
+        self.results: list[dict[str, Any]] = []
+        self.resolved = 0
+
+    def notify_assessment(self, assessment: dict[str, Any], contacts: list[dict[str, Any]]) -> dict[str, Any]:
+        return self.results.pop(0)
+
+    def resolve_behavior_notification(self) -> None:
+        self.resolved += 1
 
 
 class MemoryMapping:
@@ -578,6 +608,26 @@ class NotificationSystemWarningTests(unittest.TestCase):
             service.notify_assessment(assessment, [contact(mapping, contact_id)])
 
             self.assertEqual(len(provider.sent), 2)
+
+    def test_behavior_agent_writes_internal_warning_only_when_notification_is_new(self) -> None:
+        agent = SenteroBehaviorAgent.__new__(SenteroBehaviorAgent)
+        agent.mapping = FakeRolesMapping()
+        agent.messaging = RecordingMessaging()
+        agent.notifications = FakeAssessmentNotifications()
+        agent.notifications.results = [{"sent": 1}, {"sent": 0, "skipped": "already_active"}]
+        assessment = {
+            "id": 1,
+            "status": "red",
+            "learning_completed": True,
+            "summary": "Keine Aktivität erkannt.",
+            "email_subject": "Sentero Warnung",
+        }
+        contacts = [{"name": "Nawid", "email": "nawid@example.test"}]
+
+        agent._notify_if_needed(assessment, contacts)
+        agent._notify_if_needed({**assessment, "id": 2}, contacts)
+
+        self.assertEqual(len(agent.messaging.messages), 1)
 
     def test_daily_summary_is_sent_once_after_configured_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

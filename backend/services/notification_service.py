@@ -335,14 +335,14 @@ class NotificationService:
         clean_config = {**(config or {}), "headers": headers or {}}
         return self.providers["email"].send({"email": to_email}, title, text, clean_config)
 
-    def notify_assessment(self, assessment: dict[str, Any], contacts: list[dict[str, Any]]) -> None:
+    def notify_assessment(self, assessment: dict[str, Any], contacts: list[dict[str, Any]]) -> dict[str, Any]:
         severity = str(assessment.get("status") or "green")
         if severity == "green":
             self.resolve_behavior_notification()
-            return
+            return {"sent": 0, "skipped": "resolved"}
         if severity == "yellow" and not self._daily_summary_enabled():
             self.resolve_behavior_notification()
-            return
+            return {"sent": 0, "skipped": "resolved"}
         state_key = "behavior_anomaly"
         duplicate_active = severity in {"orange", "red"} and self._behavior_notification_active(state_key)
         title, email_text, short_text = self._message(assessment)
@@ -379,6 +379,9 @@ class NotificationService:
                     delivered += 1
         if delivered and severity in {"orange", "red"}:
             self._upsert_behavior_notification(state_key, assessment, sent_now=True)
+        if duplicate_active:
+            return {"sent": 0, "skipped": "already_active"}
+        return {"sent": delivered}
 
     def resolve_behavior_notification(self, state_key: str = "behavior_anomaly") -> None:
         timestamp = now()
