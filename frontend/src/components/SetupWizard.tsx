@@ -423,10 +423,10 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
       const name = sensorName || result.sensor.name || 'Sensor';
       try {
         await api.registerSenteroSensor(result.sensor.id, { discovery_id: sessionId, name, room_id: roomId }, devMode);
-        const test = await api.testSenteroSensorRole(sensorId);
-        if (!test.ok) throw new Error(test.message || 'Sensor ist aktuell nicht erreichbar.');
         activeDiscoverySessions.current.delete(sessionId);
         updateSensor(sensorId, { status: 'connected', sessionId, score, sensorManagerId: result.sensor.id, name });
+        setDiscovery((current) => ({ ...current, [sensorId]: { sensor: result.sensor || null, remainingSeconds: 0 } }));
+        void api.testSenteroSensorRole(sensorId).catch(() => undefined);
       } catch (err) {
         activeDiscoverySessions.current.delete(sessionId);
         void api.cancelSenteroSensorDiscovery(sessionId).catch(() => undefined);
