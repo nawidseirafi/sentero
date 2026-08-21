@@ -9,7 +9,7 @@ from backend.services.device_mapping_service import DeviceMappingService, ROOM_L
 from backend.services.service import SenteroService
 
 ACTIVITY_CLASSES = {"presence", "motion", "occupancy"}
-ENV_CLASSES = {"temperature", "humidity"}
+ENV_CLASSES = {"temperature", "humidity", "illuminance", "illuminance_lux"}
 POWER_ROLES = {"energy_consumption", "power_usage"}
 CONTACT_CLASSES = {"contact", "door", "window", "opening"}
 
@@ -342,25 +342,95 @@ class MailQueryService:
         return "Normal"
 
     def _latest_environment(self) -> dict[str, Any] | None:
+        result: dict[str, Any] = {}
+        live_snapshot_failed = False
+        try:
+            live_rows = self.mapping.snapshot()
+        except Exception:
+            live_rows = []
+            live_snapshot_failed = True
+        for item in live_rows:
+            reading = self._environment_reading_from_row(item, source="live")
+            if not reading:
+                continue
+            key = str(reading["key"])
+            current_time = self._parse_time(result.get(f"{key}_at")) if result.get(f"{key}_at") else None
+            reading_time = self._parse_time(reading.get("at"))
+            if key not in result or (reading_time and (not current_time or reading_time >= current_time)):
+                self._set_environment_result(result, reading)
+
+        history = self._latest_environment_history()
+        for key, reading in history.items():
+            if key in result:
+                continue
+            if live_snapshot_failed:
+                reading["fallback_reason"] = "sensor_snapshot_unavailable"
+            else:
+                reading["fallback_reason"] = "sensor_not_answering"
+            self._set_environment_result(result, reading)
+        return result or None
+
+    def _latest_environment_history(self) -> dict[str, dict[str, Any]]:
         with self.mapping.connect() as con:
             rows = con.execute(
                 """select * from sentero_sensor_events
-                   where device_class in ('temperature', 'humidity') or role like '%temperature%' or role like '%humidity%'
+                   where device_class in ('temperature', 'humidity', 'illuminance')
+                      or role like '%temperature%'
+                      or role like '%humidity%'
+                      or role like '%illuminance%'
+                      or role like '%helligkeit%'
                    order by event_time desc, id desc limit 20"""
             ).fetchall()
-        result: dict[str, Any] = {}
+        result: dict[str, dict[str, Any]] = {}
         for row in rows:
             event = dict(row)
-            key = "temperature_c" if "temp" in str(event.get("device_class") or event.get("role") or "") else "humidity_percent"
+            reading = self._environment_reading_from_row(event, source="history")
+            if not reading:
+                continue
+            key = str(reading["key"])
             if key in result:
                 continue
-            value = _number(event.get("state"))
-            if value is None:
-                continue
-            result[key] = value
-            result[f"{key}_at"] = event.get("event_time")
-            result[f"{key}_freshness"] = self._freshness(event.get("event_time"))
-        return result or None
+            result[key] = reading
+        return result
+
+    def _environment_reading_from_row(self, row: dict[str, Any], source: str) -> dict[str, Any] | None:
+        key = self._environment_key(row)
+        if not key:
+            return None
+        value = _number(row.get("state"))
+        if value is None:
+            return None
+        at = row.get("last_updated") or row.get("last_changed") or row.get("event_time") or row.get("updated_at")
+        return {
+            "key": key,
+            "value": value,
+            "at": at,
+            "freshness": self._freshness(at),
+            "source": source,
+            "label": row.get("friendly_name") or row.get("label") or row.get("role") or row.get("entity_id"),
+            "room_label": self._room_label(row.get("room") or row.get("area_id")),
+        }
+
+    def _environment_key(self, row: dict[str, Any]) -> str | None:
+        text = " ".join(str(row.get(key) or "").lower() for key in ("device_class", "role", "entity_id", "friendly_name", "label"))
+        if "temperature" in text or "temperatur" in text:
+            return "temperature_c"
+        if "humidity" in text or "luftfeuchtigkeit" in text or "feuchtigkeit" in text:
+            return "humidity_percent"
+        if "illuminance" in text or "helligkeit" in text or "lux" in text:
+            return "illuminance_lux"
+        return None
+
+    def _set_environment_result(self, result: dict[str, Any], reading: dict[str, Any]) -> None:
+        key = str(reading["key"])
+        result[key] = reading.get("value")
+        result[f"{key}_at"] = reading.get("at")
+        result[f"{key}_freshness"] = reading.get("freshness")
+        result[f"{key}_source"] = reading.get("source")
+        result[f"{key}_label"] = reading.get("label")
+        result[f"{key}_room_label"] = reading.get("room_label")
+        if reading.get("fallback_reason"):
+            result[f"{key}_fallback_reason"] = reading.get("fallback_reason")
 
     def _latest_meter_readings(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         latest: dict[str, dict[str, Any]] = {}

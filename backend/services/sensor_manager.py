@@ -97,12 +97,19 @@ class SensorManager:
         with self.mapping.connect() as con:
             row = con.execute("select * from ecotracker_settings where id = 1").fetchone()
         data = dict(row) if row else {}
+        reading = None
+        if data.get("enabled") and data.get("host"):
+            try:
+                reading = public_ecotracker_reading(EcoTrackerClient(str(data["host"])).read())
+            except Exception:
+                logger.exception("EcoTracker status reading failed", extra={"component": "sensor_manager", "source": "ecotracker"})
         return {
             "enabled": bool(data.get("enabled")),
             "configured": bool(data.get("host")),
             "host": data.get("host") or "",
             "device": "everHome EcoTracker IR",
             "last_checked_at": data.get("last_checked_at"),
+            "reading": reading,
         }
 
     def test_ecotracker(self, host: str) -> dict[str, Any]:
@@ -510,10 +517,12 @@ def json_dumps(value: Any) -> str:
 
 
 def public_ecotracker_reading(payload: dict[str, Any]) -> dict[str, Any]:
+    meter_reading_kwh = wh_to_kwh(payload.get("energyCounterIn"))
     return {
         "power_w": payload.get("power"),
         "power_avg_w": payload.get("powerAvg"),
-        "energy_in_kwh": wh_to_kwh(payload.get("energyCounterIn")),
+        "meter_reading_kwh": meter_reading_kwh,
+        "energy_in_kwh": meter_reading_kwh,
         "energy_out_kwh": wh_to_kwh(payload.get("energyCounterOut")),
     }
 

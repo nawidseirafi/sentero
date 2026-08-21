@@ -312,7 +312,16 @@ class DeviceMappingService:
             current = cached_candidate_snapshot
         else:
             current = self._mqtt_snapshot() if mqtt_discovery else self.snapshot()
-        scored = score_candidates(baseline, current, row['target_role'], row['target_room'], row['started_at'], require_new=mqtt_discovery)
+        assigned_identities = self._assigned_sensor_identities()
+        scored = score_candidates(
+            baseline,
+            current,
+            row['target_role'],
+            row['target_room'],
+            row['started_at'],
+            require_new=mqtt_discovery,
+            assigned_identities=assigned_identities,
+        )
         raw_changed_count = count_changed_entities(baseline, current, row['started_at'])
         changed_count = len(scored)
         best_scored = scored[0] if scored else None
@@ -392,7 +401,16 @@ class DeviceMappingService:
         detail = discovery_detail(session)
         mqtt_discovery = detail.get('mode') == 'mqtt_discovery'
         current = json.loads(session['candidate_snapshot_json'] or '[]') or (self._mqtt_snapshot() if mqtt_discovery else self.snapshot())
-        scored = score_candidates(baseline, current, session['target_role'], session['target_room'], session['started_at'], require_new=mqtt_discovery)
+        assigned_identities = self._assigned_sensor_identities()
+        scored = score_candidates(
+            baseline,
+            current,
+            session['target_role'],
+            session['target_room'],
+            session['started_at'],
+            require_new=mqtt_discovery,
+            assigned_identities=assigned_identities,
+        )
         entity = next(
             (
                 item for item in scored
@@ -941,7 +959,11 @@ class DeviceMappingService:
             battery_entity = find_battery_entity(dict(row), states) or find_battery_entity(state or {}, states)
             battery_level = parse_battery(battery_entity.get('state')) if battery_entity else battery_level_from_state(state)
             power_source = power_source_from_state(state)
+            environmental = environmental_metrics_from_state({**row, **(state or {})}, states)
             c1001_telemetry = c1001_telemetry_from_state(state)
+            generic_presence = generic_presence_telemetry_from_state({**row, **(state or {})}, state, states)
+            presence = c1001_telemetry.get('presence') if c1001_telemetry.get('presence') is not None else generic_presence.get('presence')
+            motion = c1001_telemetry.get('motion') if c1001_telemetry.get('motion') is not None else generic_presence.get('motion')
             logger.debug(
                 "Sensor health resolved",
                 extra={
@@ -954,9 +976,12 @@ class DeviceMappingService:
                     "battery_entity": battery_entity.get('entity_id') if battery_entity else None,
                     "battery_level": battery_level,
                     "power_source": power_source,
-                    "presence": c1001_telemetry.get('presence'),
+                    "temperature": environmental.get('temperature'),
+                    "humidity": environmental.get('humidity'),
+                    "illuminance": environmental.get('illuminance'),
+                    "presence": presence,
                     "fall_detected": c1001_telemetry.get('fall_detected'),
-                    "motion": c1001_telemetry.get('motion'),
+                    "motion": motion,
                 },
             )
             result.append({
@@ -977,9 +1002,12 @@ class DeviceMappingService:
                 'last_updated': state.get('last_updated') if state else None,
                 'battery_level': battery_level,
                 'power_source': power_source,
-                'presence': c1001_telemetry.get('presence'),
+                'temperature': environmental.get('temperature'),
+                'humidity': environmental.get('humidity'),
+                'illuminance': environmental.get('illuminance'),
+                'presence': presence,
                 'fall_detected': c1001_telemetry.get('fall_detected'),
-                'motion': c1001_telemetry.get('motion'),
+                'motion': motion,
                 'hp_led': c1001_telemetry.get('hp_led'),
                 'fall_led': c1001_telemetry.get('fall_led'),
                 'led_status': c1001_telemetry.get('led_status'),
@@ -1082,6 +1110,14 @@ class DeviceMappingService:
                 rows.extend(normalize_snapshot_item(item) for item in source.snapshot())
             return rows
         return [normalize_snapshot_item(item) for item in self.sensor_source.snapshot()]
+
+    def _assigned_sensor_identities(self) -> set[str]:
+        with self.connect() as con:
+            rows = con.execute('select * from sensor_roles where active = 1').fetchall()
+        identities: set[str] = set()
+        for row in rows:
+            identities.update(mqtt_identity_values(dict(row)))
+        return identities
 
     def uses_mqtt_source(self) -> bool:
         return self.source_mode in {'mqtt', 'zigbee2mqtt', 'z2m', 'mixed'}
@@ -1604,9 +1640,18 @@ def discovery_detail(row: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def score_candidates(baseline: list[dict[str, Any]], current: list[dict[str, Any]], role: str, room: str | None, started_at: str | datetime, require_new: bool = False) -> list[dict[str, Any]]:
+def score_candidates(
+    baseline: list[dict[str, Any]],
+    current: list[dict[str, Any]],
+    role: str,
+    room: str | None,
+    started_at: str | datetime,
+    require_new: bool = False,
+    assigned_identities: set[str] | None = None,
+) -> list[dict[str, Any]]:
     before = {item.get('entity_id'): item for item in baseline}
     baseline_device_ids = {str(item.get('device_id') or '') for item in baseline if item.get('device_id')}
+    assigned_identities = assigned_identities or set()
     started = parse_time(started_at)
     scored = []
     for item in current:
@@ -1614,16 +1659,22 @@ def score_candidates(baseline: list[dict[str, Any]], current: list[dict[str, Any
         if not entity_id:
             continue
         device_id = str(item.get('device_id') or '')
+        identities = mqtt_identity_values(item)
+        if identities and identities.intersection(assigned_identities):
+            continue
         old = before.get(entity_id, {})
         is_new = entity_id not in before
         is_new_device = bool(device_id and device_id not in baseline_device_ids)
         state_changed = bool(old) and item.get('state') != old.get('state')
         last_changed_updated = is_after(item.get('last_changed'), started)
         last_updated_updated = is_after(item.get('last_updated'), started)
-        if require_new and not (is_new or is_new_device):
-            continue
         changed = is_new or is_new_device or state_changed or last_changed_updated or last_updated_updated
-        if not changed:
+        existing_unassigned = False
+        if require_new and not changed:
+            existing_unassigned = bool(identities) and not identities.intersection(assigned_identities)
+        if require_new and not (is_new or is_new_device or existing_unassigned):
+            continue
+        if not changed and not existing_unassigned:
             continue
 
         priority = candidate_entity_priority(role, item)
@@ -1657,6 +1708,9 @@ def score_candidates(baseline: list[dict[str, Any]], current: list[dict[str, Any
         if state_match:
             confidence += 20
             reasons.append('state_entity_match')
+        if existing_unassigned:
+            confidence += 35
+            reasons.append('existing_unassigned')
         if room_matches(room, entity_id, item.get('friendly_name')):
             confidence += 20
             reasons.append('room_match')
@@ -1671,7 +1725,7 @@ def score_candidates(baseline: list[dict[str, Any]], current: list[dict[str, Any
             confidence -= 10
             reasons.append(f'state_{state_value}')
         if confidence >= 40:
-            scored.append({**item, 'confidence': confidence, 'reasons': reasons, 'is_new': is_new, 'is_new_device': is_new_device, 'entity_priority': priority})
+            scored.append({**item, 'confidence': confidence, 'reasons': reasons, 'is_new': is_new, 'is_new_device': is_new_device, 'existing_unassigned': existing_unassigned, 'entity_priority': priority})
     return sorted(scored, key=lambda x: (bool(x.get('is_new_device')), role_state_priority(role, x), bool(x.get('is_new')), x['confidence'], parse_time(x.get('last_updated')).timestamp()), reverse=True)
 
 
@@ -2047,6 +2101,84 @@ def battery_level_from_state(state: dict[str, Any] | None) -> int | None:
     return None
 
 
+def environmental_metrics_from_state(role: dict[str, Any], states: list[dict[str, Any]]) -> dict[str, float | None]:
+    return {
+        'temperature': find_numeric_metric(role, states, {'temperature'}, {'temperature', 'temperatur'}),
+        'humidity': find_numeric_metric(role, states, {'humidity'}, {'humidity', 'luftfeuchtigkeit'}),
+        'illuminance': find_numeric_metric(role, states, {'illuminance', 'illuminance_lux'}, {'illuminance', 'illuminance_lux', 'beleuchtungsstaerke', 'beleuchtungsstarke', 'helligkeit'}),
+    }
+
+
+def find_numeric_metric(role: dict[str, Any], states: list[dict[str, Any]], keys: set[str], name_terms: set[str]) -> float | None:
+    direct = metric_from_item(role, keys)
+    if direct is not None:
+        return direct
+    wanted_ids = mqtt_identity_values(role)
+    for state in states:
+        if wanted_ids and not wanted_ids.intersection(mqtt_identity_values(state)):
+            continue
+        if not metric_entity_allowed(state):
+            continue
+        payload_key = normalize(str(state.get('payload_key') or ''))
+        device_class = normalize(str(state.get('device_class') or ''))
+        entity_id = normalize(str(state.get('entity_id') or ''))
+        friendly_name = normalize(str(state.get('friendly_name') or state.get('original_name') or ''))
+        if payload_key not in keys and device_class not in keys and not any(term in entity_id or term in friendly_name for term in name_terms):
+            continue
+        value = metric_from_item(state, keys)
+        if value is None:
+            value = parse_float(state.get('state'))
+        if value is not None:
+            return value
+    return None
+
+
+def metric_entity_allowed(state: dict[str, Any]) -> bool:
+    domain = normalize(str(state.get('domain') or ''))
+    if domain and domain != 'sensor':
+        return False
+    haystack = normalize(' '.join(str(state.get(key) or '') for key in ('entity_id', 'friendly_name', 'original_name', 'device_name', 'payload_key')))
+    return not any(term in haystack for term in {
+        'calibration',
+        'kalibrierung',
+        'interval',
+        'sensitivity',
+        'sensitivitaet',
+        'sensitivity',
+        'distance',
+        'distanz',
+        'mode',
+    })
+
+
+def metric_from_item(item: dict[str, Any], keys: set[str]) -> float | None:
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    for key in keys:
+        value = parse_float(item.get(key))
+        if value is not None:
+            return value
+        value = parse_float(attrs.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def parse_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(',', '.')
+    if not text or text.lower() in {'none', 'unknown', 'unavailable', 'nan'}:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 def power_source_from_state(state: dict[str, Any] | None) -> str | None:
     if not state:
         return None
@@ -2090,6 +2222,55 @@ def c1001_telemetry_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
             'any_on': bool(hp_led or fall_led),
         }
     return {'presence': presence, 'fall_detected': fall_detected, 'motion': motion, 'hp_led': hp_led, 'fall_led': fall_led, 'led_status': led_status, 'writable_settings': writable_settings}
+
+
+def generic_presence_telemetry_from_state(role: dict[str, Any], state: dict[str, Any] | None, states: list[dict[str, Any]]) -> dict[str, Any]:
+    if not role_is_presence(str(role.get('role') or '')):
+        return {'presence': None, 'motion': None}
+    presence = generic_presence_value(state)
+    motion_state = find_motion_state(role, states)
+    if presence is False:
+        return {'presence': False, 'motion': 'None'}
+    if presence is True:
+        return {'presence': True, 'motion': normalize_motion_state(motion_state, default='Still')}
+    return {'presence': None, 'motion': normalize_motion_state(motion_state)}
+
+
+def generic_presence_value(state: dict[str, Any] | None) -> bool | None:
+    if not state:
+        return None
+    payload_key = normalize(str(state.get('payload_key') or ''))
+    device_class = normalize(str(state.get('device_class') or ''))
+    if payload_key in {'occupancy', 'presence'} or device_class in {'occupancy', 'presence'}:
+        return parse_bool_value(state.get('state'))
+    return None
+
+
+def find_motion_state(role: dict[str, Any], states: list[dict[str, Any]]) -> str | None:
+    wanted_ids = mqtt_identity_values(role)
+    for state in states:
+        if wanted_ids and not wanted_ids.intersection(mqtt_identity_values(state)):
+            continue
+        payload_key = normalize(str(state.get('payload_key') or ''))
+        device_class = normalize(str(state.get('device_class') or ''))
+        haystack = normalize(' '.join(str(state.get(key) or '') for key in ('entity_id', 'friendly_name', 'original_name', 'device_name')))
+        if payload_key not in {'motion_state', 'motion'} and device_class not in {'motion_state', 'motion'} and 'motion_state' not in haystack:
+            continue
+        return str(state.get('state') or '').strip()
+    return None
+
+
+def normalize_motion_state(value: Any, default: str | None = None) -> str | None:
+    text = normalize(str(value or ''))
+    if not text:
+        return default
+    if text in {'move', 'moving', 'active', 'motion', 'detected', 'large', 'small'}:
+        return 'Active'
+    if text in {'still', 'static', 'stationary', 'standstill', 'presence'}:
+        return 'Still'
+    if text in {'none', 'clear', 'off', 'false', '0', 'no_motion', 'no motion'}:
+        return 'None'
+    return default
 
 
 def first_present(item: dict[str, Any], attrs: dict[str, Any], key: str) -> Any:
@@ -2483,6 +2664,9 @@ def public_role(data: dict[str, Any]) -> dict[str, Any]:
         'last_updated': data.get('last_updated'),
         'battery_level': data.get('battery_level'),
         'power_source': data.get('power_source'),
+        'temperature': data.get('temperature'),
+        'humidity': data.get('humidity'),
+        'illuminance': data.get('illuminance'),
         'presence': data.get('presence'),
         'fall_detected': data.get('fall_detected'),
         'motion': data.get('motion'),

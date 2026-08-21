@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import smtplib
 import sqlite3
 import socket
@@ -16,6 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import requests
 
 from backend.logging_config import get_logger
+from backend.config import config_float
 from backend.services.messaging import MessagingService
 
 from backend.services.aal_roles import can_access_data_classes
@@ -32,6 +34,9 @@ SEVERITIES = ("green", "yellow", "orange", "red")
 SECRET_KEYS = {"access_token", "bot_token", "imap_password", "smtp_password", "password", "token"}
 EMAIL_FROM = "Sentero <noreply@sentero.de>"
 BATTERY_WARNING_THRESHOLD = 30
+DEFAULT_TEMPERATURE_MIN_CELSIUS = 16.0
+DEFAULT_TEMPERATURE_MAX_CELSIUS = 28.0
+DEFAULT_HUMIDITY_MAX_PERCENT = 70.0
 
 
 class NotificationProvider(ABC):
@@ -182,6 +187,17 @@ class NotificationService:
                     sent_at text not null
                 )"""
             )
+            con.execute(
+                """create table if not exists behavior_notification_state (
+                    state_key text primary key,
+                    status text not null,
+                    first_seen_at text not null,
+                    last_seen_at text not null,
+                    last_sent_at text,
+                    resolved_at text,
+                    assessment_json text not null default '{}'
+                )"""
+            )
             con.commit()
 
     def channels(self) -> dict[str, Any]:
@@ -322,10 +338,16 @@ class NotificationService:
     def notify_assessment(self, assessment: dict[str, Any], contacts: list[dict[str, Any]]) -> None:
         severity = str(assessment.get("status") or "green")
         if severity == "green":
+            self.resolve_behavior_notification()
             return
         if severity == "yellow" and not self._daily_summary_enabled():
+            self.resolve_behavior_notification()
             return
+        state_key = "behavior_anomaly"
+        duplicate_active = severity in {"orange", "red"} and self._behavior_notification_active(state_key)
         title, email_text, short_text = self._message(assessment)
+        delivered = 0
+        touched_duplicate = False
         for contact in contacts:
             if not bool(contact.get("notification_enabled", 1)):
                 continue
@@ -343,17 +365,42 @@ class NotificationService:
                     extra={"component": "notification", "contact_id": contact.get("id"), "purpose": DEFAULT_NOTIFICATION_PURPOSE},
                 )
                 continue
+            if duplicate_active:
+                if not touched_duplicate:
+                    self._touch_behavior_notification(state_key, assessment)
+                    touched_duplicate = True
+                continue
             channels = self._channels_for_contact(contact, severity)
             for channel in channels:
                 text = email_text if channel == "email" else short_text
+                before = self._log_count()
                 self._send_with_log(contact, channel, severity, title, text, fallback=severity == "red")
+                if self._log_count() > before:
+                    delivered += 1
+        if delivered and severity in {"orange", "red"}:
+            self._upsert_behavior_notification(state_key, assessment, sent_now=True)
 
-    def notify_system_warnings(self, sensors: list[dict[str, Any]] | None = None, battery_threshold: int = BATTERY_WARNING_THRESHOLD) -> dict[str, Any]:
+    def resolve_behavior_notification(self, state_key: str = "behavior_anomaly") -> None:
+        timestamp = now()
+        with self.mapping.connect() as con:
+            con.execute(
+                "update behavior_notification_state set status = 'resolved', resolved_at = ?, last_seen_at = ? where state_key = ? and status = 'active'",
+                (timestamp, timestamp, state_key),
+            )
+            con.commit()
+
+    def notify_system_warnings(
+        self,
+        sensors: list[dict[str, Any]] | None = None,
+        battery_threshold: int = BATTERY_WARNING_THRESHOLD,
+        environmental_sensors: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         if not self._critical_notifications_enabled():
             return {"sent": 0, "warnings": [], "skipped": "critical_notifications_disabled"}
 
         sensor_rows = sensors if sensors is not None else self.mapping.roles(dev=True, include_state=True)
-        active_warnings = self._system_warnings(sensor_rows, battery_threshold=battery_threshold)
+        environmental_rows = environmental_sensors if environmental_sensors is not None else self._environmental_snapshot_rows(sensors)
+        active_warnings = self._system_warnings(sensor_rows, battery_threshold=battery_threshold, environmental_sensors=environmental_rows)
         logger.debug(
             "System warnings evaluated",
             extra={"component": "notification", "sensor_count": len(sensor_rows), "warning_count": len(active_warnings)},
@@ -377,7 +424,12 @@ class NotificationService:
 
         return {"sent": sent, "warnings": active_warnings}
 
-    def _system_warnings(self, sensors: list[dict[str, Any]], battery_threshold: int) -> list[dict[str, Any]]:
+    def _system_warnings(
+        self,
+        sensors: list[dict[str, Any]],
+        battery_threshold: int,
+        environmental_sensors: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         warnings: list[dict[str, Any]] = []
         for sensor in sensors:
             if not sensor.get("configured", sensor.get("active", True)):
@@ -414,7 +466,105 @@ class NotificationService:
                     "room": room,
                     "battery_level": battery if isinstance(battery, (int, float)) else None,
                 })
+        for warning in self._environmental_warnings(environmental_sensors or sensors):
+            warnings.append(warning)
         return warnings
+
+    def _environmental_snapshot_rows(self, sensors: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        if sensors is not None:
+            return sensors
+        try:
+            return self.mapping.snapshot()
+        except Exception:
+            logger.exception("Environmental snapshot unavailable", extra={"component": "notification"})
+            return []
+
+    def _environmental_warnings(self, sensors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        thresholds = {
+            "temperature_min_celsius": config_float("sentero.environment.temperature_min_celsius", DEFAULT_TEMPERATURE_MIN_CELSIUS),
+            "temperature_max_celsius": config_float("sentero.environment.temperature_max_celsius", DEFAULT_TEMPERATURE_MAX_CELSIUS),
+            "humidity_max_percent": config_float("sentero.environment.humidity_max_percent", DEFAULT_HUMIDITY_MAX_PERCENT),
+        }
+        warnings: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for sensor in sensors:
+            kind = self._environmental_kind(sensor)
+            if kind not in {"temperature", "humidity"}:
+                continue
+            value = self._measurement_value(sensor)
+            if value is None:
+                continue
+            key_base = str(sensor.get("entity_id") or sensor.get("resolved_entity_id") or sensor.get("role") or sensor.get("label") or kind).strip()
+            if kind == "temperature" and value < thresholds["temperature_min_celsius"]:
+                warning = self._environmental_warning(sensor, "temperature_low", value, "°C", "red", f"unter {self._format_measurement(thresholds['temperature_min_celsius'])} °C")
+            elif kind == "temperature" and value > thresholds["temperature_max_celsius"]:
+                warning = self._environmental_warning(sensor, "temperature_high", value, "°C", "red", f"über {self._format_measurement(thresholds['temperature_max_celsius'])} °C")
+            elif kind == "humidity" and value > thresholds["humidity_max_percent"]:
+                warning = self._environmental_warning(sensor, "humidity_high", value, "%", "orange", f"über {self._format_measurement(thresholds['humidity_max_percent'])} %")
+            else:
+                continue
+            warning["key"] = f"{warning['type']}:{key_base}"
+            if warning["key"] in seen:
+                continue
+            seen.add(warning["key"])
+            warnings.append(warning)
+        return warnings
+
+    def _environmental_warning(self, sensor: dict[str, Any], warning_type: str, value: float, unit: str, severity: str, threshold_text: str) -> dict[str, Any]:
+        role = str(sensor.get("role") or sensor.get("entity_id") or warning_type).strip()
+        label = str(sensor.get("label") or sensor.get("friendly_name") or sensor.get("original_name") or sensor.get("entity_id") or role).strip()
+        room = str(sensor.get("room") or sensor.get("area_id") or "").strip()
+        if warning_type.startswith("temperature"):
+            direction = "zu niedrige" if warning_type == "temperature_low" else "zu hohe"
+            summary = f"{label} meldet eine {direction} Raumtemperatur von {self._format_measurement(value)} {unit}."
+            recommendation = "Bitte prüfen Sie Heizung, Lüftung oder Klimatisierung und kontaktieren Sie die betreute Person zeitnah."
+            title = "Sentero Raumtemperatur kritisch"
+        else:
+            summary = f"{label} meldet eine hohe Luftfeuchtigkeit von {self._format_measurement(value)} {unit}."
+            recommendation = "Bitte prüfen Sie Lüftung, Bad-/Küchennutzung oder mögliche Feuchtigkeitsschäden zeitnah."
+            title = "Sentero Luftfeuchtigkeit auffällig"
+        return {
+            "key": "",
+            "type": warning_type,
+            "severity": severity,
+            "title": title,
+            "summary": f"{summary} Der konfigurierte Grenzwert liegt {threshold_text}.",
+            "recommendation": recommendation,
+            "role": role,
+            "label": label,
+            "room": room,
+            "measurement_value": self._format_measurement(value),
+            "measurement_unit": unit,
+            "data_class": "environmental",
+            "aggregation_level": "raw",
+        }
+
+    def _environmental_kind(self, sensor: dict[str, Any]) -> str | None:
+        text = " ".join(str(sensor.get(key) or "").lower() for key in ("device_class", "role", "entity_id", "label", "friendly_name"))
+        if "temperature" in text or "temperatur" in text:
+            return "temperature"
+        if "humidity" in text or "luftfeuchtigkeit" in text:
+            return "humidity"
+        return None
+
+    def _measurement_value(self, sensor: dict[str, Any]) -> float | None:
+        for key in ("state", "value", "measurement_value"):
+            value = sensor.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                match = re.search(r"-?\d+(?:[,.]\d+)?", value)
+                if match:
+                    try:
+                        return float(match.group(0).replace(",", "."))
+                    except ValueError:
+                        return None
+        return None
+
+    def _format_measurement(self, value: float) -> str:
+        if float(value).is_integer():
+            return str(int(value))
+        return f"{value:.1f}".replace(".", ",")
 
     def _send_system_warning(self, warning: dict[str, Any], contacts: list[dict[str, Any]]) -> int:
         delivered = 0
@@ -443,6 +593,10 @@ class NotificationService:
             lines.append(f"Raum: {warning.get('room')}")
         if warning.get("battery_level") is not None:
             lines.append(f"Batterie: {warning.get('battery_level')}%")
+        if warning.get("measurement_value") is not None and warning.get("measurement_unit"):
+            lines.append(f"Messwert: {warning.get('measurement_value')} {warning.get('measurement_unit')}")
+        if warning.get("data_class"):
+            lines.append(f"Datenklasse: {warning.get('data_class')}")
         lines.extend(["", str(warning.get("recommendation") or "Bitte prüfen Sie das System.")])
         return "\n".join(lines).strip()
 
@@ -534,6 +688,42 @@ class NotificationService:
         with self.mapping.connect() as con:
             row = con.execute("select * from system_warning_state where warning_key = ?", (key,)).fetchone()
         return dict(row) if row else None
+
+    def _behavior_notification_active(self, state_key: str) -> bool:
+        with self.mapping.connect() as con:
+            row = con.execute(
+                "select status, last_sent_at from behavior_notification_state where state_key = ?",
+                (state_key,),
+            ).fetchone()
+        return bool(row and row["status"] == "active" and row["last_sent_at"])
+
+    def _upsert_behavior_notification(self, state_key: str, assessment: dict[str, Any], sent_now: bool) -> None:
+        timestamp = now()
+        with self.mapping.connect() as con:
+            existing = con.execute("select * from behavior_notification_state where state_key = ?", (state_key,)).fetchone()
+            first_seen = existing["first_seen_at"] if existing else timestamp
+            last_sent = timestamp if sent_now else (existing["last_sent_at"] if existing else None)
+            con.execute(
+                """insert into behavior_notification_state
+                   (state_key, status, first_seen_at, last_seen_at, last_sent_at, resolved_at, assessment_json)
+                   values (?, 'active', ?, ?, ?, null, ?)
+                   on conflict(state_key) do update set
+                       status = 'active',
+                       last_seen_at = excluded.last_seen_at,
+                       last_sent_at = coalesce(excluded.last_sent_at, behavior_notification_state.last_sent_at),
+                       resolved_at = null,
+                       assessment_json = excluded.assessment_json""",
+                (state_key, first_seen, timestamp, last_sent, json.dumps(assessment, ensure_ascii=False, sort_keys=True)),
+            )
+            con.commit()
+
+    def _touch_behavior_notification(self, state_key: str, assessment: dict[str, Any]) -> None:
+        with self.mapping.connect() as con:
+            con.execute(
+                "update behavior_notification_state set last_seen_at = ?, assessment_json = ? where state_key = ?",
+                (now(), json.dumps(assessment, ensure_ascii=False, sort_keys=True), state_key),
+            )
+            con.commit()
 
     def _upsert_system_warning(self, warning: dict[str, Any], sent_now: bool) -> None:
         timestamp = now()

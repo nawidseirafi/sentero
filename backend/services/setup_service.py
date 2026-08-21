@@ -122,7 +122,7 @@ class SenteroSetupService:
         validate_contact_channels(channels, email, telegram_chat_id, whatsapp_phone_number)
         if not name:
             raise ValueError('name is required')
-        if 'email' in channels and not is_valid_email(email):
+        if not is_valid_email(email):
             raise ValueError('valid email is required')
         with self.mapping.connect() as con:
             if primary_contact:
@@ -179,7 +179,7 @@ class SenteroSetupService:
         validate_contact_channels(channels, email, telegram_chat_id, whatsapp_phone_number)
         if not name:
             raise ValueError('name is required')
-        if 'email' in channels and not is_valid_email(email):
+        if not is_valid_email(email):
             raise ValueError('valid email is required')
         with self.mapping.connect() as con:
             row = con.execute('select * from trusted_contacts where id = ? and active = 1', (contact_id,)).fetchone()
@@ -280,15 +280,15 @@ def normalize_channels(value: Any, email: str = '') -> list[str]:
         channel = str(item or '').strip().lower()
         if channel in {'email', 'telegram', 'whatsapp'} and channel not in channels:
             channels.append(channel)
-    if not channels and not explicit_value and email:
-        channels = ['email']
-    if channels and 'email' not in channels and email:
+    if 'email' not in channels:
         channels.insert(0, 'email')
     return channels
 
 
 def validate_contact_channels(channels: list[str], email: str, telegram_chat_id: str, whatsapp_phone_number: str) -> None:
-    if 'email' in channels and not email:
+    if 'email' not in channels:
+        raise ValueError('email channel is required')
+    if not email:
         raise ValueError('email is required')
     if 'whatsapp' in channels and not whatsapp_phone_number:
         raise ValueError('whatsapp phone number is required')

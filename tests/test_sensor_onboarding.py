@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from backend.services.device_mapping_service import DeviceMappingService, SensorTransport, role_candidate_matches
+from backend.services.device_mapping_service import DeviceMappingService, SensorTransport, mqtt_identity_values, role_candidate_matches, score_candidates
 from backend.services.sensor_manager import SensorManager, wifi_sensor_setup_enabled
 
 
@@ -201,6 +201,26 @@ class SensorOnboardingTests(unittest.TestCase):
     def test_presence_classes_include_target_entities(self) -> None:
         self.assertTrue(role_candidate_matches("hallway_presence", {"domain": "binary_sensor", "device_class": "moving_target", "entity_id": "binary_sensor.mmwave_moving_target"}))
         self.assertTrue(role_candidate_matches("hallway_presence", {"domain": "binary_sensor", "device_class": "static_target", "entity_id": "binary_sensor.mmwave_static_target"}))
+
+    def test_active_presence_mapping_is_not_offered_for_another_room(self) -> None:
+        assigned = mqtt_identity_values({
+            "role": "living_room_presence",
+            "entity_id": "binary_sensor.guest_wc_presence_sensor_presence",
+            "friendly_name": "Wohnzimmer Präsenz",
+        })
+        current = [{
+            "entity_id": "binary_sensor.guest_wc_presence_sensor_presence",
+            "domain": "binary_sensor",
+            "state": "off",
+            "friendly_name": "Presence Sensor Belegung",
+            "device_class": "occupancy",
+            "last_changed": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "last_updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }]
+
+        scored = score_candidates([], current, "kitchen_presence", "kitchen", datetime.now(timezone.utc), assigned_identities=assigned)
+
+        self.assertEqual(scored, [])
 
     def test_v1_sensor_wizard_hides_wifi_qr_by_default(self) -> None:
         text = Path("frontend/src/components/SensorWizard.tsx").read_text(encoding="utf-8")

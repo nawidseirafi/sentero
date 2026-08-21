@@ -58,6 +58,9 @@ export type SenteroSensorRole = {
   last_updated?: string | null;
   battery_level?: number | null;
   power_source?: string | null;
+  temperature?: number | null;
+  humidity?: number | null;
+  illuminance?: number | null;
   presence?: boolean | null;
   fall_detected?: boolean | null;
   motion?: string | null;
@@ -295,11 +298,13 @@ export type SenteroEcoTrackerStatus = {
   host: string;
   device: string;
   last_checked_at?: string | null;
+  reading?: SenteroEcoTrackerReading | null;
 };
 
 export type SenteroEcoTrackerReading = {
   power_w?: number | null;
   power_avg_w?: number | null;
+  meter_reading_kwh?: number | null;
   energy_in_kwh?: number | null;
   energy_out_kwh?: number | null;
 };

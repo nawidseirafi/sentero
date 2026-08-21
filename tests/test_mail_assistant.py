@@ -198,6 +198,55 @@ class MailAssistantTest(unittest.TestCase):
         self.assistant.process_message(self._mail("Wie warm ist es?"))
         self.assertIn("22,4 °C", self.notification.sent[-1]["text"])
 
+    def test_environment_intent_prefers_live_sensor_values(self) -> None:
+        self._environment(minutes_ago=1, value="19.1")
+        self.mapping.snapshot = lambda: [  # type: ignore[method-assign]
+            {
+                "entity_id": "sensor.living_room_temperature",
+                "friendly_name": "Wohnzimmer Temperatur",
+                "device_class": "temperature",
+                "state": "23.8",
+                "area_id": "living_room",
+                "last_updated": now(),
+            },
+            {
+                "entity_id": "sensor.living_room_humidity",
+                "friendly_name": "Wohnzimmer Luftfeuchtigkeit",
+                "device_class": "humidity",
+                "state": "46",
+                "area_id": "living_room",
+                "last_updated": now(),
+            },
+            {
+                "entity_id": "sensor.living_room_illuminance",
+                "friendly_name": "Wohnzimmer Helligkeit",
+                "device_class": "illuminance",
+                "state": "120",
+                "area_id": "living_room",
+                "last_updated": now(),
+            },
+        ]
+
+        self.assistant.process_message(self._mail("Wie sind Temperatur, Feuchtigkeit und Helligkeit?", message_id="<live-env@example.test>"))
+
+        text = self.notification.sent[-1]["text"]
+        self.assertIn("Sensor meldet aktuell", text)
+        self.assertIn("Temperatur 23,8 °C", text)
+        self.assertIn("Luftfeuchtigkeit 46 %", text)
+        self.assertIn("Helligkeit 120 lx", text)
+        self.assertNotIn("19,1 °C", text)
+        self.assertNotIn("aus der Historie verwendet", text)
+
+    def test_environment_intent_falls_back_to_history_when_sensor_unreachable(self) -> None:
+        self.mapping.snapshot = lambda: (_ for _ in ()).throw(RuntimeError("sensor_unreachable"))  # type: ignore[method-assign]
+
+        self.assistant.process_message(self._mail("Wie warm ist es?", message_id="<history-env@example.test>"))
+
+        text = self.notification.sent[-1]["text"]
+        self.assertIn("Temperatur 22,4 °C", text)
+        self.assertIn("aus der Historie verwendet", text)
+        self.assertIn("aktuelle Sensorzustand nicht abgerufen werden konnte", text)
+
     def test_power_usage_intent_uses_meter_events(self) -> None:
         with self.mapping.connect() as con:
             con.execute("delete from sentero_sensor_events")

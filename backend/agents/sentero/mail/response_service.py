@@ -76,7 +76,7 @@ class MailResponseService:
         if slots:
             lines.append(slots)
         if env.get("temperature_c") is not None:
-            lines.append(f"Die zuletzt gemessene Raumtemperatur beträgt {str(env['temperature_c']).replace('.', ',')} °C.")
+            lines.append(_environment_line(env, "temperature_c", "Raumtemperatur", "°C"))
         sensor_health = dashboard.get("sensor_health")
         if sensor_health:
             lines.extend(_sensor_health_lines(sensor_health))
@@ -124,10 +124,11 @@ class MailResponseService:
         if context:
             lines.append(context)
         if env.get("temperature_c") is not None:
-            lines.append(f"Die zuletzt gemessene Temperatur beträgt {str(env['temperature_c']).replace('.', ',')} °C.")
-            lines.append(_freshness_sentence(env.get("temperature_c_freshness")))
+            lines.append(_environment_line(env, "temperature_c", "Temperatur", "°C"))
         if env.get("humidity_percent") is not None:
-            lines.append(f"Die zuletzt gemessene Luftfeuchtigkeit beträgt {str(env['humidity_percent']).replace('.', ',')} %.") 
+            lines.append(_environment_line(env, "humidity_percent", "Luftfeuchtigkeit", "%"))
+        if env.get("illuminance_lux") is not None:
+            lines.append(_environment_line(env, "illuminance_lux", "Helligkeit", "lx"))
         lines.extend(["", "Viele Grüße", "Sentero"])
         return "\n".join(line for line in lines if line)
 
@@ -317,6 +318,21 @@ def _sensor_label(item: dict[str, Any], include_battery: bool = False) -> str:
     if include_battery and isinstance(battery, (int, float)):
         text += f" {int(battery)} %"
     return text
+
+
+def _environment_line(env: dict[str, Any], key: str, label: str, unit: str) -> str:
+    value = _decimal_label(env.get(key))
+    source = str(env.get(f"{key}_source") or "")
+    freshness = _freshness_sentence(env.get(f"{key}_freshness"))
+    room = str(env.get(f"{key}_room_label") or "").strip()
+    room_text = f" im Raum {room}" if room and room != "unbekannter Raum" else ""
+    if source == "live":
+        return f"Der Sensor meldet aktuell{room_text}: {label} {value} {unit}. {freshness}".strip()
+    fallback = str(env.get(f"{key}_fallback_reason") or "")
+    reason = "der aktuelle Sensorzustand nicht abgerufen werden konnte"
+    if fallback == "sensor_not_answering":
+        reason = "der Sensor aktuell nicht antwortet"
+    return f"Der letzte bekannte Wert aus der Historie{room_text}: {label} {value} {unit}. Hinweis: Dieser Wert wird aus der Historie verwendet, weil {reason}. {freshness}".strip()
 
 
 def _contact_label(item: dict[str, Any]) -> str:

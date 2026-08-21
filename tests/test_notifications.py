@@ -19,6 +19,7 @@ from backend.services.aal_roles import can_access_data_classes
 from backend.services.consent_service import ConsentService
 from backend.services.notification_service import NotificationService, mail_assistant_reply_to, sentero_mail_from
 from backend.services.setup_service import SenteroSetupService
+from backend.agents.sentero.mail.store import MailAssistantStore
 
 
 class DummyHomeAssistant:
@@ -146,6 +147,7 @@ class NotificationSystemWarningTests(unittest.TestCase):
     def test_transparency_includes_mail_queries_and_cleanup_retains_them(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            MailAssistantStore(mapping)
             contact_id = insert_contact(mapping)
             with mapping.connect() as con:
                 con.execute(
@@ -173,6 +175,29 @@ class NotificationSystemWarningTests(unittest.TestCase):
             self.assertTrue(any(item["id"].startswith("mail-query-") for item in transparency["items"]))
             cleanup = service.cleanup(days=30)
             self.assertEqual(cleanup["deleted"]["sentero_mail_queries"], 1)
+
+    def test_auto_submitted_mail_is_transparency_metadata_not_query(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            MailAssistantStore(mapping)
+            with mapping.connect() as con:
+                con.execute(
+                    """insert into sentero_mail_queries
+                       (received_at, message_id, contact_id, sender_email, intent, confidence, question_hash,
+                        response_status, response_sent_at, error_code, processing_ms, created_at)
+                       values ('2026-08-21T05:58:00+00:00', '<daemon@example.test>', null, 'mailer-daemon@example.test',
+                               null, null, null, 'ignored', null, 'auto_submitted', 1, '2026-08-21T05:58:00+00:00')"""
+                )
+                con.commit()
+
+            transparency = AuditService(mapping).transparency()
+            item = next(item for item in transparency["items"] if item["id"].startswith("mail-query-"))
+
+            self.assertEqual(transparency["summary"]["mail_queries"], 0)
+            self.assertEqual(item["category"], "metadata")
+            self.assertEqual(item["event_type"], "mail_auto_ignored")
+            self.assertEqual(item["purpose"], "mail_auto_ignored")
+            self.assertEqual(item["data_classes"], ["metadata"])
 
     def test_aal_roles_do_not_allow_behavior_raw_data_for_external_actors(self) -> None:
         self.assertTrue(can_access_data_classes("care_service", ["personal_behavior"], aggregation_level="summary"))
@@ -294,6 +319,21 @@ class NotificationSystemWarningTests(unittest.TestCase):
             self.assertEqual(row["email_queries_enabled"], 1)
             self.assertEqual(json.loads(row["email_permissions"]), ["STATUS", "ACTIVITY"])
 
+    def test_trusted_contact_requires_email_and_keeps_email_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            setup = SenteroSetupService(mapping)
+
+            with self.assertRaises(ValueError):
+                setup.contact({"name": "Nawid", "preferred_channels": ["telegram"], "telegram_chat_id": "123"})
+
+            setup.contact({"name": "Nawid", "email": "nawid@example.test", "preferred_channels": ["telegram"], "telegram_chat_id": "123"})
+
+            with mapping.connect() as con:
+                row = con.execute("select preferred_channels from trusted_contacts where email = ?", ("nawid@example.test",)).fetchone()
+
+            self.assertEqual(json.loads(row["preferred_channels"]), ["email", "telegram"])
+
     def test_whatsapp_channel_can_be_saved_tested_and_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
@@ -393,6 +433,93 @@ class NotificationSystemWarningTests(unittest.TestCase):
                 ).fetchone()["count"]
             self.assertEqual(resolved, 2)
 
+    def test_temperature_warning_is_red_and_not_learning_gated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            timestamp = now()
+            with mapping.connect() as con:
+                con.execute(
+                    """insert into trusted_contacts
+                       (name, relationship, email, active, created_at, updated_at, preferred_channels, notification_enabled, primary_contact)
+                       values (?, ?, ?, 1, ?, ?, ?, 1, 1)""",
+                    ("Nawid", "owner", "nawid@example.test", timestamp, timestamp, json.dumps(["email"])),
+                )
+                con.execute("update notification_channel_settings set enabled = 1, config_json = '{}' where channel = 'email'")
+                con.commit()
+
+            provider = RecordingProvider()
+            service = NotificationService(mapping)
+            service.providers["email"] = provider
+
+            result = service.notify_system_warnings(
+                sensors=[],
+                environmental_sensors=[
+                    {
+                        "entity_id": "sensor.living_room_temperature",
+                        "friendly_name": "Wohnzimmer Temperatur",
+                        "room": "Wohnzimmer",
+                        "device_class": "temperature",
+                        "state": "15.5",
+                    }
+                ],
+            )
+
+            self.assertEqual(result["sent"], 1)
+            self.assertEqual(result["warnings"][0]["type"], "temperature_low")
+            self.assertEqual(result["warnings"][0]["severity"], "red")
+            self.assertEqual(result["warnings"][0]["data_class"], "environmental")
+            self.assertIn("15,5 °C", provider.sent[0]["text"])
+
+            second = service.notify_system_warnings(
+                sensors=[],
+                environmental_sensors=[
+                    {
+                        "entity_id": "sensor.living_room_temperature",
+                        "friendly_name": "Wohnzimmer Temperatur",
+                        "room": "Wohnzimmer",
+                        "device_class": "temperature",
+                        "state": "15.5",
+                    }
+                ],
+            )
+            self.assertEqual(second["sent"], 0)
+
+    def test_humidity_warning_is_orange(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            timestamp = now()
+            with mapping.connect() as con:
+                con.execute(
+                    """insert into trusted_contacts
+                       (name, relationship, email, active, created_at, updated_at, preferred_channels, notification_enabled, primary_contact)
+                       values (?, ?, ?, 1, ?, ?, ?, 1, 1)""",
+                    ("Nawid", "owner", "nawid@example.test", timestamp, timestamp, json.dumps(["email"])),
+                )
+                con.execute("update notification_channel_settings set enabled = 1, config_json = '{}' where channel = 'email'")
+                con.commit()
+
+            provider = RecordingProvider()
+            service = NotificationService(mapping)
+            service.providers["email"] = provider
+
+            result = service.notify_system_warnings(
+                sensors=[],
+                environmental_sensors=[
+                    {
+                        "entity_id": "sensor.bathroom_humidity",
+                        "friendly_name": "Bad Luftfeuchtigkeit",
+                        "room": "Bad",
+                        "device_class": "humidity",
+                        "state": 75,
+                    }
+                ],
+            )
+
+            self.assertEqual(result["sent"], 1)
+            self.assertEqual(result["warnings"][0]["type"], "humidity_high")
+            self.assertEqual(result["warnings"][0]["severity"], "orange")
+            self.assertEqual(result["warnings"][0]["data_class"], "environmental")
+
     def test_behavior_notifications_require_active_consent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
@@ -426,6 +553,31 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
             logs = service.logs()["logs"]
             self.assertTrue(all("data_class" in log and "aggregation_level" in log for log in logs))
+
+    def test_behavior_warning_is_sent_once_until_resolved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            contact_id = insert_contact(mapping)
+            ConsentService(mapping).grant({"contact_id": contact_id})
+            provider = RecordingProvider()
+            service = NotificationService(mapping)
+            service.providers["email"] = provider
+            assessment = {
+                "status": "red",
+                "summary": "Keine Aktivität erkannt.",
+                "recommendation": "Bitte nachfragen.",
+                "findings": ["Keine Bewegung seit dem Morgen."],
+            }
+
+            service.notify_assessment(assessment, [contact(mapping, contact_id)])
+            service.notify_assessment({**assessment, "summary": "Weiterhin keine Aktivität erkannt."}, [contact(mapping, contact_id)])
+
+            self.assertEqual(len(provider.sent), 1)
+
+            service.notify_assessment({"status": "green", "summary": "Alles unauffällig."}, [contact(mapping, contact_id)])
+            service.notify_assessment(assessment, [contact(mapping, contact_id)])
+
+            self.assertEqual(len(provider.sent), 2)
 
     def test_daily_summary_is_sent_once_after_configured_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

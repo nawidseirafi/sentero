@@ -20,7 +20,7 @@ class MailIntentService:
             return IntentResult(MailIntent.POWER_USAGE, 0.9)
         if any(term in text for term in ["tuer", "türen", "tueren", "tür", "haustuer", "haustür", "fenster", "kontakt"]) and any(term in text for term in ["zu", "offen", "geschlossen", "auf"]):
             return IntentResult(MailIntent.CONTACT_STATUS, 0.9)
-        if any(term in text for term in ["temperatur", "warm", "kalt", "luftfeuchtigkeit", "feuchtigkeit", "klima"]):
+        if any(term in text for term in ["temperatur", "warm", "kalt", "luftfeuchtigkeit", "feuchtigkeit", "feutichkeit", "klima", "helligkeit", "hell", "dunkel", "lux", "licht"]):
             return IntentResult(MailIntent.ENVIRONMENT, 0.9)
         if any(term in text for term in ["nacht", "geschlafen", "schlaf"]):
             return IntentResult(MailIntent.NIGHT_SUMMARY, 0.88)

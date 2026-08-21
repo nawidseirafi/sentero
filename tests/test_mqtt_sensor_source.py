@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from backend.sensor_sources.zigbee2mqtt import Zigbee2MqttSensorSource
-from backend.services.device_mapping_service import DeviceMappingService
+from backend.services.device_mapping_service import DeviceMappingService, environmental_metrics_from_state
 from backend.services.mqtt_service import MqttMessage
 from backend.services.sensor_manager import SensorManager
 from backend.sensor_sources.base import SensorEvent
@@ -227,6 +227,36 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertEqual(contact["topic"], "zigbee2mqtt/Haustuer")
         self.assertEqual(contact["payload_key"], "contact")
 
+    def test_zigbee2mqtt_bridge_devices_create_presence_candidate_entities(self) -> None:
+        ieee = "0xa4c1389a3e0a13e3"
+        mqtt = SnapshotMqtt([
+            FakeMessage("zigbee2mqtt/bridge/devices", [
+                {
+                    "ieee_address": ieee,
+                    "friendly_name": ieee,
+                    "definition": {
+                        "model": "ZG-204ZH",
+                        "vendor": "HOBEIAN",
+                        "exposes": [
+                            {"type": "binary", "name": "occupancy", "property": "occupancy"},
+                            {"type": "numeric", "name": "battery", "property": "battery"},
+                        ],
+                    },
+                }
+            ])
+        ])
+        with patch.dict(os.environ, {"SENTERO_MQTT_BOOTSTRAP_EVENTS": ""}, clear=False):
+            source = Zigbee2MqttSensorSource(mqtt=mqtt)
+            rows = source.snapshot()
+
+        by_key = {row["payload_key"]: row for row in rows}
+        self.assertEqual(by_key["occupancy"]["entity_id"], f"binary_sensor.{ieee}")
+        self.assertEqual(by_key["occupancy"]["device_class"], "occupancy")
+        self.assertEqual(by_key["occupancy"]["device_id"], ieee)
+        self.assertEqual(by_key["occupancy"]["manufacturer"], "HOBEIAN")
+        self.assertEqual(by_key["occupancy"]["model"], "ZG-204ZH")
+        self.assertEqual(by_key["battery"]["domain"], "sensor")
+
     def test_sentero_c1001_snapshot_normalizes_presence_capabilities(self) -> None:
         mqtt = SnapshotMqtt([
             FakeMessage(
@@ -284,6 +314,155 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertEqual(role["entity_id"], "zigbee2mqtt/Haustuer")
         self.assertEqual(mqtt.requests[0][0], "zigbee2mqtt/bridge/request/device/rename")
         self.assertIn(("zigbee2mqtt/bridge/request/permit_join", {"value": False, "time": 0}), mqtt.published)
+
+    def test_mqtt_discovery_finds_existing_unassigned_presence_device(self) -> None:
+        ieee = "0xa4c1389a3e0a13e3"
+        mqtt = SnapshotMqtt([
+            FakeMessage("zigbee2mqtt/bridge/devices", [
+                {
+                    "ieee_address": ieee,
+                    "friendly_name": ieee,
+                    "definition": {
+                        "model": "ZG-204ZH",
+                        "vendor": "HOBEIAN",
+                        "exposes": [{"type": "binary", "name": "occupancy", "property": "occupancy"}],
+                    },
+                }
+            ])
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"SENTERO_SENSOR_SOURCE": "mqtt", "SENTERO_MQTT_BOOTSTRAP_EVENTS": ""},
+            clear=False,
+        ):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            manager = SensorManager(mapping)
+            started = manager.start_discovery("presence", room_id="hallway", role="hallway_presence", duration=60)
+            found = manager.discovered(started["discovery_id"], dev=True)
+            raw = mapping.candidates(started["discovery_id"], dev=True)
+
+        self.assertEqual(found["status"], "found")
+        self.assertEqual(found["sensor"]["id"], ieee)
+        self.assertEqual(found["sensor"]["type"], "presence_sensor")
+        self.assertEqual(raw["candidate"]["model"], "ZG-204ZH")
+        self.assertIn("existing_unassigned", raw["candidate"]["reasons"])
+
+    def test_mqtt_discovery_does_not_offer_existing_assigned_presence_device(self) -> None:
+        ieee = "0xa4c1389a3e0a13e3"
+        mqtt = SnapshotMqtt([FakeMessage(f"zigbee2mqtt/{ieee}", {"occupancy": False, "battery": 100})])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"SENTERO_SENSOR_SOURCE": "mqtt", "SENTERO_MQTT_BOOTSTRAP_EVENTS": ""},
+            clear=False,
+        ):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            mapping.upsert_role({
+                "role": "living_room_presence",
+                "room": "living_room",
+                "entity_id": f"zigbee2mqtt/{ieee}",
+                "device_id": ieee,
+                "friendly_name": "Wohnzimmer Präsenz",
+                "device_class": "occupancy",
+                "domain": "binary_sensor",
+                "source": "zigbee2mqtt",
+                "confidence": 100,
+            })
+            manager = SensorManager(mapping)
+            started = manager.start_discovery("presence", room_id="hallway", role="hallway_presence", duration=60)
+            found = manager.discovered(started["discovery_id"])
+
+        self.assertEqual(found["status"], "searching")
+        self.assertIsNone(found["sensor"])
+
+    def test_zigbee_presence_role_exposes_environment_metrics(self) -> None:
+        ieee = "0xa4c1389a3e0a13e3"
+        mqtt = SnapshotMqtt([
+            FakeMessage(f"zigbee2mqtt/{ieee}", {
+                "occupancy": False,
+                "battery": 90,
+                "temperature": 22.6,
+                "humidity": 48,
+                "illuminance": 96,
+            })
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"SENTERO_SENSOR_SOURCE": "mqtt", "SENTERO_MQTT_BOOTSTRAP_EVENTS": ""},
+            clear=False,
+        ):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            mapping.upsert_role({
+                "role": "living_room_presence",
+                "room": "living_room",
+                "entity_id": f"binary_sensor.{ieee}",
+                "device_id": ieee,
+                "friendly_name": "Wohnzimmer Präsenz",
+                "device_class": "occupancy",
+                "domain": "binary_sensor",
+                "source": "zigbee2mqtt",
+                "confidence": 100,
+            })
+            role = mapping.roles(include_state=True)[0]
+
+        self.assertEqual(role["battery_level"], 90)
+        self.assertEqual(role["temperature"], 22.6)
+        self.assertEqual(role["humidity"], 48.0)
+        self.assertEqual(role["illuminance"], 96.0)
+
+    def test_zigbee_presence_role_exposes_still_motion_state(self) -> None:
+        ieee = "0xa4c1389a3e0a13e3"
+        mqtt = SnapshotMqtt([
+            FakeMessage(f"zigbee2mqtt/{ieee}", {
+                "occupancy": True,
+                "motion_state": "still",
+                "battery": 90,
+            })
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"SENTERO_SENSOR_SOURCE": "mqtt", "SENTERO_MQTT_BOOTSTRAP_EVENTS": ""},
+            clear=False,
+        ):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            mapping.upsert_role({
+                "role": "living_room_presence",
+                "room": "living_room",
+                "entity_id": f"binary_sensor.{ieee}",
+                "device_id": ieee,
+                "friendly_name": "Wohnzimmer Präsenz",
+                "device_class": "occupancy",
+                "domain": "binary_sensor",
+                "source": "zigbee2mqtt",
+                "confidence": 100,
+            })
+            role = mapping.roles(include_state=True)[0]
+
+        self.assertIs(role["presence"], True)
+        self.assertEqual(role["motion"], "Still")
+
+    def test_environment_metrics_ignore_configuration_entities(self) -> None:
+        role = {"device_id": "0xa4c1389a3e0a13e3", "entity_id": "binary_sensor.0xa4c1389a3e0a13e3"}
+        states = [
+            {"entity_id": "number.0xa4c1389a3e0a13e3_temperature_calibration", "domain": "number", "state": "0", "device_id": "0xa4c1389a3e0a13e3"},
+            {"entity_id": "number.0xa4c1389a3e0a13e3_humidity_calibration", "domain": "number", "state": "0", "device_id": "0xa4c1389a3e0a13e3"},
+            {"entity_id": "number.0xa4c1389a3e0a13e3_illuminance_interval", "domain": "number", "state": "3", "device_id": "0xa4c1389a3e0a13e3"},
+            {"entity_id": "sensor.0xa4c1389a3e0a13e3_temperature", "domain": "sensor", "state": "22.9", "device_class": "temperature", "device_id": "0xa4c1389a3e0a13e3"},
+            {"entity_id": "sensor.0xa4c1389a3e0a13e3_humidity", "domain": "sensor", "state": "56", "device_class": "humidity", "device_id": "0xa4c1389a3e0a13e3"},
+            {"entity_id": "sensor.0xa4c1389a3e0a13e3_illuminance", "domain": "sensor", "state": "1104", "device_class": "illuminance", "device_id": "0xa4c1389a3e0a13e3"},
+        ]
+        metrics = environmental_metrics_from_state(role, states)
+
+        self.assertEqual(metrics["temperature"], 22.9)
+        self.assertEqual(metrics["humidity"], 56.0)
+        self.assertEqual(metrics["illuminance"], 1104.0)
 
     def test_mqtt_discovery_stops_permit_join_when_candidate_is_found(self) -> None:
         mqtt = SnapshotMqtt([])
@@ -425,6 +604,31 @@ class MqttSensorSourceTests(unittest.TestCase):
             role = mapping.get_role("Keller_door", dev=True)
 
         self.assertIsNotNone(role)
+
+    def test_delete_zigbee2mqtt_sensor_local_only_skips_external_remove(self) -> None:
+        mqtt = PermitJoinFailingMqtt()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"SENTERO_SENSOR_SOURCE": "mqtt"}, clear=False):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.mqtt = mqtt
+            mapping.sensor_source.mqtt = mqtt
+            mapping.upsert_role({
+                "role": "Keller_door",
+                "room": "Keller",
+                "entity_id": "zigbee2mqtt/0xa4c13811eb64ffff",
+                "device_id": "0xa4c13811eb64ffff",
+                "friendly_name": "Keller Hobby Rechts",
+                "device_class": "opening",
+                "domain": "binary_sensor",
+                "source": "zigbee2mqtt",
+                "confidence": 100,
+            })
+            result = mapping.delete_role("Keller_door", local_only=True)
+            role = mapping.get_role("Keller_door", dev=True)
+
+        self.assertTrue(result["deleted"])
+        self.assertEqual(result["removal"]["reason"], "local_only")
+        self.assertEqual(mqtt.requests, [])
+        self.assertIsNone(role)
 
     def test_delete_zigbee2mqtt_sensor_does_not_remove_when_permit_join_stop_fails(self) -> None:
         mqtt = PermitJoinFailingMqtt()
@@ -946,7 +1150,11 @@ class MqttSensorSourceTests(unittest.TestCase):
         mqtt = SnapshotMqtt([])
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
             os.environ,
-            {"SENTERO_SENSOR_SOURCE": "mixed", "SENTERO_MQTT_BOOTSTRAP_EVENTS": ""},
+            {
+                "SENTERO_SENSOR_SOURCE": "mixed",
+                "SENTERO_MQTT_BOOTSTRAP_EVENTS": "",
+                "SENTERO_PRESENCE_SENSOR_TRANSPORT": "wifi_esphome",
+            },
             clear=False,
         ):
             mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=FakeHomeAssistant())
@@ -957,7 +1165,7 @@ class MqttSensorSourceTests(unittest.TestCase):
 
         self.assertEqual(started["status"], "manual_action")
         self.assertEqual(started["discovery_id"], 0)
-        self.assertEqual(started["detail"]["reason"], "presence_requires_provisioning")
+        self.assertEqual(started["detail"]["reason"], "wifi_esphome_requires_provisioning")
         self.assertEqual(mqtt.published, [])
 
     def test_mixed_mqtt_discovery_does_not_call_homeassistant(self) -> None:

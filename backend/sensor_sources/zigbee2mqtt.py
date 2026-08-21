@@ -18,6 +18,7 @@ STATE_KEYS = (
     "contact",
     "occupancy",
     "motion",
+    "motion_state",
     "presence",
     "open",
     "action",
@@ -118,6 +119,8 @@ class Zigbee2MqttSensorSource:
         return result
 
     def _entities_from_message(self, topic: str, payload: Any, timestamp: str) -> list[dict[str, Any]]:
+        if self._is_bridge_devices_topic(topic):
+            return self._entities_from_bridge_devices(payload, topic, timestamp)
         device = self._device_from_topic(topic)
         if not device or not isinstance(payload, dict):
             logger.debug(
@@ -158,6 +161,61 @@ class Zigbee2MqttSensorSource:
             return ""
         device = suffix.split("/", 1)[0]
         return "" if device in IGNORED_TOPIC_PARTS else device
+
+    def _is_bridge_devices_topic(self, topic: str) -> bool:
+        return any(topic.strip("/") == f"{prefix}/bridge/devices" for prefix in self.topic_prefixes)
+
+    def _entities_from_bridge_devices(self, payload: Any, topic: str, timestamp: str) -> list[dict[str, Any]]:
+        if not isinstance(payload, list):
+            return []
+        rows: list[dict[str, Any]] = []
+        for device in payload:
+            if not isinstance(device, dict):
+                continue
+            ieee = str(device.get("ieee_address") or device.get("ieee") or device.get("id") or "").strip()
+            friendly_name = str(device.get("friendly_name") or ieee).strip()
+            if not friendly_name or friendly_name in IGNORED_TOPIC_PARTS:
+                continue
+            definition = device.get("definition") if isinstance(device.get("definition"), dict) else {}
+            metadata = {
+                "topic": topic,
+                "source_ref": f"{self.topic_prefix}/{friendly_name}",
+                "source": self.name,
+                "manufacturer": definition.get("vendor") or device.get("manufacturer"),
+                "model": definition.get("model") or device.get("model_id") or device.get("model"),
+                "ieee_address": ieee or None,
+            }
+            for key in self._expose_keys(definition.get("exposes")):
+                row = self._entity(friendly_name, key, "unknown", metadata, timestamp)
+                if ieee:
+                    row["device_id"] = ieee
+                    row["identifiers"] = [[self.name, ieee]]
+                    row["attributes"] = {**row.get("attributes", {}), "ieee_address": ieee}
+                rows.append(row)
+        return rows
+
+    def _expose_keys(self, exposes: Any) -> list[str]:
+        keys: list[str] = []
+
+        def visit(value: Any) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    visit(item)
+                return
+            if not isinstance(value, dict):
+                return
+            for raw in (value.get("property"), value.get("name")):
+                key = str(raw or "").strip()
+                if key in STATE_KEYS or key in MEASUREMENT_KEYS:
+                    keys.append(key)
+            visit(value.get("features"))
+
+        visit(exposes)
+        result: list[str] = []
+        for key in keys:
+            if key not in result:
+                result.append(key)
+        return result
 
     def _entity(self, device: str, key: str, value: Any, payload: dict[str, Any], timestamp: str) -> dict[str, Any]:
         slug = slugify(device)

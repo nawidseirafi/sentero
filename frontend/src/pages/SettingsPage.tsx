@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
-import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, Copy, DoorClosed, DoorOpen, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, ShieldCheck, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
+import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, Copy, DoorClosed, DoorOpen, Droplets, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, ShieldCheck, Thermometer, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
 import QRCode from 'qrcode';
-import { api, type BoxNetworkStatus, type MailConfig, type SenteroConsent, type SenteroExportToken, type SenteroMailQuerySettings, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroTelegramBotInfo, type SenteroTransparency, type SenteroTrustedContact } from '@shared/api/client';
+import { api, type BoxNetworkStatus, type MailConfig, type SenteroConsent, type SenteroEcoTrackerReading, type SenteroExportToken, type SenteroMailQuerySettings, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroTelegramBotInfo, type SenteroTransparency, type SenteroTrustedContact } from '@shared/api/client';
 import { UpdatePanel } from '../components/UpdatePanel';
 import { useSenteroAuth } from '../auth/SenteroAuthContext';
 import type { SenteroSettingsTab } from '../routes/routes';
@@ -80,6 +80,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [boxNetworkStatus, setBoxNetworkStatus] = useState<BoxNetworkStatus | null>(null);
   const [ecoTrackerHost, setEcoTrackerHost] = useState('');
   const [ecoTrackerMessage, setEcoTrackerMessage] = useState('');
+  const [ecoTrackerReading, setEcoTrackerReading] = useState<SenteroEcoTrackerReading | null>(null);
   const [ecoTrackerBusy, setEcoTrackerBusy] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '', new_password_confirm: '' });
   const [accountEditing, setAccountEditing] = useState(false);
@@ -196,6 +197,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       setBoxNetworkStatus(nextBoxNetwork);
       setEmailQueries(nextEmailQueries);
       setEcoTrackerHost(nextEcoTracker.host || '');
+      setEcoTrackerReading(nextEcoTracker.reading || null);
+      setEcoTrackerMessage(nextEcoTracker.reading ? ecoTrackerReadingMessage(nextEcoTracker.reading) : '');
       setBoxNetworkForm({ ssid: '', password: '' });
       hydrateChannelForms(nextChannels.channels);
       const sensorRooms = Array.from(new Set(nextSensors.sensor_roles.map((sensor) => sensor.room).filter(Boolean))) as string[];
@@ -250,6 +253,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     try {
       const result = await api.testSenteroEcoTracker(host);
       setEcoTrackerHost(result.host);
+      setEcoTrackerReading(result.reading);
       setEcoTrackerMessage(ecoTrackerReadingMessage(result.reading));
       setError('');
     } catch (err) {
@@ -270,6 +274,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     try {
       const result = await api.connectSenteroEcoTracker(host);
       setEcoTrackerHost(host);
+      setEcoTrackerReading(result.reading);
       setEcoTrackerMessage(`EcoTracker verbunden. ${ecoTrackerReadingMessage(result.reading)}`);
       setSaved('everHome EcoTracker IR wurde als Stromzähler verbunden.');
       setError('');
@@ -684,7 +689,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     if (!window.confirm(message)) return;
     try {
       for (const sensor of roomSensors) {
-        await api.deleteSenteroSensorRole(sensor.role);
+        await deleteSensorRoleWithFallback(sensor);
       }
       await api.saveSenteroSetupRooms(rooms.filter((item) => item !== room));
       toast('Raum gelöscht');
@@ -849,7 +854,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       : 'Sensor aus Sentero entfernen?';
     if (!window.confirm(message)) return;
     try {
-      await api.deleteSenteroSensorRole(sensor.role);
+      await deleteSensorRoleWithFallback(sensor);
       toast('Sensor entfernt');
       await load();
     } catch (err) {
@@ -871,6 +876,23 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         }
       }
       setError(message);
+    }
+  }
+
+  async function deleteSensorRoleWithFallback(sensor: SenteroSensorRole) {
+    try {
+      return await api.deleteSenteroSensorRole(sensor.role);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Sensor konnte nicht entfernt werden.';
+      if (canOfferLocalOnlySensorDelete(sensor, message)) {
+        const localOnly = window.confirm(
+          'Der Sensor konnte nicht aus dem Sensornetzwerk entfernt werden.\n\nNur aus Sentero entfernen?\n\nDer Sensor bleibt dann in Zigbee2MQTT bzw. im Sensornetzwerk erhalten und muss dort bei Bedarf separat entfernt werden.',
+        );
+        if (localOnly) {
+          return await api.deleteSenteroSensorRole(sensor.role, { localOnly: true });
+        }
+      }
+      throw err;
     }
   }
 
@@ -1014,6 +1036,22 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         <section className="sc-panel sc-settings-panel">
           <div className="sc-section-title"><h2>Räume & Sensoren</h2><button type="button" onClick={() => window.location.assign('/sentero/setup')}><Plus size={20} /> Sensor hinzufügen</button></div>
 
+          <section className="sc-network-card">
+            <div className="sc-network-card-head">
+              <div>
+                <h3>everHome EcoTracker IR</h3>
+                <p>{ecoTrackerMessage || 'EcoTracker-IP eintragen, um Leistung und Stromzählerstand lokal auszulesen.'}</p>
+              </div>
+              <span className={`sc-network-pill ${ecoTrackerHost ? 'ready' : 'setup'}`}>
+                {ecoTrackerHost ? 'Verbunden' : 'Einrichten'}
+              </span>
+            </div>
+            <div className="sc-inline-add">
+              <input value={ecoTrackerHost} onChange={(event) => setEcoTrackerHost(event.target.value)} placeholder="EcoTracker IP, z.B. 192.168.1.42" />
+              <button type="button" onClick={() => void testEcoTracker()} disabled={ecoTrackerBusy}><Wifi size={18} /> Prüfen</button>
+              <button type="button" onClick={() => void connectEcoTracker()} disabled={ecoTrackerBusy}><Plug size={18} /> Verbinden</button>
+            </div>
+          </section>
 
           <div className="sc-inline-add">
             <input value={roomDraft} onChange={(event) => setRoomDraft(event.target.value)} placeholder="Raum hinzufügen" />
@@ -1044,7 +1082,10 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                           <div className="sc-sensor-health">
                             {isDoorContactSensor(sensor) && <DoorContactStatus sensor={sensor} />}
                             {isEsp32PresenceSensor(sensor) && <C1001Telemetry sensor={sensor} />}
+                            {!isEsp32PresenceSensor(sensor) && isMotionSensor(sensor) && <MotionStatus sensor={sensor} />}
                             {isSmartMeterSensor(sensor) && <span className="battery"><Plug size={17} /> {formatMeterValue(sensor)}</span>}
+                            {isEcoTrackerSensor(sensor) && ecoTrackerMeterReadingLabel(ecoTrackerReading) && <span className="battery"><Plug size={17} /> {ecoTrackerMeterReadingLabel(ecoTrackerReading)}</span>}
+                            <SensorEnvironment sensor={sensor} />
                             <span className={sensor.reachable === false ? 'offline' : sensor.reachable == null ? 'unknown' : 'online'}>
                               {sensor.reachable === false ? <WifiOff size={17} /> : <CheckCircle2 size={17} />}
                               {sensor.reachable === false ? 'Nicht erreichbar' : sensor.reachable == null ? 'In HA vorhanden' : 'Erreichbar'}
@@ -1670,6 +1711,7 @@ function transparencyIcon(category: string) {
   if (category === 'notification') return <Bell size={18} />;
   if (category === 'mail_query') return <Mail size={18} />;
   if (category === 'consent') return <ShieldCheck size={18} />;
+  if (category === 'metadata') return <ShieldAlert size={18} />;
   return <ShieldAlert size={18} />;
 }
 
@@ -1686,6 +1728,7 @@ function transparencyDetail(item: { contact_name?: string | null; actor_role?: s
 function purposeLabel(value: string) {
   if (value === 'behavior_notification') return 'Verhaltensmeldung';
   if (value === 'mail_status_query') return 'E-Mail-Statusfrage';
+  if (value === 'mail_auto_ignored') return 'Automatische E-Mail';
   if (value === 'aal_partner_export') return 'Partnerexport';
   return value;
 }
@@ -1707,6 +1750,7 @@ function categoryLabel(value: string) {
   if (value === 'export') return 'Export';
   if (value === 'notification') return 'Benachrichtigung';
   if (value === 'mail_query') return 'E-Mail-Anfrage';
+  if (value === 'metadata') return 'Metadaten';
   if (value === 'consent') return 'Freigabe';
   if (value === 'security') return 'Sicherheit';
   return value;
@@ -1971,6 +2015,7 @@ function ChannelChecks({
   onChange: (value: string[]) => void;
 }) {
   function toggle(channel: string, checked: boolean) {
+    if (channel === 'email') return;
     if (!available[channel as 'email' | 'telegram' | 'whatsapp']) return;
     const next = checked ? [...value, channel] : value.filter((item) => item !== channel);
     onChange(sanitizeChannels(next, available));
@@ -1985,8 +2030,8 @@ function ChannelChecks({
       <span>Benachrichtigung per</span>
       <div className="sc-channel-choice-row">
         {options.map((option) => {
-          const selected = value.includes(option.channel) && available[option.channel];
-          const disabled = !available[option.channel];
+          const selected = option.channel === 'email' || (value.includes(option.channel) && available[option.channel]);
+          const disabled = option.channel === 'email' || !available[option.channel];
           return (
             <label key={option.channel} className={`sc-channel-choice${selected ? ' selected' : ''}${disabled ? ' disabled' : ''}`}>
               <input type="checkbox" checked={selected} disabled={disabled} onChange={(event) => toggle(option.channel, event.target.checked)} />
@@ -1996,7 +2041,7 @@ function ChannelChecks({
           );
         })}
       </div>
-      <small>Nicht verfügbare Kanäle werden nach erfolgreichem Verbindungstest freigeschaltet.</small>
+      <small>E-Mail bleibt als Pflichtkanal aktiv. Weitere Kanäle werden nach erfolgreichem Verbindungstest freigeschaltet.</small>
     </div>
   );
 }
@@ -2188,6 +2233,29 @@ function C1001Telemetry({ sensor }: { sensor: SenteroSensorRole }) {
   );
 }
 
+function MotionStatus({ sensor }: { sensor: SenteroSensorRole }) {
+  const status = presenceMotionStatus(sensor);
+  return (
+    <span className={`presence ${status.tone}`}>
+      {status.icon}
+      {status.label}
+    </span>
+  );
+}
+
+function SensorEnvironment({ sensor }: { sensor: SenteroSensorRole }) {
+  const temperature = formatMetric(sensor.temperature, '°C', 1);
+  const illuminance = formatMetric(sensor.illuminance, 'lx', 0);
+  const humidity = formatMetric(sensor.humidity, '%', 0);
+  return (
+    <>
+      {temperature && <span className="battery"><Thermometer size={17} /> {temperature}</span>}
+      {illuminance && <span className="battery"><Lightbulb size={17} /> {illuminance}</span>}
+      {humidity && <span className="battery"><Droplets size={17} /> {humidity}</span>}
+    </>
+  );
+}
+
 function sensorType(sensor: SenteroSensorRole) {
   if (isSmartMeterSensor(sensor)) return meterLabelFromRole(sensor.role);
   if (isDoorContactSensor(sensor)) return 'Türkontakt';
@@ -2201,6 +2269,10 @@ function isSmartMeterSensor(sensor: SenteroSensorRole) {
   const role = String(sensor.role || '').toLowerCase();
   const dc = String(sensor.device_class || '').toLowerCase();
   return role.endsWith('_energy') || role.endsWith('_power') || role.endsWith('_water') || role.endsWith('_gas') || ['energy', 'power', 'water', 'gas'].includes(dc);
+}
+
+function isEcoTrackerSensor(sensor: SenteroSensorRole) {
+  return String(sensor.source || '').toLowerCase() === 'ecotracker' || String(sensor.device_id || '').startsWith('ecotracker:');
 }
 
 function meterLabelFromRole(role: string) {
@@ -2218,12 +2290,18 @@ function formatMeterValue(sensor: SenteroSensorRole) {
   return `${value} kWh`;
 }
 
-function ecoTrackerReadingMessage(reading: Record<string, unknown>) {
+function ecoTrackerReadingMessage(reading: SenteroEcoTrackerReading) {
   const parts = [];
+  const meterReading = reading.meter_reading_kwh ?? reading.energy_in_kwh;
+  if (meterReading != null) parts.push(`Stromzählerstand ${meterReading} kWh`);
   if (reading.power_w != null) parts.push(`Leistung ${reading.power_w} W`);
-  if (reading.energy_in_kwh != null) parts.push(`Bezug ${reading.energy_in_kwh} kWh`);
   if (reading.energy_out_kwh != null) parts.push(`Einspeisung ${reading.energy_out_kwh} kWh`);
   return parts.length ? parts.join(' · ') : 'EcoTracker erreichbar.';
+}
+
+function ecoTrackerMeterReadingLabel(reading: SenteroEcoTrackerReading | null) {
+  const meterReading = reading?.meter_reading_kwh ?? reading?.energy_in_kwh;
+  return meterReading == null ? '' : `Zählerstand ${meterReading} kWh`;
 }
 
 function isEsp32PresenceSensor(sensor: SenteroSensorRole) {
@@ -2241,6 +2319,52 @@ function sensorSupportsLedControl(sensor: SenteroSensorRole) {
 
 function isDoorContactSensor(sensor: SenteroSensorRole) {
   return sensor.role === 'main_door' || sensor.role.endsWith('_door') || sensor.role.endsWith('_contact') || ['door', 'window', 'opening', 'contact'].includes(String(sensor.device_class || ''));
+}
+
+function isMotionSensor(sensor: SenteroSensorRole) {
+  const dc = String(sensor.device_class || '').toLowerCase();
+  return sensor.role.endsWith('_presence') || ['occupancy', 'motion', 'presence'].includes(dc);
+}
+
+function presenceMotionStatus(sensor: SenteroSensorRole) {
+  if (sensor.presence === false) {
+    return { tone: 'inactive', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
+  }
+  if (sensor.presence === true) {
+    const motion = String(sensor.motion || '').toLowerCase();
+    if (['active', 'move', 'moving'].includes(motion)) {
+      return { tone: 'active', label: 'Bewegung', icon: <DirectionsRunIcon fontSize="small" /> };
+    }
+    if (['still', 'static', 'stationary'].includes(motion)) {
+      return { tone: 'inactive', label: 'Still', icon: <AccessibilityNewIcon fontSize="small" /> };
+    }
+    return { tone: 'active', label: 'Anwesend', icon: <PersonIcon fontSize="small" /> };
+  }
+  const value = String(sensor.state || '').toLowerCase();
+  if (['on', 'true', '1', 'active', 'occupied', 'detected'].includes(value)) {
+    return { tone: 'active', label: 'Anwesend', icon: <PersonIcon fontSize="small" /> };
+  }
+  if (['off', 'false', '0', 'clear', 'none'].includes(value)) {
+    return { tone: 'inactive', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
+  }
+  return { tone: 'inactive', label: 'Unbekannt', icon: <HelpOutlineIcon fontSize="small" /> };
+}
+
+function isZigbeeSensor(sensor: SenteroSensorRole) {
+  return sensor.source === 'zigbee2mqtt' || String(sensor.source_ref || '').startsWith('zigbee2mqtt/') || String(sensor.device_id || '').startsWith('0x');
+}
+
+function canOfferLocalOnlySensorDelete(sensor: SenteroSensorRole, message: string) {
+  if (!isZigbeeSensor(sensor)) return false;
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('permit join') ||
+    lower.includes('sensornetzwerk') ||
+    lower.includes('zigbee') ||
+    lower.includes('connection refused') ||
+    lower.includes('mqtt') ||
+    lower.includes('errno 61')
+  );
 }
 
 function doorContactStatus(sensor: SenteroSensorRole) {
@@ -2271,6 +2395,11 @@ function sensorPowerLabel(sensor: SenteroSensorRole) {
 function formatBoolean(value?: boolean | null) {
   if (value == null) return 'unbekannt';
   return value ? 'true' : 'false';
+}
+
+function formatMetric(value: number | null | undefined, unit: string, digits: number) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '';
+  return `${value.toFixed(digits)} ${unit}`;
 }
 
 function ledEnabled(sensor: SenteroSensorRole, localStates: Record<string, boolean>) {
@@ -2493,12 +2622,14 @@ function networkLabel(status: BoxNetworkStatus | null) {
 }
 
 function sanitizeChannels(channels: string[], available: Record<'email' | 'telegram' | 'whatsapp', boolean>) {
-  return channels.filter((channel): channel is 'email' | 'telegram' | 'whatsapp' => (
-    (channel === 'email' || channel === 'telegram' || channel === 'whatsapp') && available[channel]
+  const optional = channels.filter((channel): channel is 'telegram' | 'whatsapp' => (
+    (channel === 'telegram' || channel === 'whatsapp') && available[channel]
   ));
+  return ['email', ...optional.filter((channel, index) => optional.indexOf(channel) === index)];
 }
 
 function channelSelected(channels: string[], channel: 'email' | 'telegram' | 'whatsapp', available: Record<'email' | 'telegram' | 'whatsapp', boolean>) {
+  if (channel === 'email') return true;
   return available[channel] && channels.includes(channel);
 }
 

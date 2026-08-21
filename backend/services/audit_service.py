@@ -136,16 +136,17 @@ class AuditService:
         for row in rows:
             data = dict(row)
             status = str(data.get("response_status") or "")
+            automatic = is_automatic_ignored_mail(data)
             items.append(
                 {
                     "id": f"mail-query-{data.get('id')}",
-                    "category": "mail_query",
-                    "event_type": "mail_query",
+                    "category": "metadata" if automatic else "mail_query",
+                    "event_type": "mail_auto_ignored" if automatic else "mail_query",
                     "status": status,
                     "summary": mail_query_summary(data),
                     "contact_id": data.get("contact_id"),
                     "contact_name": data.get("contact_name"),
-                    "purpose": "mail_status_query",
+                    "purpose": "mail_auto_ignored" if automatic else "mail_status_query",
                     "data_classes": mail_query_data_classes(data.get("intent")),
                     "aggregation_level": "summary",
                     "raw_data_included": False,
@@ -351,6 +352,10 @@ def mail_query_summary(row: dict[str, Any]) -> str:
     if status == "duplicate":
         return f"Doppelte E-Mail-Rueckfrage von {contact} ignoriert."
     return f"E-Mail-Rueckfrage von {contact} verarbeitet."
+
+
+def is_automatic_ignored_mail(row: dict[str, Any]) -> bool:
+    return str(row.get("response_status") or "") == "ignored" and str(row.get("error_code") or "") == "auto_submitted"
 
 
 def mail_query_data_classes(intent: Any) -> list[str]:

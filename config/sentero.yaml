@@ -3,6 +3,10 @@ sentero:
   behavior:
     learning_days: 14
     min_usable_days: 7
+  environment:
+    temperature_min_celsius: 16
+    temperature_max_celsius: 28
+    humidity_max_percent: 70
 
 app:
   dev_mode: false
@@ -25,7 +29,7 @@ logging:
   level: INFO
 
 sensor_sources:
-  source: mixed
+  source: homeassistant
   development:
     adapter: homeassistant
   production:

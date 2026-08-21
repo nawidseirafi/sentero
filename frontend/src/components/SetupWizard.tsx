@@ -280,7 +280,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     if (selectedRooms.includes(roomId) && roomHasLockedSensor(lockedSensorPlan, roomId)) return;
     setSelectedRooms((current) => {
       if (current.includes(roomId)) return current.filter((id) => id !== roomId);
-      setSensorPlan((plans) => ({ ...plans, [roomId]: plans[roomId] || defaultSensorPlan(roomId) }));
+      setSensorPlan((plans) => ({ ...plans, [roomId]: plans[roomId] || emptySensorPlan() }));
       return [...current, roomId];
     });
   }
@@ -291,7 +291,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     const id = label;
     setCustomRooms((current) => ({ ...current, [id]: label }));
     setSelectedRooms((current) => current.includes(id) ? current : [...current, id]);
-    setSensorPlan((current) => ({ ...current, [id]: current[id] || { ...emptySensorPlan(), motion: true } }));
+    setSensorPlan((current) => ({ ...current, [id]: current[id] || emptySensorPlan() }));
     setCustomRoom('');
   }
 
@@ -302,7 +302,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
   function toggleSensorType(roomId: string, type: keyof SensorPlan) {
     if (lockedSensorPlan[roomId]?.[type]) return;
     setSensorPlan((current) => {
-      const fallback = defaultSensorPlan(roomId);
+      const fallback = emptySensorPlan();
       const next = { ...(current[roomId] || fallback), [type]: !(current[roomId] || fallback)[type] };
       return { ...current, [roomId]: next };
     });
@@ -671,7 +671,7 @@ function RoomsStep({ selected, customRooms, sensorPlan, lockedSensorPlan, custom
       <div className="sc-room-choice-grid">
         {visibleRooms.map((room) => {
           const active = selected.includes(room.id);
-          const plan = sensorPlan[room.id] || defaultSensorPlan(room.id);
+          const plan = sensorPlan[room.id] || emptySensorPlan();
           const locked = lockedSensorPlan[room.id] || emptySensorPlan();
           const roomLocked = roomHasLockedSensor(lockedSensorPlan, room.id);
           return (
@@ -711,16 +711,16 @@ function RoomsStep({ selected, customRooms, sensorPlan, lockedSensorPlan, custom
           <small>Strom</small>
         </div>
         <div className="sc-room-sensor-toggles">
-          <label className={`${(sensorPlan.home || defaultSensorPlan('home')).electricity ? 'active' : ''}${lockedSensorPlan.home?.electricity ? ' locked' : ''}`}>
-            <input type="checkbox" checked={(sensorPlan.home || defaultSensorPlan('home')).electricity} disabled={lockedSensorPlan.home?.electricity} onChange={() => onToggleSensorType('home', 'electricity')} />
+          <label className={`${(sensorPlan.home || emptySensorPlan()).electricity ? 'active' : ''}${lockedSensorPlan.home?.electricity ? ' locked' : ''}`}>
+            <input type="checkbox" checked={(sensorPlan.home || emptySensorPlan()).electricity} disabled={lockedSensorPlan.home?.electricity} onChange={() => onToggleSensorType('home', 'electricity')} />
             <i aria-hidden="true" /> <span>Stromzähler{lockedSensorPlan.home?.electricity}</span>
           </label>
-          <label style={{ display: 'none' }} className={`${(sensorPlan.home || defaultSensorPlan('home')).water ? 'active' : ''}${lockedSensorPlan.home?.water ? ' locked' : ''}`}>
-            <input type="checkbox" checked={(sensorPlan.home || defaultSensorPlan('home')).water} disabled={lockedSensorPlan.home?.water} onChange={() => onToggleSensorType('home', 'water')} />
+          <label style={{ display: 'none' }} className={`${(sensorPlan.home || emptySensorPlan()).water ? 'active' : ''}${lockedSensorPlan.home?.water ? ' locked' : ''}`}>
+            <input type="checkbox" checked={(sensorPlan.home || emptySensorPlan()).water} disabled={lockedSensorPlan.home?.water} onChange={() => onToggleSensorType('home', 'water')} />
             <i aria-hidden="true" /> <span>Wasserzähler{lockedSensorPlan.home?.water}</span>
           </label>
-          <label style={{ display: 'none' }} className={`${(sensorPlan.home || defaultSensorPlan('home')).gas ? 'active' : ''}${lockedSensorPlan.home?.gas ? ' locked' : ''}`}>
-            <input type="checkbox" checked={(sensorPlan.home || defaultSensorPlan('home')).gas} disabled={lockedSensorPlan.home?.gas} onChange={() => onToggleSensorType('home', 'gas')} />
+          <label style={{ display: 'none' }} className={`${(sensorPlan.home || emptySensorPlan()).gas ? 'active' : ''}${lockedSensorPlan.home?.gas ? ' locked' : ''}`}>
+            <input type="checkbox" checked={(sensorPlan.home || emptySensorPlan()).gas} disabled={lockedSensorPlan.home?.gas} onChange={() => onToggleSensorType('home', 'gas')} />
             <i aria-hidden="true" /> <span>Gaszähler{lockedSensorPlan.home?.gas}</span>
           </label>
         </div>
@@ -840,7 +840,7 @@ function buildBindings(roomIds: string[], sensorPlan: Record<string, SensorPlan>
   const byId = Object.fromEntries(current.map((sensor) => [sensor.id, sensor]));
   return roomIds.flatMap((roomId) => {
     const label = customRooms[roomId] || baseRoomLabel[roomId] || roomId;
-    const plan = sensorPlan[roomId] || defaultSensorPlan(roomId);
+    const plan = sensorPlan[roomId] || emptySensorPlan();
     const bindings: SensorBinding[] = [];
     if (plan.motion) {
       const motionId = `${roomId}_presence`;
@@ -888,7 +888,7 @@ function mergeSensorPlan(current: Record<string, SensorPlan>, roles: SenteroSens
     const type = sensorTypeFromRole(role.role);
     const roomId = role.room || roomFromRole(role.role);
     if (!type || !roomId) continue;
-    const plan = next[roomId] || defaultSensorPlan(roomId);
+    const plan = next[roomId] || emptySensorPlan();
     next[roomId] = { ...plan, [sensorPlanKey(type)]: true };
   }
   return next;
@@ -901,7 +901,7 @@ function lockedPlanFromRoles(roles: SenteroSensorRole[]) {
     const type = sensorTypeFromRole(role.role);
     const roomId = role.room || roomFromRole(role.role);
     if (!type || !roomId) continue;
-    plan[roomId] = { ...(plan[roomId] || defaultSensorPlan(roomId)), [sensorPlanKey(type)]: true };
+    plan[roomId] = { ...(plan[roomId] || emptySensorPlan()), [sensorPlanKey(type)]: true };
   }
   return plan;
 }
@@ -959,10 +959,10 @@ function uniqueValues(values: string[]) {
 
 function selectedRoomsWithSensors(roomIds: string[], sensorPlan: Record<string, SensorPlan>) {
   const selected = roomIds.filter((roomId) => {
-    const plan = sensorPlan[roomId] || defaultSensorPlan(roomId);
+    const plan = sensorPlan[roomId] || emptySensorPlan();
     return plan.motion || plan.door || plan.electricity || plan.water || plan.gas;
   });
-  const homePlan = sensorPlan.home || defaultSensorPlan('home');
+  const homePlan = sensorPlan.home || emptySensorPlan();
   return homePlan.electricity || homePlan.water || homePlan.gas ? uniqueValues([...selected, 'home']) : selected;
 }
 
@@ -975,11 +975,6 @@ function ageFromBirthYear(value: string) {
 
 function validBirthYear(value: string) {
   return ageFromBirthYear(value) !== null;
-}
-
-function defaultSensorPlan(roomId: string) {
-  const option = roomOptions.find((room) => room.id === roomId);
-  return { motion: roomId !== 'home', door: roomId !== 'home' && option?.door !== false, electricity: false, water: false, gas: false };
 }
 
 function emptySensorPlan(): SensorPlan {

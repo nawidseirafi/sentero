@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from backend.services.device_mapping_service import DeviceMappingService
 from backend.services.ecotracker_service import normalize_ecotracker_host
-from backend.services.sensor_manager import SensorManager
+from backend.services.sensor_manager import SensorManager, public_ecotracker_reading
 
 
 class DummyHomeAssistant:
@@ -51,6 +51,7 @@ class EcoTrackerServiceTests(unittest.TestCase):
 
             self.assertEqual(result["sensor"]["id"], "home_energy")
             self.assertEqual(result["reading"]["power_w"], 125)
+            self.assertEqual(result["reading"]["meter_reading_kwh"], 145.0)
             self.assertEqual(get.call_args.args[0], "http://192.168.1.42/v1/json")
             self.assertEqual(len(roles), 1)
             self.assertEqual(roles[0]["role"], "home_energy")
@@ -58,6 +59,30 @@ class EcoTrackerServiceTests(unittest.TestCase):
             self.assertEqual(roles[0]["state"], 125)
             self.assertEqual(roles[0]["device_class"], "power")
             self.assertTrue(roles[0]["reachable"])
+
+    def test_public_reading_labels_import_counter_as_meter_reading(self) -> None:
+        reading = public_ecotracker_reading({"power": 125, "energyCounterIn": 145000, "energyCounterOut": 4500})
+
+        self.assertEqual(reading["meter_reading_kwh"], 145.0)
+        self.assertEqual(reading["energy_in_kwh"], 145.0)
+        self.assertEqual(reading["energy_out_kwh"], 4.5)
+
+    def test_status_includes_current_ecotracker_reading_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            manager = SensorManager(mapping)
+            with mapping.connect() as con:
+                con.execute(
+                    "update ecotracker_settings set host = ?, enabled = 1, updated_at = ? where id = 1",
+                    ("192.168.1.42", "2026-08-19T10:00:00+00:00"),
+                )
+                con.commit()
+
+            with patch("backend.services.ecotracker_service.requests.get", return_value=FakeEcoTrackerResponse()):
+                status = manager.ecotracker_status()
+
+            self.assertEqual(status["reading"]["meter_reading_kwh"], 145.0)
+            self.assertEqual(status["reading"]["power_w"], 125)
 
     def test_existing_ecotracker_energy_role_is_migrated_to_power(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

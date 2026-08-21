@@ -157,7 +157,7 @@ class SenteroBehaviorAgent:
             ha_snapshot = []
         if not dry_run:
             self._record_snapshot(sensor_snapshot, ha_snapshot)
-            self._notify_system_warnings(sensor_snapshot)
+            self._notify_system_warnings(sensor_snapshot, ha_snapshot)
             self._cleanup_old_data()
         history = self._history(days=30)
         daily_summary = self._upsert_daily_summary(history, dry_run=dry_run)
@@ -225,7 +225,9 @@ class SenteroBehaviorAgent:
         except Exception:
             logger.exception("Behavior live snapshot unavailable", extra={"component": "behavior"})
             ha_snapshot = []
-        return self._record_snapshot(sensor_snapshot, ha_snapshot)
+        written = self._record_snapshot(sensor_snapshot, ha_snapshot)
+        self._notify_system_warnings(sensor_snapshot, ha_snapshot)
+        return written
 
     def _profile(self) -> dict[str, Any]:
         with self.mapping.connect() as con:
@@ -244,7 +246,6 @@ class SenteroBehaviorAgent:
         timestamp = now()
         snapshot_rows = ha_snapshot or []
         extra_events = [
-            *self._fp300_snapshot_events(roles, snapshot_rows, timestamp),
             *self._smart_meter_snapshot_events(snapshot_rows, timestamp),
         ]
         written = 0
@@ -497,9 +498,9 @@ class SenteroBehaviorAgent:
         logger.debug("Behavior assessment stored", extra={"component": "behavior", "assessment_id": stored.get("id"), "status": stored.get("status")})
         return stored
 
-    def _notify_system_warnings(self, sensor_snapshot: list[dict[str, Any]]) -> None:
+    def _notify_system_warnings(self, sensor_snapshot: list[dict[str, Any]], environmental_snapshot: list[dict[str, Any]] | None = None) -> None:
         try:
-            result = self.notifications.notify_system_warnings(sensor_snapshot)
+            result = self.notifications.notify_system_warnings(sensor_snapshot, environmental_sensors=environmental_snapshot)
             if result.get("warnings"):
                 logger.info(
                     "System warnings generated",
@@ -517,6 +518,7 @@ class SenteroBehaviorAgent:
             return
         status = assessment.get("status")
         if status not in {"orange", "red"}:
+            self.notifications.resolve_behavior_notification()
             return
         severity = "critical" if status == "red" else "warning"
         self.messaging.create_message(
@@ -952,27 +954,6 @@ class SenteroBehaviorAgent:
             "activity_ratio": round(ratio, 2),
             "inactive_hours": round(inactive_hours, 2),
         }
-
-    def _fp300_snapshot_events(self, roles: list[dict[str, Any]], ha_snapshot: list[dict[str, Any]], timestamp: str) -> list[dict[str, Any]]:
-        events: list[dict[str, Any]] = []
-        for role in roles:
-            if not self._is_presence_role(role):
-                continue
-            related = self._related_presence_entities(role, ha_snapshot)
-            for kind, item in related.items():
-                if not item:
-                    continue
-                events.append({
-                    "role": f"{role.get('role')}_{kind}",
-                    "room": role.get("room"),
-                    "entity_id": item.get("entity_id"),
-                    "state": item.get("state"),
-                    "device_class": item.get("device_class"),
-                    "source": "fp300_snapshot",
-                    "last_changed": item.get("last_changed") or timestamp,
-                    "last_updated": item.get("last_updated") or timestamp,
-                })
-        return events
 
     def _smart_meter_snapshot_events(self, snapshot: list[dict[str, Any]], timestamp: str) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
