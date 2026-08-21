@@ -8,6 +8,10 @@ sentero:
     temperature_max_celsius: 28
     humidity_max_percent: 70
 
+notifications:
+  incident_recovery:
+    healthy_checks_required: 3
+
 app:
   dev_mode: false
 

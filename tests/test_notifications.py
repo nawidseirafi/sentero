@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import tempfile
+import threading
 import unittest
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ from backend.services.aal_roles import can_access_data_classes
 from backend.services.consent_service import ConsentService
 from backend.behavior_agent import SenteroBehaviorAgent
 from backend.services.notification_service import NotificationService, mail_assistant_reply_to, sentero_mail_from
+from backend.services.network.models import NetworkStatusCode
 from backend.services.setup_service import SenteroSetupService
 from backend.agents.sentero.mail.store import MailAssistantStore
 
@@ -31,10 +33,12 @@ class DummyHomeAssistant:
 class RecordingProvider:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
+        self.lock = threading.Lock()
 
     def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> dict[str, Any]:
-        self.sent.append({"contact": contact, "title": title, "text": text, "config": config})
-        return {"message_id": f"<sentero-recording-{len(self.sent)}@sentero.local>"}
+        with self.lock:
+            self.sent.append({"contact": contact, "title": title, "text": text, "config": config})
+            return {"message_id": f"<sentero-recording-{len(self.sent)}@sentero.local>"}
 
 
 class RecordingMessaging:
@@ -113,6 +117,11 @@ class FakeJsonResponse:
 
     def json(self) -> dict[str, Any]:
         return self.payload
+
+
+class OfflineConnectivity:
+    def check(self, connection_type: Any) -> Any:
+        return type("ConnectivityResult", (), {"status": NetworkStatusCode.OFFLINE})()
 
 
 class NotificationSystemWarningTests(unittest.TestCase):
@@ -458,10 +467,10 @@ class NotificationSystemWarningTests(unittest.TestCase):
             self.assertEqual(recovered["warnings"], [])
 
             with mapping.connect() as con:
-                resolved = con.execute(
-                    "select count(*) as count from system_warning_state where status = 'resolved'"
+                active = con.execute(
+                    "select count(*) as count from system_warning_state where status = 'active' and consecutive_healthy_checks = 1"
                 ).fetchone()["count"]
-            self.assertEqual(resolved, 2)
+            self.assertEqual(active, 2)
 
     def test_temperature_warning_is_red_and_not_learning_gated(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -550,6 +559,188 @@ class NotificationSystemWarningTests(unittest.TestCase):
             self.assertEqual(result["warnings"][0]["severity"], "orange")
             self.assertEqual(result["warnings"][0]["data_class"], "environmental")
 
+    def test_same_sensor_warning_rechecked_after_restart_sends_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            insert_contact(mapping)
+            provider = RecordingProvider()
+            first_service = NotificationService(mapping)
+            first_service.providers["email"] = provider
+            sensor = sensor_warning_row(device_id="0xaaa", role="hallway_presence", label="Flur Sensor", reachable=False)
+
+            first = first_service.notify_system_warnings(sensors=[sensor])
+            restarted = NotificationService(mapping)
+            restarted.providers["email"] = provider
+            second = restarted.notify_system_warnings(sensors=[{**sensor, "label": "Flur Sensor neu"}])
+
+            self.assertEqual(first["sent"], 1)
+            self.assertEqual(second["sent"], 0)
+            self.assertEqual(len(provider.sent), 1)
+            with mapping.connect() as con:
+                row = con.execute("select * from system_warning_state where warning_key = ?", ("sensor_unreachable:0xaaa",)).fetchone()
+            self.assertEqual(row["status"], "active")
+            self.assertIsNotNone(row["last_seen_at"])
+
+    def test_system_recovery_requires_stable_healthy_checks_before_new_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            insert_contact(mapping)
+            provider = RecordingProvider()
+            service = NotificationService(mapping)
+            service.providers["email"] = provider
+            offline = sensor_warning_row(device_id="0xaaa", reachable=False)
+            healthy = {**offline, "reachable": True}
+
+            service.notify_system_warnings(sensors=[offline])
+            service.notify_system_warnings(sensors=[healthy])
+            service.notify_system_warnings(sensors=[offline])
+            self.assertEqual(len(provider.sent), 1)
+
+            service.notify_system_warnings(sensors=[healthy])
+            service.notify_system_warnings(sensors=[healthy])
+            service.notify_system_warnings(sensors=[healthy])
+            with mapping.connect() as con:
+                row = con.execute("select status from system_warning_state where warning_key = ?", ("sensor_unreachable:0xaaa",)).fetchone()
+            self.assertEqual(row["status"], "resolved")
+
+            service.notify_system_warnings(sensors=[offline])
+            self.assertEqual(len(provider.sent), 2)
+
+    def test_sensor_rename_keeps_same_incident_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            insert_contact(mapping)
+            provider = RecordingProvider()
+            service = NotificationService(mapping)
+            service.providers["email"] = provider
+
+            service.notify_system_warnings(sensors=[sensor_warning_row(device_id="0xaaa", label="Flur Sensor", reachable=False)])
+            service.notify_system_warnings(sensors=[sensor_warning_row(device_id="0xaaa", label="Wohnzimmer Präsenz", role="living_presence", reachable=False)])
+
+            self.assertEqual(len(provider.sent), 1)
+            with mapping.connect() as con:
+                keys = [row["warning_key"] for row in con.execute("select warning_key from system_warning_state").fetchall()]
+            self.assertEqual(keys, ["sensor_unreachable:0xaaa"])
+
+    def test_parallel_system_checks_create_at_most_one_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            insert_contact(mapping)
+            provider = RecordingProvider()
+            sensor = sensor_warning_row(device_id="0xaaa", reachable=False)
+
+            def run_check() -> None:
+                service = NotificationService(mapping)
+                service.providers["email"] = provider
+                service.notify_system_warnings(sensors=[sensor])
+
+            threads = [threading.Thread(target=run_check) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            self.assertLessEqual(len(provider.sent), 1)
+
+    def test_offline_outbox_is_deduplicated_for_active_incident(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            insert_contact(mapping)
+            service = NotificationService(mapping, connectivity=OfflineConnectivity())
+            sensor = sensor_warning_row(device_id="0xaaa", reachable=False)
+
+            service.notify_system_warnings(sensors=[sensor])
+            service.notify_system_warnings(sensors=[sensor])
+            service.notify_system_warnings(sensors=[sensor])
+
+            with mapping.connect() as con:
+                row = con.execute("select count(*) as count from notification_outbox where incident_key = ?", ("sensor_unreachable:0xaaa",)).fetchone()
+            self.assertEqual(row["count"], 1)
+
+    def test_different_sensors_and_warning_types_are_distinct_incidents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            insert_contact(mapping)
+            provider = RecordingProvider()
+            service = NotificationService(mapping)
+            service.providers["email"] = provider
+
+            result = service.notify_system_warnings(
+                sensors=[
+                    sensor_warning_row(device_id="0xaaa", battery_level=20, reachable=True),
+                    sensor_warning_row(device_id="0xbbb", role="bath_presence", battery_level=20, reachable=True),
+                    sensor_warning_row(device_id="0xccc", battery_level=20, reachable=False),
+                ]
+            )
+
+            keys = {warning["key"] for warning in result["warnings"]}
+            self.assertIn("battery_low:0xaaa", keys)
+            self.assertIn("battery_low:0xbbb", keys)
+            self.assertIn("battery_low:0xccc", keys)
+            self.assertIn("sensor_unreachable:0xccc", keys)
+            self.assertEqual(len(provider.sent), 4)
+
+    def test_environmental_warning_ignores_battery_voltage_pressure_and_calibration_entities(self) -> None:
+        service = NotificationService(MemoryMapping())
+
+        warnings = service._environmental_warnings([
+            {"domain": "sensor", "entity_id": "sensor.kitchen_temperature_sensor_battery", "friendly_name": "Kitchen Temperature Sensor Batterie", "device_class": "battery", "state": 100},
+            {"domain": "sensor", "entity_id": "sensor.kitchen_temperature_sensor_voltage", "friendly_name": "Kitchen Temperature Sensor Spannung", "device_class": "voltage", "state": 3000},
+            {"domain": "sensor", "entity_id": "sensor.kitchen_temperature_sensor_pressure", "friendly_name": "Kitchen Temperature Sensor Pressure", "device_class": "pressure", "state": 1000},
+            {"domain": "number", "entity_id": "number.guest_wc_presence_sensor_temperature_calibration", "friendly_name": "Guest WC Presence Sensor Temperature calibration", "state": -2},
+        ])
+
+        self.assertEqual(warnings, [])
+
+    def test_system_warning_sends_once_to_each_contact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            insert_contact(mapping)
+            insert_contact(mapping)
+            with mapping.connect() as con:
+                con.execute("update trusted_contacts set email = 'second@example.test', primary_contact = 0 where id = 2")
+                con.commit()
+
+            provider = RecordingProvider()
+            service = NotificationService(mapping)
+            service.providers["email"] = provider
+
+            result = service.notify_system_warnings(
+                sensors=[],
+                environmental_sensors=[
+                    {
+                        "domain": "sensor",
+                        "entity_id": "sensor.bathroom_humidity",
+                        "friendly_name": "Bad Luftfeuchtigkeit",
+                        "room": "Bad",
+                        "device_class": "humidity",
+                        "state": 75,
+                    }
+                ],
+            )
+
+            self.assertEqual(result["sent"], 2)
+            self.assertEqual(len(provider.sent), 2)
+            self.assertEqual(provider.sent[0]["contact"]["email"], "nawid@example.test")
+            self.assertEqual(provider.sent[1]["contact"]["email"], "second@example.test")
+
+            second = service.notify_system_warnings(
+                sensors=[],
+                environmental_sensors=[
+                    {
+                        "domain": "sensor",
+                        "entity_id": "sensor.bathroom_humidity",
+                        "friendly_name": "Bad Luftfeuchtigkeit",
+                        "room": "Bad",
+                        "device_class": "humidity",
+                        "state": 75,
+                    }
+                ],
+            )
+
+            self.assertEqual(second["sent"], 0)
+            self.assertEqual(len(provider.sent), 2)
+
     def test_behavior_notifications_require_active_consent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
@@ -606,8 +797,52 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
             service.notify_assessment({"status": "green", "summary": "Alles unauffällig."}, [contact(mapping, contact_id)])
             service.notify_assessment(assessment, [contact(mapping, contact_id)])
+            self.assertEqual(len(provider.sent), 1)
+
+            service.notify_assessment({"status": "green", "summary": "Alles unauffällig."}, [contact(mapping, contact_id)])
+            service.notify_assessment({"status": "green", "summary": "Alles unauffällig."}, [contact(mapping, contact_id)])
+            service.notify_assessment({"status": "green", "summary": "Alles unauffällig."}, [contact(mapping, contact_id)])
+            service.notify_assessment(assessment, [contact(mapping, contact_id)])
 
             self.assertEqual(len(provider.sent), 2)
+
+    def test_behavior_orange_is_sent_once_and_red_escalates_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            contact_id = insert_contact(mapping)
+            ConsentService(mapping).grant({"contact_id": contact_id})
+            provider = RecordingProvider()
+            service = NotificationService(mapping)
+            service.providers["email"] = provider
+            orange = {"status": "orange", "summary": "Auffälligkeit erkannt.", "recommendation": "Bitte nachfragen."}
+            red = {"status": "red", "summary": "Kritische Auffälligkeit erkannt.", "recommendation": "Bitte sofort nachfragen."}
+
+            service.notify_assessment(orange, [contact(mapping, contact_id)])
+            service.notify_assessment(orange, [contact(mapping, contact_id)])
+            service.notify_assessment(orange, [contact(mapping, contact_id)])
+            self.assertEqual(len(provider.sent), 1)
+
+            service.notify_assessment(red, [contact(mapping, contact_id)])
+            service.notify_assessment(red, [contact(mapping, contact_id)])
+            self.assertEqual(len(provider.sent), 2)
+
+    def test_behavior_red_to_orange_does_not_send_downgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            contact_id = insert_contact(mapping)
+            ConsentService(mapping).grant({"contact_id": contact_id})
+            provider = RecordingProvider()
+            service = NotificationService(mapping)
+            service.providers["email"] = provider
+
+            service.notify_assessment({"status": "red", "summary": "Kritisch.", "recommendation": "Bitte nachfragen."}, [contact(mapping, contact_id)])
+            service.notify_assessment({"status": "orange", "summary": "Weiterhin auffällig.", "recommendation": "Bitte nachfragen."}, [contact(mapping, contact_id)])
+
+            self.assertEqual(len(provider.sent), 1)
+            with mapping.connect() as con:
+                row = con.execute("select status, last_notified_severity from behavior_notification_state where state_key = 'behavior_anomaly'").fetchone()
+            self.assertEqual(row["status"], "active")
+            self.assertEqual(row["last_notified_severity"], "red")
 
     def test_behavior_agent_writes_internal_warning_only_when_notification_is_new(self) -> None:
         agent = SenteroBehaviorAgent.__new__(SenteroBehaviorAgent)
@@ -721,6 +956,27 @@ def contact(mapping: DeviceMappingService, contact_id: int) -> dict[str, Any]:
     with mapping.connect() as con:
         row = con.execute("select * from trusted_contacts where id = ?", (contact_id,)).fetchone()
     return dict(row)
+
+
+def sensor_warning_row(
+    *,
+    device_id: str = "0xaaa",
+    role: str = "hallway_presence",
+    label: str = "Flur Sensor",
+    battery_level: int = 80,
+    reachable: bool = True,
+) -> dict[str, Any]:
+    return {
+        "role": role,
+        "label": label,
+        "room": "Flur",
+        "configured": True,
+        "device_id": device_id,
+        "primary_entity_id": f"sensor.{role}",
+        "entity_id": f"sensor.{role}",
+        "battery_level": battery_level,
+        "reachable": reachable,
+    }
 
 
 def notification_log_columns(con: sqlite3.Connection) -> list[str]:

@@ -88,8 +88,9 @@ class Zigbee2MqttSensorSource:
             return []
         rows: list[dict[str, Any]] = []
         now = utc_now()
+        device_metadata = self._bridge_device_metadata(messages)
         for message in messages:
-            rows.extend(self._entities_from_message(message.topic, message.payload, now))
+            rows.extend(self._entities_from_message(message.topic, message.payload, now, device_metadata))
         logger.debug(
             "Zigbee2MQTT snapshot completed",
             extra={"component": "sensor_source", "sensor_source": self.name, "message_count": len(messages), "row_count": len(rows)},
@@ -118,7 +119,7 @@ class Zigbee2MqttSensorSource:
             result.extend(self._entities_from_message(topic, row.get("payload") if "payload" in row else row, str(row.get("changed_at") or now)))
         return result
 
-    def _entities_from_message(self, topic: str, payload: Any, timestamp: str) -> list[dict[str, Any]]:
+    def _entities_from_message(self, topic: str, payload: Any, timestamp: str, device_metadata: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         if self._is_bridge_devices_topic(topic):
             return self._entities_from_bridge_devices(payload, topic, timestamp)
         device = self._device_from_topic(topic)
@@ -133,7 +134,8 @@ class Zigbee2MqttSensorSource:
                 "Zigbee2MQTT payload received",
                 extra={"component": "sensor_source", "sensor_source": self.name, "topic": topic, "device_id": device, "payload": payload},
             )
-        enriched_payload = {**payload, "topic": topic, "source_ref": topic, "source": self._source_from_topic(topic)}
+        bridge_metadata = (device_metadata or {}).get(device) or (device_metadata or {}).get(device.lower()) or {}
+        enriched_payload = {**bridge_metadata, **payload, "topic": topic, "source_ref": topic, "source": self._source_from_topic(topic)}
         if topic.strip("/").rsplit("/", 1)[-1] == "availability":
             return [self._availability_entity(device, payload, enriched_payload, timestamp)]
         rows: list[dict[str, Any]] = []
@@ -151,6 +153,33 @@ class Zigbee2MqttSensorSource:
             extra={"component": "sensor_source", "sensor_source": self.name, "topic": topic, "device_id": device, "row_count": len(rows)},
         )
         return rows
+
+    def _bridge_device_metadata(self, messages: list[Any]) -> dict[str, dict[str, Any]]:
+        metadata: dict[str, dict[str, Any]] = {}
+        for message in messages:
+            if not self._is_bridge_devices_topic(str(getattr(message, "topic", "") or "")):
+                continue
+            payload = getattr(message, "payload", None)
+            if not isinstance(payload, list):
+                continue
+            for device in payload:
+                if not isinstance(device, dict):
+                    continue
+                ieee = str(device.get("ieee_address") or device.get("ieee") or device.get("id") or "").strip()
+                friendly_name = str(device.get("friendly_name") or "").strip()
+                definition = device.get("definition") if isinstance(device.get("definition"), dict) else {}
+                item = {
+                    "manufacturer": definition.get("vendor") or device.get("manufacturer"),
+                    "model": definition.get("model") or device.get("model_id") or device.get("model"),
+                    "ieee_address": ieee or None,
+                    "zigbee2mqtt_friendly_name": friendly_name or None,
+                }
+                for key in (friendly_name, ieee):
+                    clean = str(key or "").strip()
+                    if clean:
+                        metadata[clean] = item
+                        metadata[clean.lower()] = item
+        return metadata
 
     def _device_from_topic(self, topic: str) -> str:
         prefix = next((value for value in self.topic_prefixes if topic.startswith(f"{value}/")), "")
@@ -220,13 +249,15 @@ class Zigbee2MqttSensorSource:
     def _entity(self, device: str, key: str, value: Any, payload: dict[str, Any], timestamp: str) -> dict[str, Any]:
         slug = slugify(device)
         source = payload.get("source") or self.name
-        device_id = device if source == "mqtt" else slug
+        ieee = str(payload.get("ieee_address") or "").strip()
+        physical_device_id = ieee if source == self.name and ieee else device if source == "mqtt" else slug
         clean_key = "contact" if key == "open" else key
         is_binary = clean_key in BINARY_DEVICE_CLASSES or clean_key == "state" and str(value).lower() in {"on", "off", "true", "false"}
         domain = "button" if clean_key == "action" else "binary_sensor" if is_binary else "sensor"
         suffix = "" if is_binary else f"_{slugify(clean_key)}"
         device_class = self._device_class(clean_key, is_binary)
         friendly_key = "" if is_binary else f" {clean_key.replace('_', ' ').title()}"
+        identifier_value = ieee if source == self.name and ieee else device
         return {
             "entity_id": f"{domain}.{slug}{suffix}",
             "domain": domain,
@@ -235,9 +266,9 @@ class Zigbee2MqttSensorSource:
             "device_class": device_class,
             "unit": "%" if clean_key == "battery" else None,
             "unit_of_measurement": "%" if clean_key == "battery" else None,
-            "device_id": device_id,
+            "device_id": physical_device_id,
             "platform": source,
-            "unique_id": f"{source}_{slug}_{clean_key}",
+            "unique_id": f"{source}_{slugify(physical_device_id)}_{clean_key}",
             "topic": payload.get("topic") or payload.get("source_ref"),
             "source_ref": payload.get("source_ref") or payload.get("topic"),
             "payload_key": clean_key,
@@ -245,7 +276,7 @@ class Zigbee2MqttSensorSource:
             "device_name": device,
             "manufacturer": payload.get("manufacturer") or payload.get("vendor"),
             "model": payload.get("model") or payload.get("model_id"),
-            "identifiers": [[source, device]],
+            "identifiers": [[source, identifier_value]],
             "last_changed": timestamp,
             "last_updated": timestamp,
             "source": source,

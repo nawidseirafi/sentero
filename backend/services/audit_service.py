@@ -240,6 +240,7 @@ def ensure_audit_schema(mapping: DeviceMappingService) -> None:
         con.execute(
             """create table if not exists notification_logs (
                 id integer primary key autoincrement,
+                incident_key text,
                 contact_id integer,
                 channel text not null,
                 severity text not null,
@@ -254,6 +255,10 @@ def ensure_audit_schema(mapping: DeviceMappingService) -> None:
         )
         try:
             con.execute("alter table notification_logs add column outgoing_message_id text")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            con.execute("alter table notification_logs add column incident_key text")
         except sqlite3.OperationalError:
             pass
         con.commit()

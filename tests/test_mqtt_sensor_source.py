@@ -257,6 +257,27 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertEqual(by_key["occupancy"]["model"], "ZG-204ZH")
         self.assertEqual(by_key["battery"]["domain"], "sensor")
 
+    def test_zigbee2mqtt_topic_entities_use_bridge_ieee_as_device_id(self) -> None:
+        ieee = "0xa4c1389a3e0a13e3"
+        mqtt = SnapshotMqtt([
+            FakeMessage("zigbee2mqtt/bridge/devices", [
+                {
+                    "ieee_address": ieee,
+                    "friendly_name": "Haustuer",
+                    "definition": {"model": "MCCGQ11LM", "vendor": "Aqara"},
+                }
+            ]),
+            FakeMessage("zigbee2mqtt/Haustuer", {"contact": False, "battery": 88, "linkquality": 120}),
+        ])
+        with patch.dict(os.environ, {"SENTERO_MQTT_BOOTSTRAP_EVENTS": ""}, clear=False):
+            source = Zigbee2MqttSensorSource(mqtt=mqtt)
+            rows = source.snapshot()
+
+        contact = next(row for row in rows if row["entity_id"] == "binary_sensor.haustuer")
+        self.assertEqual(contact["device_id"], ieee)
+        self.assertEqual(contact["identifiers"], [["zigbee2mqtt", ieee]])
+        self.assertEqual(contact["attributes"]["ieee_address"], ieee)
+
     def test_sentero_c1001_snapshot_normalizes_presence_capabilities(self) -> None:
         mqtt = SnapshotMqtt([
             FakeMessage(
@@ -315,7 +336,7 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertEqual(mqtt.requests[0][0], "zigbee2mqtt/bridge/request/device/rename")
         self.assertIn(("zigbee2mqtt/bridge/request/permit_join", {"value": False, "time": 0}), mqtt.published)
 
-    def test_mqtt_discovery_finds_existing_unassigned_presence_device(self) -> None:
+    def test_mqtt_discovery_does_not_offer_existing_unassigned_presence_device(self) -> None:
         ieee = "0xa4c1389a3e0a13e3"
         mqtt = SnapshotMqtt([
             FakeMessage("zigbee2mqtt/bridge/devices", [
@@ -343,11 +364,9 @@ class MqttSensorSourceTests(unittest.TestCase):
             found = manager.discovered(started["discovery_id"], dev=True)
             raw = mapping.candidates(started["discovery_id"], dev=True)
 
-        self.assertEqual(found["status"], "found")
-        self.assertEqual(found["sensor"]["id"], ieee)
-        self.assertEqual(found["sensor"]["type"], "presence_sensor")
-        self.assertEqual(raw["candidate"]["model"], "ZG-204ZH")
-        self.assertIn("existing_unassigned", raw["candidate"]["reasons"])
+        self.assertEqual(found["status"], "searching")
+        self.assertIsNone(found["sensor"])
+        self.assertIsNone(raw["candidate"])
 
     def test_mqtt_discovery_does_not_offer_existing_assigned_presence_device(self) -> None:
         ieee = "0xa4c1389a3e0a13e3"

@@ -1209,7 +1209,8 @@ class DeviceMappingService:
                 'name': name,
                 'room': room,
                 'updated': ['zigbee2mqtt'] if rename.get('ok') else [],
-                'ok': bool(rename.get('ok')),
+                'ok': True,
+                'rename_optional': True,
                 'source_ref': rename.get('source_ref') or entity.get('source_ref') or entity.get('topic') or entity_id,
                 'zigbee2mqtt': rename,
             }
@@ -1494,6 +1495,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     )''')
     con.execute('''create table if not exists notification_logs (
         id integer primary key autoincrement,
+        incident_key text,
         contact_id integer,
         channel text not null,
         severity text not null,
@@ -1517,6 +1519,10 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         con.execute("alter table notification_logs add column outgoing_message_id text")
     except sqlite3.OperationalError:
         pass
+    try:
+        con.execute("alter table notification_logs add column incident_key text")
+    except sqlite3.OperationalError:
+        pass
     con.execute('''create table if not exists data_consents (
         id integer primary key autoincrement,
         contact_id integer not null,
@@ -1532,13 +1538,34 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     con.execute('create index if not exists idx_data_consents_contact_purpose on data_consents(contact_id, purpose, revoked_at)')
     con.execute('''create table if not exists system_warning_state (
         warning_key text primary key,
+        incident_key text,
+        category text,
+        subject_id text,
         status text not null,
+        severity text,
         first_seen_at text not null,
         last_seen_at text not null,
         last_sent_at text,
+        last_notified_severity text,
         resolved_at text,
+        consecutive_healthy_checks integer not null default 0,
+        reminder_count integer not null default 0,
         payload_json text not null default '{}'
     )''')
+    for statement in [
+        "alter table system_warning_state add column incident_key text",
+        "alter table system_warning_state add column category text",
+        "alter table system_warning_state add column subject_id text",
+        "alter table system_warning_state add column severity text",
+        "alter table system_warning_state add column last_notified_severity text",
+        "alter table system_warning_state add column consecutive_healthy_checks integer not null default 0",
+        "alter table system_warning_state add column reminder_count integer not null default 0",
+    ]:
+        try:
+            con.execute(statement)
+        except sqlite3.OperationalError:
+            pass
+    con.execute("update system_warning_state set incident_key = warning_key where incident_key is null or trim(incident_key) = ''")
     con.execute('''create table if not exists sentero_users (
         id integer primary key autoincrement,
         email text not null unique,
@@ -1650,7 +1677,7 @@ def score_candidates(
     assigned_identities: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     before = {item.get('entity_id'): item for item in baseline}
-    baseline_device_ids = {str(item.get('device_id') or '') for item in baseline if item.get('device_id')}
+    baseline_device_ids = {value for item in baseline for value in physical_device_identity_values(item)}
     assigned_identities = assigned_identities or set()
     started = parse_time(started_at)
     scored = []
@@ -1659,22 +1686,20 @@ def score_candidates(
         if not entity_id:
             continue
         device_id = str(item.get('device_id') or '')
+        physical_identities = physical_device_identity_values(item)
         identities = mqtt_identity_values(item)
         if identities and identities.intersection(assigned_identities):
             continue
         old = before.get(entity_id, {})
         is_new = entity_id not in before
-        is_new_device = bool(device_id and device_id not in baseline_device_ids)
+        is_new_device = bool(physical_identities and not physical_identities.intersection(baseline_device_ids))
         state_changed = bool(old) and item.get('state') != old.get('state')
         last_changed_updated = is_after(item.get('last_changed'), started)
         last_updated_updated = is_after(item.get('last_updated'), started)
         changed = is_new or is_new_device or state_changed or last_changed_updated or last_updated_updated
-        existing_unassigned = False
-        if require_new and not changed:
-            existing_unassigned = bool(identities) and not identities.intersection(assigned_identities)
-        if require_new and not (is_new or is_new_device or existing_unassigned):
+        if require_new and not is_new_device:
             continue
-        if not changed and not existing_unassigned:
+        if not changed:
             continue
 
         priority = candidate_entity_priority(role, item)
@@ -1708,9 +1733,6 @@ def score_candidates(
         if state_match:
             confidence += 20
             reasons.append('state_entity_match')
-        if existing_unassigned:
-            confidence += 35
-            reasons.append('existing_unassigned')
         if room_matches(room, entity_id, item.get('friendly_name')):
             confidence += 20
             reasons.append('room_match')
@@ -1725,7 +1747,7 @@ def score_candidates(
             confidence -= 10
             reasons.append(f'state_{state_value}')
         if confidence >= 40:
-            scored.append({**item, 'confidence': confidence, 'reasons': reasons, 'is_new': is_new, 'is_new_device': is_new_device, 'existing_unassigned': existing_unassigned, 'entity_priority': priority})
+            scored.append({**item, 'confidence': confidence, 'reasons': reasons, 'is_new': is_new, 'is_new_device': is_new_device, 'entity_priority': priority})
     return sorted(scored, key=lambda x: (bool(x.get('is_new_device')), role_state_priority(role, x), bool(x.get('is_new')), x['confidence'], parse_time(x.get('last_updated')).timestamp()), reverse=True)
 
 
@@ -2368,6 +2390,33 @@ def mqtt_identity_values(item: dict[str, Any]) -> set[str]:
         if match:
             values.add(match.group(0).lower())
     return {value for value in values if value}
+
+
+def physical_device_identity_values(item: dict[str, Any]) -> set[str]:
+    values: set[str] = set()
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    for raw in (
+        item.get('device_id'),
+        attrs.get('device_id'),
+        item.get('ieee_address'),
+        attrs.get('ieee_address'),
+    ):
+        add_physical_identity(values, raw)
+    for domain, value in parse_identifiers(item.get('identifiers')):
+        if normalize(domain) in {'mqtt', 'zigbee2mqtt', 'zha'}:
+            add_physical_identity(values, value)
+    return {value for value in values if value}
+
+
+def add_physical_identity(values: set[str], raw: Any) -> None:
+    text = str(raw or '').strip()
+    if not text:
+        return
+    values.add(text)
+    values.add(text.lower())
+    match = re.search(r'0x[0-9a-fA-F]{8,16}', text)
+    if match:
+        values.add(match.group(0).lower())
 
 
 def slug_identity(value: str) -> str:

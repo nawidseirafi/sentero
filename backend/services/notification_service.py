@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import requests
 
 from backend.logging_config import get_logger
-from backend.config import config_float
+from backend.config import config_float, config_int
 from backend.services.messaging import MessagingService
 
 from backend.services.aal_roles import can_access_data_classes
@@ -37,6 +37,8 @@ BATTERY_WARNING_THRESHOLD = 30
 DEFAULT_TEMPERATURE_MIN_CELSIUS = 16.0
 DEFAULT_TEMPERATURE_MAX_CELSIUS = 28.0
 DEFAULT_HUMIDITY_MAX_PERCENT = 70.0
+DEFAULT_INCIDENT_RECOVERY_HEALTHY_CHECKS = 3
+SEVERITY_RANK = {"green": 0, "yellow": 1, "orange": 2, "red": 3}
 
 
 class NotificationProvider(ABC):
@@ -167,6 +169,7 @@ class NotificationService:
             con.execute(
                 """create table if not exists notification_outbox (
                     id integer primary key autoincrement,
+                    incident_key text,
                     contact_id integer,
                     channel text not null,
                     severity text not null,
@@ -190,14 +193,68 @@ class NotificationService:
             con.execute(
                 """create table if not exists behavior_notification_state (
                     state_key text primary key,
+                    incident_key text,
+                    category text,
+                    subject_id text,
                     status text not null,
+                    severity text,
                     first_seen_at text not null,
                     last_seen_at text not null,
                     last_sent_at text,
+                    last_notified_severity text,
                     resolved_at text,
+                    consecutive_healthy_checks integer not null default 0,
+                    reminder_count integer not null default 0,
                     assessment_json text not null default '{}'
                 )"""
             )
+            con.execute(
+                """create table if not exists system_warning_state (
+                    warning_key text primary key,
+                    incident_key text,
+                    category text,
+                    subject_id text,
+                    status text not null,
+                    severity text,
+                    first_seen_at text not null,
+                    last_seen_at text not null,
+                    last_sent_at text,
+                    last_notified_severity text,
+                    resolved_at text,
+                    consecutive_healthy_checks integer not null default 0,
+                    reminder_count integer not null default 0,
+                    payload_json text not null default '{}'
+                )"""
+            )
+            for statement in [
+                "alter table notification_outbox add column incident_key text",
+                "alter table notification_logs add column incident_key text",
+                "alter table behavior_notification_state add column incident_key text",
+                "alter table behavior_notification_state add column category text",
+                "alter table behavior_notification_state add column subject_id text",
+                "alter table behavior_notification_state add column severity text",
+                "alter table behavior_notification_state add column last_notified_severity text",
+                "alter table behavior_notification_state add column consecutive_healthy_checks integer not null default 0",
+                "alter table behavior_notification_state add column reminder_count integer not null default 0",
+                "alter table system_warning_state add column incident_key text",
+                "alter table system_warning_state add column category text",
+                "alter table system_warning_state add column subject_id text",
+                "alter table system_warning_state add column severity text",
+                "alter table system_warning_state add column last_notified_severity text",
+                "alter table system_warning_state add column consecutive_healthy_checks integer not null default 0",
+                "alter table system_warning_state add column reminder_count integer not null default 0",
+            ]:
+                try:
+                    con.execute(statement)
+                except sqlite3.OperationalError:
+                    pass
+            con.execute("update behavior_notification_state set incident_key = state_key where incident_key is null or trim(incident_key) = ''")
+            con.execute("update system_warning_state set incident_key = warning_key where incident_key is null or trim(incident_key) = ''")
+            try:
+                con.execute("create index if not exists idx_notification_logs_incident on notification_logs(incident_key, contact_id, channel, severity, status)")
+            except sqlite3.OperationalError:
+                pass
+            con.execute("create index if not exists idx_notification_outbox_incident on notification_outbox(incident_key, contact_id, channel, severity, status)")
             con.commit()
 
     def channels(self) -> dict[str, Any]:
@@ -294,7 +351,7 @@ class NotificationService:
                 text = add_original_timestamp(str(item["text"]), str(item["original_created_at"]))
                 result = self.providers[channel].send(contact, str(item["title"]), text, self._setting(channel).get("config") or {})
                 self._mark_outbox(int(item["id"]), "sent", None)
-                self._log(item.get("contact_id"), channel, str(item["severity"]), "sent", str(item["title"]), None, outgoing_message_id=_provider_message_id(result))
+                self._log(item.get("contact_id"), channel, str(item["severity"]), "sent", str(item["title"]), None, outgoing_message_id=_provider_message_id(result), incident_key=item.get("incident_key"))
                 sent += 1
             except Exception as exc:
                 self._mark_outbox(int(item["id"]), "failed", self._safe_error(exc))
@@ -344,10 +401,9 @@ class NotificationService:
             self.resolve_behavior_notification()
             return {"sent": 0, "skipped": "resolved"}
         state_key = "behavior_anomaly"
-        duplicate_active = severity in {"orange", "red"} and self._behavior_notification_active(state_key)
+        incident_key = f"behavior:{state_key}"
         title, email_text, short_text = self._message(assessment)
-        delivered = 0
-        touched_duplicate = False
+        eligible: list[dict[str, Any]] = []
         for contact in contacts:
             if not bool(contact.get("notification_enabled", 1)):
                 continue
@@ -365,30 +421,49 @@ class NotificationService:
                     extra={"component": "notification", "contact_id": contact.get("id"), "purpose": DEFAULT_NOTIFICATION_PURPOSE},
                 )
                 continue
-            if duplicate_active:
-                if not touched_duplicate:
-                    self._touch_behavior_notification(state_key, assessment)
-                    touched_duplicate = True
-                continue
+            eligible.append(contact)
+        if not eligible:
+            return {"sent": 0, "skipped": "no_eligible_contacts"}
+        if severity in {"orange", "red"}:
+            action = self._claim_behavior_incident(state_key, incident_key, assessment, severity)
+            if action == "suppress":
+                return {"sent": 0, "skipped": "already_active"}
+        else:
+            action = "send"
+        delivered = 0
+        for contact in eligible:
             channels = self._channels_for_contact(contact, severity)
             for channel in channels:
                 text = email_text if channel == "email" else short_text
                 before = self._log_count()
-                self._send_with_log(contact, channel, severity, title, text, fallback=severity == "red")
+                self._send_with_log(contact, channel, severity, title, text, fallback=severity == "red", incident_key=incident_key)
                 if self._log_count() > before:
                     delivered += 1
-        if delivered and severity in {"orange", "red"}:
-            self._upsert_behavior_notification(state_key, assessment, sent_now=True)
-        if duplicate_active:
-            return {"sent": 0, "skipped": "already_active"}
-        return {"sent": delivered}
+        return {"sent": delivered, "incident_action": action}
 
     def resolve_behavior_notification(self, state_key: str = "behavior_anomaly") -> None:
         timestamp = now()
+        required = self._incident_recovery_healthy_checks()
         with self.mapping.connect() as con:
+            row = con.execute(
+                "select consecutive_healthy_checks from behavior_notification_state where state_key = ? and status = 'active'",
+                (state_key,),
+            ).fetchone()
+            if not row:
+                return
+            healthy_checks = int(row["consecutive_healthy_checks"] or 0) + 1
+            if healthy_checks < required:
+                con.execute(
+                    "update behavior_notification_state set consecutive_healthy_checks = ?, last_seen_at = ? where state_key = ? and status = 'active'",
+                    (healthy_checks, timestamp, state_key),
+                )
+                con.commit()
+                return
             con.execute(
-                "update behavior_notification_state set status = 'resolved', resolved_at = ?, last_seen_at = ? where state_key = ? and status = 'active'",
-                (timestamp, timestamp, state_key),
+                """update behavior_notification_state
+                   set status = 'resolved', resolved_at = ?, last_seen_at = ?, consecutive_healthy_checks = ?
+                   where state_key = ? and status = 'active'""",
+                (timestamp, timestamp, healthy_checks, state_key),
             )
             con.commit()
 
@@ -414,16 +489,13 @@ class NotificationService:
         contacts = self._trusted_contacts()
         sent = 0
         for warning in active_warnings:
-            state = self._system_warning_state(warning["key"])
-            if state and state.get("status") == "active" and state.get("last_sent_at"):
-                self._touch_system_warning(warning)
+            action = self._claim_system_warning_incident(warning)
+            if action == "suppress":
                 continue
 
-            self._upsert_system_warning(warning, sent_now=False)
             delivered = self._send_system_warning(warning, contacts)
             if delivered:
                 sent += delivered
-                self._upsert_system_warning(warning, sent_now=True)
 
         return {"sent": sent, "warnings": active_warnings}
 
@@ -442,29 +514,32 @@ class NotificationService:
                 continue
             label = str(sensor.get("label") or sensor.get("friendly_name") or role).strip()
             room = str(sensor.get("room") or "").strip()
+            subject_id = self._sensor_subject_id(sensor)
             battery = sensor.get("battery_level")
             if isinstance(battery, (int, float)) and battery < battery_threshold:
                 warnings.append({
-                    "key": f"battery_low:{role}",
+                    "key": f"battery_low:{subject_id}",
                     "type": "battery_low",
                     "severity": "orange",
                     "title": "Sentero Sensor-Batterie schwach",
                     "summary": f"Die Batterie von {label} liegt bei {int(battery)}%.",
                     "recommendation": "Bitte wechseln Sie die Batterie zeitnah, damit Sentero zuverlässig bleibt.",
                     "role": role,
+                    "subject_id": subject_id,
                     "label": label,
                     "room": room,
                     "battery_level": int(battery),
                 })
             if sensor.get("reachable") is False:
                 warnings.append({
-                    "key": f"sensor_unreachable:{role}",
+                    "key": f"sensor_unreachable:{subject_id}",
                     "type": "sensor_unreachable",
                     "severity": "red",
                     "title": "Sentero Sensor nicht erreichbar",
                     "summary": f"{label} ist aktuell nicht erreichbar.",
                     "recommendation": "Bitte prüfen Sie Stromversorgung, Funkverbindung oder Gateway, damit Warnungen zuverlässig erkannt werden.",
                     "role": role,
+                    "subject_id": subject_id,
                     "label": label,
                     "room": room,
                     "battery_level": battery if isinstance(battery, (int, float)) else None,
@@ -497,7 +572,7 @@ class NotificationService:
             value = self._measurement_value(sensor)
             if value is None:
                 continue
-            key_base = str(sensor.get("entity_id") or sensor.get("resolved_entity_id") or sensor.get("role") or sensor.get("label") or kind).strip()
+            key_base = self._sensor_subject_id(sensor)
             if kind == "temperature" and value < thresholds["temperature_min_celsius"]:
                 warning = self._environmental_warning(sensor, "temperature_low", value, "°C", "red", f"unter {self._format_measurement(thresholds['temperature_min_celsius'])} °C")
             elif kind == "temperature" and value > thresholds["temperature_max_celsius"]:
@@ -534,6 +609,7 @@ class NotificationService:
             "summary": f"{summary} Der konfigurierte Grenzwert liegt {threshold_text}.",
             "recommendation": recommendation,
             "role": role,
+            "subject_id": self._sensor_subject_id(sensor),
             "label": label,
             "room": room,
             "measurement_value": self._format_measurement(value),
@@ -543,7 +619,19 @@ class NotificationService:
         }
 
     def _environmental_kind(self, sensor: dict[str, Any]) -> str | None:
-        text = " ".join(str(sensor.get(key) or "").lower() for key in ("device_class", "role", "entity_id", "label", "friendly_name"))
+        domain = str(sensor.get("domain") or "").lower()
+        if domain and domain != "sensor":
+            return None
+        device_class = str(sensor.get("device_class") or "").lower()
+        if device_class == "temperature":
+            return "temperature"
+        if device_class == "humidity":
+            return "humidity"
+        if device_class:
+            return None
+        text = " ".join(str(sensor.get(key) or "").lower() for key in ("entity_id", "label", "friendly_name"))
+        if any(term in text for term in ("battery", "batterie", "voltage", "spannung", "pressure", "druck", "calibration", "kalibrierung")):
+            return None
         if "temperature" in text or "temperatur" in text:
             return "temperature"
         if "humidity" in text or "luftfeuchtigkeit" in text:
@@ -570,18 +658,17 @@ class NotificationService:
         return f"{value:.1f}".replace(".", ",")
 
     def _send_system_warning(self, warning: dict[str, Any], contacts: list[dict[str, Any]]) -> int:
-        delivered = 0
         title = str(warning.get("title") or "Sentero Systemwarnung")
         email_text = self._system_warning_email_text(warning)
-        short_text = f"{warning.get('summary')} {warning.get('recommendation')}".strip()
         severity = str(warning.get("severity") or "orange")
+        incident_key = str(warning.get("key") or "")
+        delivered = 0
         for contact in contacts:
             if not bool(contact.get("notification_enabled", 1)):
                 continue
             for channel in self._channels_for_contact(contact, severity):
-                text = email_text if channel == "email" else short_text
                 before = self._log_count()
-                self._send_with_log(contact, channel, severity, title, text, fallback=severity == "red")
+                self._send_with_log(contact, channel, severity, title, email_text, fallback=False, incident_key=incident_key)
                 if self._log_count() > before:
                     delivered += 1
         return delivered
@@ -603,37 +690,37 @@ class NotificationService:
         lines.extend(["", str(warning.get("recommendation") or "Bitte prüfen Sie das System.")])
         return "\n".join(lines).strip()
 
-    def _send_with_log(self, contact: dict[str, Any], channel: str, severity: str, title: str, text: str, fallback: bool) -> None:
+    def _send_with_log(self, contact: dict[str, Any], channel: str, severity: str, title: str, text: str, fallback: bool, incident_key: str | None = None) -> None:
         setting = self._setting(channel)
         if not setting.get("enabled"):
             return
         if channel == "email":
             text = add_mail_assistant_footer(text, setting.get("config") or {})
         if self._should_queue_offline():
-            self._enqueue(contact, channel, severity, title, text)
-            self._log(contact.get("id"), channel, severity, "pending", title, None)
+            self._enqueue(contact, channel, severity, title, text, incident_key=incident_key)
+            self._log(contact.get("id"), channel, severity, "pending", title, None, incident_key=incident_key)
             return
         try:
             result = self.providers[channel].send(contact, title, text, setting.get("config") or {})
-            self._log(contact.get("id"), channel, severity, "sent", title, None, outgoing_message_id=_provider_message_id(result))
+            self._log(contact.get("id"), channel, severity, "sent", title, None, outgoing_message_id=_provider_message_id(result), incident_key=incident_key)
         except Exception as exc:
             safe_error = self._safe_error(exc)
             logger.exception(
                 "Notification delivery failed",
                 extra={"component": "notification", "channel": channel, "contact_id": contact.get("id"), "severity": severity},
             )
-            self._log(contact.get("id"), channel, severity, "failed", title, safe_error)
+            self._log(contact.get("id"), channel, severity, "failed", title, safe_error, incident_key=incident_key)
             if channel != "email" and fallback:
                 try:
                     email_setting = self._setting("email")
                     result = self.providers["email"].send(contact, title, email_text_for_fallback(text), email_setting.get("config") or {})
-                    self._log(contact.get("id"), "email", severity, "fallback_sent", title, None, outgoing_message_id=_provider_message_id(result))
+                    self._log(contact.get("id"), "email", severity, "fallback_sent", title, None, outgoing_message_id=_provider_message_id(result), incident_key=incident_key)
                 except Exception as fallback_exc:
                     logger.exception(
                         "Notification fallback email failed",
                         extra={"component": "notification", "contact_id": contact.get("id"), "severity": severity},
                     )
-                    self._log(contact.get("id"), "email", severity, "failed", title, self._safe_error(fallback_exc))
+                    self._log(contact.get("id"), "email", severity, "failed", title, self._safe_error(fallback_exc), incident_key=incident_key)
 
     def _should_queue_offline(self) -> bool:
         if not self.connectivity:
@@ -641,15 +728,24 @@ class NotificationService:
         check = self.connectivity.check(ConnectionType.NONE)
         return check.status in {NetworkStatusCode.OFFLINE, NetworkStatusCode.LOCAL_ONLY}
 
-    def _enqueue(self, contact: dict[str, Any], channel: str, severity: str, title: str, text: str) -> None:
+    def _enqueue(self, contact: dict[str, Any], channel: str, severity: str, title: str, text: str, incident_key: str | None = None) -> None:
         timestamp = now()
         safe_contact = {key: contact.get(key) for key in ("id", "name", "email", "telegram_chat_id", "whatsapp_phone_number") if contact.get(key)}
         with self.mapping.connect() as con:
+            if incident_key:
+                existing = con.execute(
+                    """select id from notification_outbox
+                       where incident_key = ? and contact_id is ? and channel = ? and severity = ? and status in ('pending', 'failed')
+                       limit 1""",
+                    (incident_key, contact.get("id"), channel, severity),
+                ).fetchone()
+                if existing:
+                    return
             con.execute(
                 """insert into notification_outbox
-                   (contact_id, channel, severity, title, text, contact_json, status, original_created_at)
-                   values (?, ?, ?, ?, ?, ?, 'pending', ?)""",
-                (contact.get("id"), channel, severity, title, text, json.dumps(safe_contact, ensure_ascii=False, sort_keys=True), timestamp),
+                   (incident_key, contact_id, channel, severity, title, text, contact_json, status, original_created_at)
+                   values (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                (incident_key, contact.get("id"), channel, severity, title, text, json.dumps(safe_contact, ensure_ascii=False, sort_keys=True), timestamp),
             )
             con.commit()
 
@@ -687,6 +783,27 @@ class NotificationService:
             row = con.execute("select critical from notification_preferences where id = 1").fetchone()
         return bool(row is None or row["critical"])
 
+    def _incident_recovery_healthy_checks(self) -> int:
+        return max(1, config_int("notifications.incident_recovery.healthy_checks_required", DEFAULT_INCIDENT_RECOVERY_HEALTHY_CHECKS))
+
+    def _sensor_subject_id(self, sensor: dict[str, Any]) -> str:
+        for key in ("device_id", "physical_device_id", "sentero_device_id"):
+            value = str(sensor.get(key) or "").strip()
+            if value:
+                return value.lower()
+        identifiers = sensor.get("identifiers")
+        if isinstance(identifiers, list):
+            for item in identifiers:
+                if isinstance(item, (list, tuple)) and len(item) >= 2 and item[1]:
+                    return str(item[1]).strip().lower()
+                if isinstance(item, str) and item.strip():
+                    return item.strip().lower()
+        for key in ("primary_entity_id", "source_ref", "entity_id", "resolved_entity_id", "role"):
+            value = str(sensor.get(key) or "").strip()
+            if value:
+                return value.lower()
+        return "unknown"
+
     def _system_warning_state(self, key: str) -> dict[str, Any] | None:
         with self.mapping.connect() as con:
             row = con.execute("select * from system_warning_state where warning_key = ?", (key,)).fetchone()
@@ -699,6 +816,103 @@ class NotificationService:
                 (state_key,),
             ).fetchone()
         return bool(row and row["status"] == "active" and row["last_sent_at"])
+
+    def _claim_behavior_incident(self, state_key: str, incident_key: str, assessment: dict[str, Any], severity: str) -> str:
+        timestamp = now()
+        payload = json.dumps(assessment, ensure_ascii=False, sort_keys=True)
+        with self.mapping.connect() as con:
+            con.execute("begin immediate")
+            row = con.execute("select * from behavior_notification_state where state_key = ?", (state_key,)).fetchone()
+            existing = dict(row) if row else None
+            last_notified = str((existing or {}).get("last_notified_severity") or "")
+            active = bool(existing and existing.get("status") == "active" and existing.get("last_sent_at"))
+            escalated = active and SEVERITY_RANK.get(severity, 0) > SEVERITY_RANK.get(last_notified, 0)
+            should_send = not active or escalated
+            first_seen = existing.get("first_seen_at") if existing and existing.get("status") == "active" else timestamp
+            con.execute(
+                """insert into behavior_notification_state
+                   (state_key, incident_key, category, subject_id, status, severity, first_seen_at, last_seen_at,
+                    last_sent_at, last_notified_severity, resolved_at, consecutive_healthy_checks, reminder_count, assessment_json)
+                   values (?, ?, 'behavior', ?, 'active', ?, ?, ?, ?, ?, null, 0, ?, ?)
+                   on conflict(state_key) do update set
+                       incident_key = excluded.incident_key,
+                       category = excluded.category,
+                       subject_id = excluded.subject_id,
+                       status = 'active',
+                       severity = excluded.severity,
+                       first_seen_at = excluded.first_seen_at,
+                       last_seen_at = excluded.last_seen_at,
+                       last_sent_at = coalesce(excluded.last_sent_at, behavior_notification_state.last_sent_at),
+                       last_notified_severity = coalesce(excluded.last_notified_severity, behavior_notification_state.last_notified_severity),
+                       resolved_at = null,
+                       consecutive_healthy_checks = 0,
+                       reminder_count = excluded.reminder_count,
+                       assessment_json = excluded.assessment_json""",
+                (
+                    state_key,
+                    incident_key,
+                    "behavior_anomaly",
+                    severity,
+                    first_seen,
+                    timestamp,
+                    timestamp if should_send else None,
+                    severity if should_send else None,
+                    int((existing or {}).get("reminder_count") or 0),
+                    payload,
+                ),
+            )
+            con.commit()
+        return "send" if not active else "escalate" if escalated else "suppress"
+
+    def _claim_system_warning_incident(self, warning: dict[str, Any]) -> str:
+        timestamp = now()
+        warning_key = str(warning["key"])
+        severity = str(warning.get("severity") or "orange")
+        payload = json.dumps(warning, ensure_ascii=False, sort_keys=True)
+        with self.mapping.connect() as con:
+            con.execute("begin immediate")
+            row = con.execute("select * from system_warning_state where warning_key = ?", (warning_key,)).fetchone()
+            existing = dict(row) if row else None
+            last_notified = str((existing or {}).get("last_notified_severity") or "")
+            active = bool(existing and existing.get("status") == "active" and existing.get("last_sent_at"))
+            escalated = active and SEVERITY_RANK.get(severity, 0) > SEVERITY_RANK.get(last_notified, 0)
+            should_send = not active or escalated
+            first_seen = existing.get("first_seen_at") if existing and existing.get("status") == "active" else timestamp
+            con.execute(
+                """insert into system_warning_state
+                   (warning_key, incident_key, category, subject_id, status, severity, first_seen_at, last_seen_at,
+                    last_sent_at, last_notified_severity, resolved_at, consecutive_healthy_checks, reminder_count, payload_json)
+                   values (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, null, 0, ?, ?)
+                   on conflict(warning_key) do update set
+                       incident_key = excluded.incident_key,
+                       category = excluded.category,
+                       subject_id = excluded.subject_id,
+                       status = 'active',
+                       severity = excluded.severity,
+                       first_seen_at = excluded.first_seen_at,
+                       last_seen_at = excluded.last_seen_at,
+                       last_sent_at = coalesce(excluded.last_sent_at, system_warning_state.last_sent_at),
+                       last_notified_severity = coalesce(excluded.last_notified_severity, system_warning_state.last_notified_severity),
+                       resolved_at = null,
+                       consecutive_healthy_checks = 0,
+                       reminder_count = excluded.reminder_count,
+                       payload_json = excluded.payload_json""",
+                (
+                    warning_key,
+                    warning_key,
+                    str(warning.get("type") or "system"),
+                    str(warning.get("subject_id") or ""),
+                    severity,
+                    first_seen,
+                    timestamp,
+                    timestamp if should_send else None,
+                    severity if should_send else None,
+                    int((existing or {}).get("reminder_count") or 0),
+                    payload,
+                ),
+            )
+            con.commit()
+        return "send" if not active else "escalate" if escalated else "suppress"
 
     def _upsert_behavior_notification(self, state_key: str, assessment: dict[str, Any], sent_now: bool) -> None:
         timestamp = now()
@@ -758,15 +972,25 @@ class NotificationService:
 
     def _resolve_inactive_system_warnings(self, active_keys: set[str]) -> None:
         timestamp = now()
+        required = self._incident_recovery_healthy_checks()
         with self.mapping.connect() as con:
-            rows = con.execute("select warning_key from system_warning_state where status = 'active'").fetchall()
+            rows = con.execute("select warning_key, consecutive_healthy_checks from system_warning_state where status = 'active'").fetchall()
             for row in rows:
                 key = str(row["warning_key"] or "")
                 if key not in active_keys:
-                    con.execute(
-                        "update system_warning_state set status = 'resolved', resolved_at = ?, last_seen_at = ? where warning_key = ?",
-                        (timestamp, timestamp, key),
-                    )
+                    healthy_checks = int(row["consecutive_healthy_checks"] or 0) + 1
+                    if healthy_checks >= required:
+                        con.execute(
+                            """update system_warning_state
+                               set status = 'resolved', resolved_at = ?, last_seen_at = ?, consecutive_healthy_checks = ?
+                               where warning_key = ?""",
+                            (timestamp, timestamp, healthy_checks, key),
+                        )
+                    else:
+                        con.execute(
+                            "update system_warning_state set consecutive_healthy_checks = ?, last_seen_at = ? where warning_key = ?",
+                            (healthy_checks, timestamp, key),
+                        )
             con.commit()
 
     def _log_count(self) -> int:
@@ -913,14 +1137,14 @@ class NotificationService:
             )
             con.commit()
 
-    def _log(self, contact_id: Any, channel: str, severity: str, status: str, title: str, error: str | None, outgoing_message_id: str | None = None) -> None:
+    def _log(self, contact_id: Any, channel: str, severity: str, status: str, title: str, error: str | None, outgoing_message_id: str | None = None, incident_key: str | None = None) -> None:
         data_class = classify_notification(severity, channel)
         with self.mapping.connect() as con:
             con.execute(
                 """insert into notification_logs
-                   (contact_id, channel, severity, status, message_title, error_message, data_class, aggregation_level, outgoing_message_id, created_at)
-                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (contact_id, channel, severity, status, title, error, data_class, aggregation_for_data_class(data_class), outgoing_message_id, now()),
+                   (incident_key, contact_id, channel, severity, status, message_title, error_message, data_class, aggregation_level, outgoing_message_id, created_at)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (incident_key, contact_id, channel, severity, status, title, error, data_class, aggregation_for_data_class(data_class), outgoing_message_id, now()),
             )
             con.commit()
 

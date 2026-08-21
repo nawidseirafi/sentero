@@ -118,6 +118,61 @@ class SensorOnboardingTests(unittest.TestCase):
         self.assertEqual(result["status"], "found")
         self.assertEqual(len(result["devices"]), 2)
 
+    def test_existing_unassigned_sensor_is_not_new_mqtt_candidate(self) -> None:
+        manager, mapping, source, mqtt = self.manager({"SENTERO_PRESENCE_SENSOR_TRANSPORT": "zigbee"})
+        source.rows = [zigbee_entity("binary_sensor.sensor_a_occupancy", "occupancy", "off", "0xAAA")]
+        started = manager.start_discovery("presence", room_id="hallway", role="hallway_presence")
+
+        found = manager.discovered(started["discovery_id"])
+
+        self.assertEqual(found["status"], "searching")
+        self.assertIsNone(found["sensor"])
+        with self.assertRaises(ValueError):
+            mapping.confirm(started["discovery_id"], "0xAAA", name="Flur Präsenz", room="hallway")
+        self.assertEqual(mqtt.requests, [])
+
+    def test_existing_sensor_updates_are_not_new_mqtt_candidates(self) -> None:
+        manager, _mapping, source, _mqtt = self.manager({"SENTERO_PRESENCE_SENSOR_TRANSPORT": "zigbee"})
+        source.rows = [zigbee_entity("binary_sensor.sensor_a_occupancy", "occupancy", "off", "0xAAA")]
+        started = manager.start_discovery("presence", room_id="hallway", role="hallway_presence")
+        source.rows = [zigbee_entity("binary_sensor.sensor_a_occupancy", "occupancy", "on", "0xAAA")]
+
+        found = manager.discovered(started["discovery_id"])
+
+        self.assertEqual(found["status"], "searching")
+        self.assertIsNone(found["sensor"])
+
+    def test_only_new_physical_zigbee_device_is_accepted(self) -> None:
+        manager, mapping, source, _mqtt = self.manager({"SENTERO_PRESENCE_SENSOR_TRANSPORT": "zigbee"})
+        source.rows = [zigbee_entity("binary_sensor.sensor_a_occupancy", "occupancy", "off", "0xAAA")]
+        started = manager.start_discovery("presence", room_id="hallway", role="hallway_presence")
+        source.rows = [
+            zigbee_entity("binary_sensor.sensor_a_occupancy", "occupancy", "on", "0xAAA"),
+            zigbee_entity("binary_sensor.sensor_b_occupancy", "occupancy", "on", "0xBBB"),
+        ]
+
+        found = manager.discovered(started["discovery_id"], dev=True)
+        registered = manager.register(found["sensor"]["id"], started["discovery_id"], name="Flur Präsenz", room_id="hallway", dev=True)
+        role = mapping.get_role("hallway_presence", dev=True)
+
+        self.assertEqual(found["status"], "found")
+        self.assertEqual(found["sensor"]["id"], "0xBBB")
+        self.assertEqual(registered["status"], "registered")
+        self.assertEqual(role["device_id"], "0xBBB")
+
+    def test_manipulated_confirm_rejects_baseline_device(self) -> None:
+        _manager, mapping, source, _mqtt = self.manager({"SENTERO_PRESENCE_SENSOR_TRANSPORT": "zigbee"})
+        source.rows = [zigbee_entity("binary_sensor.sensor_a_occupancy", "occupancy", "off", "0xAAA")]
+        started = mapping.start_mqtt_discovery("hallway_presence", "hallway", duration=60, sensor_type="presence")
+        source.rows = [
+            zigbee_entity("binary_sensor.sensor_a_occupancy", "occupancy", "on", "0xAAA"),
+            zigbee_entity("binary_sensor.sensor_b_occupancy", "occupancy", "on", "0xBBB"),
+        ]
+        mapping.candidates(started["session_id"], dev=True)
+
+        with self.assertRaises(ValueError):
+            mapping.confirm(started["session_id"], "binary_sensor.sensor_a_occupancy", name="Flur Präsenz", room="hallway")
+
     def test_wrong_device_type_is_not_returned_for_presence(self) -> None:
         manager, _mapping, source, _mqtt = self.manager({"SENTERO_PRESENCE_SENSOR_TRANSPORT": "zigbee"})
         started = manager.start_discovery("presence", room_id="hallway", role="hallway_presence")
@@ -150,6 +205,7 @@ class SensorOnboardingTests(unittest.TestCase):
 
         self.assertEqual(role["room"], "hallway")
         self.assertEqual(role["transport"], SensorTransport.ZIGBEE.value)
+        self.assertEqual(role["device_id"], "0xaaa")
 
     def test_sensor_replace_keeps_old_mapping_until_new_pairing_succeeds(self) -> None:
         manager, mapping, source, _mqtt = self.manager({"SENTERO_PRESENCE_SENSOR_TRANSPORT": "zigbee"})
