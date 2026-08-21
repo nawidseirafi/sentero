@@ -657,6 +657,48 @@ class NotificationSystemWarningTests(unittest.TestCase):
                 row = con.execute("select count(*) as count from notification_outbox where incident_key = ?", ("sensor_unreachable:0xaaa",)).fetchone()
             self.assertEqual(row["count"], 1)
 
+    def test_humidity_high_repeated_checks_keep_one_active_incident_and_one_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            insert_contact(mapping)
+            provider = RecordingProvider()
+            service = NotificationService(mapping)
+            service.providers["email"] = provider
+            values = [71, 71, 71, 72, 73]
+            observed_keys: list[str] = []
+
+            for value in values:
+                result = service.notify_system_warnings(
+                    sensors=[],
+                    environmental_sensors=[
+                        {
+                            "domain": "sensor",
+                            "device_id": "0xaaa",
+                            "entity_id": "sensor.bathroom_humidity",
+                            "friendly_name": "Bad Luftfeuchtigkeit",
+                            "room": "Bad",
+                            "device_class": "humidity",
+                            "state": value,
+                        }
+                    ],
+                )
+                observed_keys.extend(warning["key"] for warning in result["warnings"])
+                with mapping.connect() as con:
+                    row = con.execute("select status from system_warning_state where warning_key = ?", ("humidity_high:0xaaa",)).fetchone()
+                self.assertEqual(row["status"], "active")
+
+            self.assertEqual(len(provider.sent), 1)
+            self.assertEqual(observed_keys, ["humidity_high:0xaaa"] * len(values))
+            with mapping.connect() as con:
+                row = con.execute(
+                    """select status, last_notified_severity, resolved_at
+                       from system_warning_state where warning_key = ?""",
+                    ("humidity_high:0xaaa",),
+                ).fetchone()
+            self.assertEqual(row["status"], "active")
+            self.assertEqual(row["last_notified_severity"], "orange")
+            self.assertIsNone(row["resolved_at"])
+
     def test_different_sensors_and_warning_types_are_distinct_incidents(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())

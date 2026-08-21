@@ -579,8 +579,10 @@ class NotificationService:
                 warning = self._environmental_warning(sensor, "temperature_high", value, "°C", "red", f"über {self._format_measurement(thresholds['temperature_max_celsius'])} °C")
             elif kind == "humidity" and value > thresholds["humidity_max_percent"]:
                 warning = self._environmental_warning(sensor, "humidity_high", value, "%", "orange", f"über {self._format_measurement(thresholds['humidity_max_percent'])} %")
+                warning["threshold_value"] = thresholds["humidity_max_percent"]
             else:
                 continue
+            warning["raw_measurement_value"] = value
             warning["key"] = f"{warning['type']}:{key_base}"
             if warning["key"] in seen:
                 continue
@@ -873,11 +875,16 @@ class NotificationService:
             con.execute("begin immediate")
             row = con.execute("select * from system_warning_state where warning_key = ?", (warning_key,)).fetchone()
             existing = dict(row) if row else None
+            outbox_existing = self._outbox_existing_for_incident(con, warning_key, severity)
             last_notified = str((existing or {}).get("last_notified_severity") or "")
             active = bool(existing and existing.get("status") == "active" and existing.get("last_sent_at"))
             escalated = active and SEVERITY_RANK.get(severity, 0) > SEVERITY_RANK.get(last_notified, 0)
             should_send = not active or escalated
             first_seen = existing.get("first_seen_at") if existing and existing.get("status") == "active" else timestamp
+            action = "send" if not active else "escalate" if escalated else "suppress"
+            reason = self._incident_decision_reason(existing, active, escalated, should_send)
+            if warning.get("type") == "humidity_high":
+                logger.info("Humidity warning incident decision", extra=self._humidity_warning_debug_payload(warning, existing, outbox_existing, action, reason))
             con.execute(
                 """insert into system_warning_state
                    (warning_key, incident_key, category, subject_id, status, severity, first_seen_at, last_seen_at,
@@ -912,7 +919,56 @@ class NotificationService:
                 ),
             )
             con.commit()
-        return "send" if not active else "escalate" if escalated else "suppress"
+        return action
+
+    def _outbox_existing_for_incident(self, con: sqlite3.Connection, incident_key: str, severity: str) -> bool:
+        row = con.execute(
+            """select id from notification_outbox
+               where incident_key = ? and severity = ? and status in ('pending', 'failed')
+               limit 1""",
+            (incident_key, severity),
+        ).fetchone()
+        return row is not None
+
+    def _incident_decision_reason(self, existing: dict[str, Any] | None, active: bool, escalated: bool, should_send: bool) -> str:
+        if not existing:
+            return "incident_not_found"
+        if active and not escalated:
+            return "active_incident_already_notified"
+        if escalated:
+            return "active_incident_severity_escalated"
+        if existing.get("status") == "resolved":
+            return "previous_incident_resolved"
+        if should_send:
+            return "incident_not_previously_notified"
+        return "suppressed"
+
+    def _humidity_warning_debug_payload(
+        self,
+        warning: dict[str, Any],
+        existing: dict[str, Any] | None,
+        outbox_existing: bool,
+        decision: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        return {
+            "component": "notification",
+            "warning_type": "humidity_high",
+            "device_id": warning.get("subject_id"),
+            "incident_key": warning.get("key"),
+            "current_value": warning.get("raw_measurement_value") or warning.get("measurement_value"),
+            "threshold": warning.get("threshold_value"),
+            "incident_found": existing is not None,
+            "incident_status": (existing or {}).get("status"),
+            "first_seen_at": (existing or {}).get("first_seen_at"),
+            "last_seen_at": (existing or {}).get("last_seen_at"),
+            "last_sent_at": (existing or {}).get("last_sent_at"),
+            "resolved_at": (existing or {}).get("resolved_at"),
+            "last_notified_severity": (existing or {}).get("last_notified_severity"),
+            "outbox_existing": outbox_existing,
+            "decision": decision,
+            "reason": reason,
+        }
 
     def _upsert_behavior_notification(self, state_key: str, assessment: dict[str, Any], sent_now: bool) -> None:
         timestamp = now()
