@@ -17,14 +17,19 @@ export function DashboardPage() {
     let active = true;
     async function load() {
       try {
-        const [next, latestBehavior, timeline] = await Promise.all([
+        const [next, liveRoles, latestBehavior, timeline] = await Promise.all([
           api.senteroSetupStatus(),
+          api.senteroSensorRoles(true).catch(() => ({ sensor_roles: [] })),
           api.senteroBehaviorLatest().catch(() => ({ assessment: null, learning: undefined })),
           api.senteroBehaviorTimeline().catch(() => ({ events: [], assessment: null })),
         ]);
         if (active) {
           setStatus(next);
-          setRoles(next.sensor_roles || []);
+          // The setup status intentionally contains configuration data. Current
+          // presence must come from the live sensor-role endpoint; deriving it
+          // from the behavior timeline makes an old "off" event look like the
+          // current room state.
+          setRoles(liveRoles.sensor_roles?.length ? liveRoles.sensor_roles : (next.sensor_roles || []));
           setBehavior(latestBehavior.assessment);
           setLearning(latestBehavior.learning || null);
           setTimelineEvents(timeline.events || []);
@@ -34,18 +39,32 @@ export function DashboardPage() {
         if (active) setError(err instanceof Error ? err.message : 'Sentero konnte nicht geladen werden.');
       }
     }
+    async function loadLiveRoles() {
+      try {
+        const nextRoles = await api.senteroSensorRoles(true);
+        if (active && nextRoles.sensor_roles?.length) setRoles(nextRoles.sensor_roles);
+      } catch {
+        // Keep the last known live roles. A temporary request failure must not
+        // turn an occupied room into "Nicht im Haus".
+      }
+    }
+
     void load();
     const timer = window.setInterval(() => void load(), 30000);
+    const liveTimer = window.setInterval(() => void loadLiveRoles(), 3000);
     return () => {
       active = false;
       window.clearInterval(timer);
+      window.clearInterval(liveTimer);
     };
   }, []);
 
   const configuredRoles = roles.filter((role) => role.configured);
   const hasSensors = configuredRoles.length > 0;
   const latestTimeline = useMemo(() => latestActivityEvent(timelineEvents), [timelineEvents]);
-  const currentPresence = useMemo(() => activePresenceEvent(timelineEvents), [timelineEvents]);
+  // Current location is a live state, not a historical event. A person may sit
+  // still for a long time while presence remains true.
+  const currentPresence = useMemo(() => currentPresenceRole(roles), [roles]);
   const personName = status?.profile?.name?.trim() || 'Person';
   const activitySlots = useMemo(() => activitySlotsFromTimeline(timelineEvents, roles), [timelineEvents, roles]);
   const hasActivity = activitySlots.some((slot) => slot.active);
@@ -230,24 +249,25 @@ function isPresenceRole(role: SenteroSensorRole) {
   return role.role.endsWith('presence') || ['motion', 'occupancy', 'presence'].includes(String(role.device_class || ''));
 }
 
-function activePresenceEvent(events: BehaviorEvent[]) {
-  const latestByRole = new Map<string, BehaviorEvent>();
-  for (const event of events) {
-    const role = String(event.role || '').trim();
-    if (!isPresenceEventRole(role)) continue;
-    const value = timestamp(event.event_time);
-    if (!value) continue;
-    const current = latestByRole.get(role);
-    if (!current || value > timestamp(current.event_time)) latestByRole.set(role, event);
-  }
-  return Array.from(latestByRole.values())
-    .filter((event) => isActivityEvent(event))
-    .sort((a, b) => timestamp(b.event_time) - timestamp(a.event_time))[0];
+function currentPresenceRole(roles: SenteroSensorRole[]) {
+  return roles
+    .filter((role) => role.configured && role.reachable !== false && isPresenceRole(role) && roleSignalsPresence(role))
+    .sort((a, b) => roleStateTimestamp(b) - roleStateTimestamp(a))[0];
 }
 
-function isPresenceEventRole(role: string) {
-  const value = role.toLowerCase();
-  return value.endsWith('_presence') || value.endsWith('_motion') || value.endsWith('presence') || value.endsWith('motion');
+function roleSignalsPresence(role: SenteroSensorRole) {
+  if (role.presence === true) return true;
+
+  // Combined mmWave/PIR devices sometimes publish a contradictory presence=false
+  // together with a motion state that still explicitly means a person is in the
+  // room. Keep this frontend guard in addition to the backend resolver so the
+  // dashboard never converts "still/static/moving" into "Nicht im Haus".
+  const motion = normalizeState(role.motion_state || role.motion);
+  return ['moving', 'move', 'movement', 'motion', 'active', 'detected', 'static', 'static_target', 'still', 'stationary', 'standstill', 'present', 'presence'].includes(motion);
+}
+
+function roleStateTimestamp(role: SenteroSensorRole) {
+  return timestamp(role.last_updated || role.last_changed || role.updated_at);
 }
 
 function firstActivityEvent(events: BehaviorEvent[], roles: SenteroSensorRole[]) {

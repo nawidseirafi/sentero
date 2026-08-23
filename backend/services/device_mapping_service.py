@@ -962,9 +962,11 @@ class DeviceMappingService:
             environmental = environmental_metrics_from_state({**dict(row), **(telemetry_state or {})}, states)
             c1001_telemetry = c1001_telemetry_from_state(telemetry_state)
             generic_presence = generic_presence_telemetry_from_state(dict(row), telemetry_state, states)
-            presence = c1001_telemetry.get('presence') if c1001_telemetry.get('presence') is not None else generic_presence.get('presence')
             motion = c1001_telemetry.get('motion') if c1001_telemetry.get('motion') is not None else generic_presence.get('motion')
             motion_state = motion_state_from_state(telemetry_state)
+            explicit_presence = c1001_telemetry.get('presence')
+            inferred_presence = generic_presence.get('presence')
+            presence = effective_presence_value(explicit_presence, inferred_presence, motion_state, motion)
             logger.debug(
                 "Sensor health resolved",
                 extra={
@@ -2414,19 +2416,69 @@ def generic_presence_telemetry_from_state(role: dict[str, Any], state: dict[str,
     return {'presence': None, 'motion': normalize_motion_state(motion_state)}
 
 
+def motion_state_implies_presence(value: Any) -> bool:
+    text = normalize(str(value or ''))
+    return text in {
+        'move', 'moving', 'movement', 'active', 'motion', 'detected', 'moving_target',
+        'static', 'static_target', 'presence', 'present', 'still', 'stationary', 'standstill',
+    }
+
+
+def effective_presence_value(
+    explicit_presence: Any,
+    inferred_presence: Any = None,
+    motion_state: Any = None,
+    motion: Any = None,
+) -> bool | None:
+    """Resolve room presence conservatively for combined radar/PIR sensors.
+
+    A sensor can briefly publish presence=false while its motion_state still says
+    moving/static/still. Those states are direct evidence that somebody is in the
+    room, so they must win over a contradictory false presence bit. A true
+    presence bit always remains true. Only when no positive motion/presence hint
+    exists do we accept false/None.
+    """
+    explicit = parse_bool_value(explicit_presence)
+    inferred = parse_bool_value(inferred_presence)
+    if explicit is True or inferred is True:
+        return True
+    if motion_state_implies_presence(motion_state) or motion_state_implies_presence(motion):
+        return True
+    if explicit is False or inferred is False:
+        return False
+    return None
+
+
 def generic_presence_value(state: dict[str, Any] | None) -> bool | None:
     if not state:
         return None
     attrs = state.get('attributes') if isinstance(state.get('attributes'), dict) else {}
-    for key in ('presence', 'occupancy', 'motion'):
+
+    explicit = None
+    for key in ('presence', 'occupancy'):
         value = parse_bool_value(first_present(state, attrs, key))
         if value is not None:
-            return value
-    motion_state = normalize(str(first_present(state, attrs, 'motion_state') or ''))
-    if motion_state in {'none', 'clear', 'off', 'false', '0', 'no_motion', 'no motion'}:
-        return False
-    if motion_state in {'move', 'moving', 'movement', 'active', 'motion', 'detected', 'static', 'presence', 'still'}:
+            explicit = value
+            if value is True:
+                return True
+            break
+
+    motion_state = first_present(state, attrs, 'motion_state')
+    motion = first_present(state, attrs, 'motion')
+    if motion_state_implies_presence(motion_state) or motion_state_implies_presence(motion):
         return True
+
+    if explicit is not None:
+        return explicit
+
+    motion_bool = parse_bool_value(motion)
+    if motion_bool is not None:
+        return motion_bool
+
+    normalized_motion_state = normalize(str(motion_state or ''))
+    if normalized_motion_state in {'none', 'clear', 'off', 'false', '0', 'no_motion', 'no motion'}:
+        return False
+
     payload_key = normalize(str(state.get('payload_key') or ''))
     device_class = normalize(str(state.get('device_class') or ''))
     if payload_key in {'occupancy', 'presence'} or device_class in {'occupancy', 'presence'}:

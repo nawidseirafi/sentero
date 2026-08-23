@@ -286,8 +286,16 @@ class SenteroBehaviorAgent:
         room = role.get("room")
         source = str(role.get("source") or "zigbee2mqtt")
 
+        motion_raw = payload.get("motion_state") if "motion_state" in payload else payload.get("motion")
+        motion = self._mqtt_motion_active(motion_raw)
+
         presence_value = payload.get("presence") if "presence" in payload else payload.get("occupancy")
         presence = self._mqtt_bool(presence_value)
+        # Combined PIR/radar sensors can transiently report presence=false while
+        # motion_state is moving/static/still. Any of those states proves that the
+        # person is still in the room and must prevent a false "Nicht im Haus".
+        if self._mqtt_motion_state_implies_presence(motion_raw):
+            presence = True
         if presence is not None:
             events.append({
                 "event_time": event_time,
@@ -303,8 +311,6 @@ class SenteroBehaviorAgent:
                 "transition_only": True,
             })
 
-        motion_raw = payload.get("motion_state") if "motion_state" in payload else payload.get("motion")
-        motion = self._mqtt_motion_active(motion_raw)
         if motion is not None:
             events.append({
                 "event_time": event_time,
@@ -333,6 +339,14 @@ class SenteroBehaviorAgent:
         if text in {"false", "off", "no", "0", "absent", "clear", "none", "not_present", "not present"}:
             return False
         return None
+
+    @staticmethod
+    def _mqtt_motion_state_implies_presence(value: Any) -> bool:
+        text = str(value or "").strip().lower().replace("-", "_")
+        return text in {
+            "moving", "move", "movement", "motion", "active", "detected", "moving_target",
+            "still", "static", "stationary", "standstill", "static_target", "presence", "present",
+        }
 
     @staticmethod
     def _mqtt_motion_active(value: Any) -> bool | None:

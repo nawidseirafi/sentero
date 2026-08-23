@@ -64,6 +64,7 @@ export type SenteroSensorRole = {
   presence?: boolean | null;
   fall_detected?: boolean | null;
   motion?: string | null;
+  motion_state?: string | null;
   writable_settings?: string[] | null;
   hp_led?: boolean | null;
   fall_led?: boolean | null;
