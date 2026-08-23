@@ -344,7 +344,7 @@ class SenteroBehaviorAgent:
     def _mqtt_motion_state_implies_presence(value: Any) -> bool:
         text = str(value or "").strip().lower().replace("-", "_")
         return text in {
-            "moving", "move", "movement", "motion", "active", "detected", "moving_target",
+            "moving", "move", "movement", "motion", "active", "detected", "moving_target", "large", "small",
             "still", "static", "stationary", "standstill", "static_target", "presence", "present",
         }
 
@@ -355,7 +355,7 @@ class SenteroBehaviorAgent:
         if isinstance(value, (int, float)) and value in {0, 1}:
             return bool(value)
         text = str(value or "").strip().lower().replace("-", "_")
-        if text in {"moving", "move", "movement", "motion", "active", "detected", "moving_target"}:
+        if text in {"moving", "move", "movement", "motion", "active", "detected", "moving_target", "large", "small"}:
             return True
         if text in {"none", "still", "static", "stationary", "standstill", "inactive", "clear", "off", "false", "0", "no_motion", "no motion"}:
             return False

@@ -69,8 +69,13 @@ export function DashboardPage() {
   const activitySlots = useMemo(() => activitySlotsFromTimeline(timelineEvents, roles), [timelineEvents, roles]);
   const hasActivity = activitySlots.some((slot) => slot.active);
   const firstActivity = firstActivityEvent(timelineEvents, roles);
-  const lastEventTime = latestTimeline?.event_time;
-  const lastSeen = lastEventTime ? movementLabel(lastEventTime, latestTimeline?.room) : 'Noch keine Bewegung erkannt';
+  // Primary source is the persisted behavior timeline. As a live fallback, use
+  // a currently active motion state so a fresh ZG-204ZH large/small report is
+  // visible immediately even before the timeline request refreshes.
+  const liveMovement = useMemo(() => latestLiveMovementRole(roles), [roles]);
+  const lastEventTime = latestTimeline?.event_time || liveMovement?.time;
+  const lastEventRoom = latestTimeline?.room || liveMovement?.room;
+  const lastSeen = lastEventTime ? movementLabel(lastEventTime, lastEventRoom) : 'Noch keine Bewegung erkannt';
   const morning = firstActivity ? formatTime(new Date(timestamp(firstActivity.time))) : '';
   const currentRoomValue = currentPresence ? roomLocationLabel(currentPresence.room) : 'Nicht im Haus';
   const dashboardState = getDashboardState({ error, hasSensors, latest: Boolean(latestTimeline), currentPresence: Boolean(currentPresence), behavior });
@@ -263,7 +268,23 @@ function roleSignalsPresence(role: SenteroSensorRole) {
   // room. Keep this frontend guard in addition to the backend resolver so the
   // dashboard never converts "still/static/moving" into "Nicht im Haus".
   const motion = normalizeState(role.motion_state || role.motion);
-  return ['moving', 'move', 'movement', 'motion', 'active', 'detected', 'static', 'static_target', 'still', 'stationary', 'standstill', 'present', 'presence'].includes(motion);
+  return ['moving', 'move', 'movement', 'motion', 'active', 'detected', 'large', 'small', 'static', 'static_target', 'still', 'stationary', 'standstill', 'present', 'presence'].includes(motion);
+}
+
+function latestLiveMovementRole(roles: SenteroSensorRole[]) {
+  return roles
+    .filter((role) => role.configured && role.reachable !== false && roleSignalsMovement(role))
+    .map((role) => ({
+      time: role.last_changed || role.last_updated || role.updated_at || '',
+      room: role.room,
+    }))
+    .filter((item) => timestamp(item.time))
+    .sort((a, b) => timestamp(b.time) - timestamp(a.time))[0];
+}
+
+function roleSignalsMovement(role: SenteroSensorRole) {
+  const motion = normalizeState(role.motion_state || role.motion || role.state);
+  return ['large', 'small', 'moving', 'move', 'movement', 'motion', 'active', 'detected', 'on', 'true', '1'].includes(motion);
 }
 
 function roleStateTimestamp(role: SenteroSensorRole) {
@@ -344,7 +365,7 @@ function activitySlotsFromTimeline(events: BehaviorEvent[], roles: SenteroSensor
 }
 
 const activeStates = new Set(['active', 'on', 'open', 'opening', 'detected', 'true', '1', 'yes', 'present', 'presence']);
-const activeMotionStates = new Set(['active', 'motion', 'moving', 'detected', 'on', 'true', '1', 'yes']);
+const activeMotionStates = new Set(['active', 'motion', 'moving', 'large', 'small', 'detected', 'on', 'true', '1', 'yes']);
 const inactiveStates = new Set(['', 'unknown', 'unavailable', 'none', 'off', 'false', '0', 'no', 'inactive', 'still', 'not_ready', 'nicht bereit', 'lesefehler', 'ok', 'closed', 'closing', 'clear']);
 
 function isRoleActive(role: SenteroSensorRole) {

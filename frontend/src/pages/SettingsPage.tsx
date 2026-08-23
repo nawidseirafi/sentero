@@ -2290,28 +2290,66 @@ function presenceMotionStatus(sensor: SenteroSensorRole) {
   if (sensor.fall_detected) {
     return { tone: 'alert', label: 'Sturz', icon: <WarningAmberIcon fontSize="small" /> };
   }
-  const motion = String(sensor.motion || '').toLowerCase();
-  if (sensor.presence === false) {
-    return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
-  }
-  if (sensor.presence === true) {
-    if (['active', 'move', 'moving'].includes(motion)) {
-      return { tone: 'motion', label: 'Bewegung', icon: <DirectionsRunIcon fontSize="small" /> };
-    }
-    if (['still', 'static', 'stationary', 'none'].includes(motion)) {
-      return { tone: 'still', label: 'Still', icon: <AccessibilityNewIcon fontSize="small" /> };
-    }
-    return { tone: 'motion', label: 'Bewegung', icon: <PersonIcon fontSize="small" /> };
-  }
-  if (['none', 'clear', 'off', 'false', '0', 'no_motion'].includes(motion)) {
-    return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
-  }
-  if (['active', 'move', 'moving', 'motion', 'detected'].includes(motion)) {
+
+  // ZG-204ZH reports motion_state as: large | small | static | none.
+  // Prefer the raw motion_state over the normalized motion field so the UI can
+  // reliably distinguish movement, still presence and absence.
+  const motionState = String(sensor.motion_state || sensor.motion || '')
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, '_');
+
+  const movingStates = new Set([
+    'large',
+    'small',
+    'active',
+    'move',
+    'moving',
+    'movement',
+    'motion',
+    'detected',
+    'moving_target',
+  ]);
+  const stillStates = new Set([
+    'static',
+    'static_target',
+    'still',
+    'stationary',
+    'standstill',
+  ]);
+  const absentStates = new Set([
+    'none',
+    'clear',
+    'off',
+    'false',
+    '0',
+    'no_motion',
+  ]);
+
+  // Positive radar evidence wins over a contradictory presence=false bit.
+  // large/small = person is moving; static/still = person is present but quiet.
+  if (movingStates.has(motionState)) {
     return { tone: 'motion', label: 'Bewegung', icon: <DirectionsRunIcon fontSize="small" /> };
   }
-  const value = String(sensor.state || '').toLowerCase();
-  if (['on', 'true', '1', 'active', 'occupied', 'detected'].includes(value)) {
-    return { tone: 'motion', label: 'Bewegung', icon: <PersonIcon fontSize="small" /> };
+  if (stillStates.has(motionState)) {
+    return { tone: 'still', label: 'Still', icon: <AccessibilityNewIcon fontSize="small" /> };
+  }
+
+  // presence=true with motion_state=none means the person is still present,
+  // there is simply no current movement.
+  if (sensor.presence === true) {
+    return { tone: 'still', label: 'Still', icon: <AccessibilityNewIcon fontSize="small" /> };
+  }
+
+  // Only declare absence when there is no positive motion/static evidence and
+  // presence is explicitly false (or the motion state itself says none/clear).
+  if (sensor.presence === false || absentStates.has(motionState)) {
+    return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
+  }
+
+  const value = String(sensor.state || '').trim().toLowerCase();
+  if (['on', 'true', '1', 'active', 'occupied', 'detected', 'present'].includes(value)) {
+    return { tone: 'still', label: 'Still', icon: <PersonIcon fontSize="small" /> };
   }
   if (['off', 'false', '0', 'clear', 'none'].includes(value)) {
     return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
