@@ -47,7 +47,7 @@ class SenteroDevice:
     signal_quality: int | None = None
     last_seen: str | None = None
     status: DeviceStatus = "unknown"
-    source: str = "homeassistant"
+    source: str = "mqtt"
     source_ref: str | None = None
 
     def public_dict(self) -> dict[str, Any]:

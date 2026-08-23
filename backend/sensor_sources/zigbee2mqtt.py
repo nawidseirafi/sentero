@@ -71,26 +71,51 @@ class Zigbee2MqttSensorSource:
     def configured(self) -> bool:
         return self.mqtt.configured()
 
+    def subscription_topics(self) -> list[str]:
+        return [f"{prefix}/#" for prefix in self.topic_prefixes]
+
     def snapshot(self) -> list[dict[str, Any]]:
         seed = os.getenv("SENTERO_MQTT_BOOTSTRAP_EVENTS", "").strip() or config_str("mqtt.bootstrap_events", "")
         if seed:
             logger.debug("Zigbee2MQTT snapshot uses bootstrap seed", extra={"component": "sensor_source", "sensor_source": self.name})
             return self._snapshot_from_seed(seed)
+
+        # Keep one subscription alive for the lifetime of the backend. Zigbee2MQTT
+        # device-state topics are commonly not retained, so a short polling window
+        # cannot reliably represent the current sensor state.
         try:
-            messages = []
+            self.mqtt.start_listener(self.subscription_topics())
+            by_topic = {}
             for prefix in self.topic_prefixes:
-                messages.extend(self.mqtt.retained_messages(f"{prefix}/#", timeout=self.snapshot_timeout))
+                for message in self.mqtt.cached_messages(f"{prefix}/#"):
+                    by_topic[message.topic] = message
+
+            # During the very first API request the asynchronous listener may not
+            # yet have received retained bridge metadata. Bootstrap once from a
+            # short snapshot, merge it into the same cache, then continue using the
+            # persistent cache for all later requests.
+            if not by_topic:
+                bootstrap = []
+                for prefix in self.topic_prefixes:
+                    bootstrap.extend(self.mqtt.retained_messages(f"{prefix}/#", timeout=self.snapshot_timeout))
+                if bootstrap:
+                    self.mqtt.seed_cache(bootstrap)
+                    for message in bootstrap:
+                        by_topic[message.topic] = message
+            messages = list(by_topic.values())
         except Exception:
             logger.exception(
                 "Zigbee2MQTT snapshot failed",
                 extra={"component": "sensor_source", "sensor_source": self.name, "topic_prefix": self.topic_prefix},
             )
             return []
+
         rows: list[dict[str, Any]] = []
-        now = utc_now()
+        current_time = utc_now()
         device_metadata = self._bridge_device_metadata(messages)
         for message in messages:
-            rows.extend(self._entities_from_message(message.topic, message.payload, now, device_metadata))
+            timestamp = str(getattr(message, "received_at", None) or current_time)
+            rows.extend(self._entities_from_message(message.topic, message.payload, timestamp, device_metadata))
         logger.debug(
             "Zigbee2MQTT snapshot completed",
             extra={"component": "sensor_source", "sensor_source": self.name, "message_count": len(messages), "row_count": len(rows)},
@@ -139,6 +164,8 @@ class Zigbee2MqttSensorSource:
         if topic.strip("/").rsplit("/", 1)[-1] == "availability":
             return [self._availability_entity(device, payload, enriched_payload, timestamp)]
         rows: list[dict[str, Any]] = []
+        if enriched_payload.get("source") == self.name:
+            rows.append(self._device_state_entity(device, enriched_payload, timestamp))
         state_keys = [key for key in STATE_KEYS if key in payload and key != "state"]
         if not state_keys and "state" in payload:
             state_keys = ["state"]
@@ -153,6 +180,38 @@ class Zigbee2MqttSensorSource:
             extra={"component": "sensor_source", "sensor_source": self.name, "topic": topic, "device_id": device, "row_count": len(rows)},
         )
         return rows
+
+    def _device_state_entity(self, device: str, payload: dict[str, Any], timestamp: str) -> dict[str, Any]:
+        source = payload.get("source") or self.name
+        ieee = str(payload.get("ieee_address") or "").strip()
+        physical_device_id = ieee if source == self.name and ieee else device if source == "mqtt" else slugify(device)
+        identifier_value = ieee if source == self.name and ieee else device
+        topic = str(payload.get("topic") or payload.get("source_ref") or "").strip()
+        return {
+            "entity_id": topic or f"{source}/{device}",
+            "domain": "mqtt",
+            "state": "online",
+            "friendly_name": device,
+            "device_class": None,
+            "unit": None,
+            "unit_of_measurement": None,
+            "device_id": physical_device_id,
+            "platform": source,
+            "unique_id": f"{source}_{slugify(physical_device_id)}_state",
+            "topic": topic,
+            "source_ref": payload.get("source_ref") or topic,
+            "payload_key": "state",
+            "original_name": device,
+            "device_name": device,
+            "manufacturer": payload.get("manufacturer") or payload.get("vendor"),
+            "model": payload.get("model") or payload.get("model_id"),
+            "identifiers": [[source, identifier_value]],
+            "last_changed": timestamp,
+            "last_updated": timestamp,
+            "source": source,
+            "attributes": dict(payload),
+            **{key: value for key, value in payload.items() if key not in {"topic", "source_ref", "source"}},
+        }
 
     def _bridge_device_metadata(self, messages: list[Any]) -> dict[str, dict[str, Any]]:
         metadata: dict[str, dict[str, Any]] = {}
@@ -213,9 +272,15 @@ class Zigbee2MqttSensorSource:
                 "manufacturer": definition.get("vendor") or device.get("manufacturer"),
                 "model": definition.get("model") or device.get("model_id") or device.get("model"),
                 "ieee_address": ieee or None,
+                # bridge/devices describes capabilities, not live sensor values.
+                # Mark these generated expose rows so state merging never mistakes
+                # the placeholder value "unknown" for telemetry.
+                "metadata_only": True,
             }
             for key in self._expose_keys(definition.get("exposes")):
                 row = self._entity(friendly_name, key, "unknown", metadata, timestamp)
+                row["metadata_only"] = True
+                row["attributes"] = {**row.get("attributes", {}), "metadata_only": True}
                 if ieee:
                     row["device_id"] = ieee
                     row["identifiers"] = [[self.name, ieee]]

@@ -476,8 +476,11 @@ class NotificationService:
         if not self._critical_notifications_enabled():
             return {"sent": 0, "warnings": [], "skipped": "critical_notifications_disabled"}
 
+        # Notification scope is the configured Sentero sensor set only. Never use
+        # arbitrary MQTT devices visible on the broker for customer notifications.
         sensor_rows = sensors if sensors is not None else self.mapping.roles(dev=True, include_state=True)
-        environmental_rows = environmental_sensors if environmental_sensors is not None else self._environmental_snapshot_rows(sensors)
+        sensor_rows = [row for row in sensor_rows if row.get("active", True) and row.get("enabled", True)]
+        environmental_rows = self._environmental_snapshot_rows(sensor_rows)
         active_warnings = self._system_warnings(sensor_rows, battery_threshold=battery_threshold, environmental_sensors=environmental_rows)
         logger.debug(
             "System warnings evaluated",
@@ -550,11 +553,14 @@ class NotificationService:
 
     def _environmental_snapshot_rows(self, sensors: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
         if sensors is not None:
-            return sensors
+            return [row for row in sensors if row.get("active", True) and row.get("enabled", True)]
         try:
-            return self.mapping.snapshot()
+            return [
+                row for row in self.mapping.roles(dev=True, include_state=True)
+                if row.get("active", True) and row.get("enabled", True)
+            ]
         except Exception:
-            logger.exception("Environmental snapshot unavailable", extra={"component": "notification"})
+            logger.exception("Configured environmental sensor snapshot unavailable", extra={"component": "notification"})
             return []
 
     def _environmental_warnings(self, sensors: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -566,28 +572,39 @@ class NotificationService:
         warnings: list[dict[str, Any]] = []
         seen: set[str] = set()
         for sensor in sensors:
-            kind = self._environmental_kind(sensor)
-            if kind not in {"temperature", "humidity"}:
+            if not sensor.get("active", True) or not sensor.get("enabled", True):
                 continue
-            value = self._measurement_value(sensor)
-            if value is None:
-                continue
-            key_base = self._sensor_subject_id(sensor)
-            if kind == "temperature" and value < thresholds["temperature_min_celsius"]:
-                warning = self._environmental_warning(sensor, "temperature_low", value, "°C", "red", f"unter {self._format_measurement(thresholds['temperature_min_celsius'])} °C")
-            elif kind == "temperature" and value > thresholds["temperature_max_celsius"]:
-                warning = self._environmental_warning(sensor, "temperature_high", value, "°C", "red", f"über {self._format_measurement(thresholds['temperature_max_celsius'])} °C")
-            elif kind == "humidity" and value > thresholds["humidity_max_percent"]:
-                warning = self._environmental_warning(sensor, "humidity_high", value, "%", "orange", f"über {self._format_measurement(thresholds['humidity_max_percent'])} %")
-                warning["threshold_value"] = thresholds["humidity_max_percent"]
-            else:
-                continue
-            warning["raw_measurement_value"] = value
-            warning["key"] = f"{warning['type']}:{key_base}"
-            if warning["key"] in seen:
-                continue
-            seen.add(warning["key"])
-            warnings.append(warning)
+
+            # Configured combined presence sensors may expose environmental values
+            # as fields on the same role (temperature/humidity/illuminance).
+            measurements: list[tuple[str, float]] = []
+            for kind, field in (("temperature", "temperature"), ("humidity", "humidity")):
+                raw = sensor.get(field)
+                if isinstance(raw, (int, float)):
+                    measurements.append((kind, float(raw)))
+            if not measurements:
+                kind = self._environmental_kind(sensor)
+                value = self._measurement_value(sensor)
+                if kind in {"temperature", "humidity"} and value is not None:
+                    measurements.append((kind, value))
+
+            for kind, value in measurements:
+                key_base = self._sensor_subject_id(sensor)
+                if kind == "temperature" and value < thresholds["temperature_min_celsius"]:
+                    warning = self._environmental_warning(sensor, "temperature_low", value, "°C", "red", f"unter {self._format_measurement(thresholds['temperature_min_celsius'])} °C")
+                elif kind == "temperature" and value > thresholds["temperature_max_celsius"]:
+                    warning = self._environmental_warning(sensor, "temperature_high", value, "°C", "red", f"über {self._format_measurement(thresholds['temperature_max_celsius'])} °C")
+                elif kind == "humidity" and value > thresholds["humidity_max_percent"]:
+                    warning = self._environmental_warning(sensor, "humidity_high", value, "%", "orange", f"über {self._format_measurement(thresholds['humidity_max_percent'])} %")
+                    warning["threshold_value"] = thresholds["humidity_max_percent"]
+                else:
+                    continue
+                warning["raw_measurement_value"] = value
+                warning["key"] = f"{warning['type']}:{key_base}"
+                if warning["key"] in seen:
+                    continue
+                seen.add(warning["key"])
+                warnings.append(warning)
         return warnings
 
     def _environmental_warning(self, sensor: dict[str, Any], warning_type: str, value: float, unit: str, severity: str, threshold_text: str) -> dict[str, Any]:

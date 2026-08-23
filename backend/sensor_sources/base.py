@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
-from backend.config import config_str
-
+if TYPE_CHECKING:
+    from backend.services.mqtt_service import MqttService
 
 @dataclass(frozen=True)
 class SensorEvent:
@@ -27,18 +27,7 @@ class SensorSource(Protocol):
         ...
 
 
-def create_sensor_source() -> SensorSource:
-    import os
+def create_sensor_source(mqtt: "MqttService | None" = None) -> SensorSource:
+    from .zigbee2mqtt import Zigbee2MqttSensorSource
 
-    mode = (os.getenv("SENTERO_SENSOR_SOURCE") or config_str("sensor_sources.source", "homeassistant") or "homeassistant").strip().lower()
-    if mode in {"mqtt", "zigbee2mqtt", "z2m"}:
-        from .zigbee2mqtt import Zigbee2MqttSensorSource
-
-        return Zigbee2MqttSensorSource()
-    if mode == "mixed":
-        from .mixed import MixedSensorSource
-
-        return MixedSensorSource()
-    from .homeassistant import HomeAssistantSensorSource
-
-    return HomeAssistantSensorSource()
+    return Zigbee2MqttSensorSource(mqtt=mqtt)

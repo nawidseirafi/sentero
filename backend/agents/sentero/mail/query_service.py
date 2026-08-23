@@ -81,10 +81,17 @@ class MailQueryService:
         return QueryResult(intent=MailIntent.STATUS_SUMMARY, status="ok" if has_status_data else "no_data", facts=facts, data_available=has_status_data)
 
     def _current_activity(self) -> QueryResult:
+        # Current presence comes from configured live Sentero roles, not from
+        # historical movement. A person may be present while sitting still.
+        roles = self._configured_roles(include_state=True)
+        presence = self._current_presence_from_roles(roles)
+        if presence:
+            return QueryResult(intent=MailIntent.CURRENT_ACTIVITY, status="ok", facts={"activity": presence})
         event = self._latest_activity_event()
         if not event:
             return QueryResult(intent=MailIntent.CURRENT_ACTIVITY, status="no_data", data_available=False)
         event["freshness"] = self._freshness(event.get("event_time"))
+        event["historical"] = True
         return QueryResult(intent=MailIntent.CURRENT_ACTIVITY, status="ok", facts={"activity": event})
 
     def _last_activity(self, include_room: bool) -> QueryResult:
@@ -210,13 +217,15 @@ class MailQueryService:
         return QueryResult(intent=MailIntent.SENSOR_HEALTH, status="ok", facts={"sensor_count": len(roles), "unreachable": unreachable, "low_battery": low_battery, "latest_sensor_update": latest.isoformat(timespec="seconds") if latest else None})
 
     def _dashboard_summary(self, assessment: dict[str, Any] | None, activity: dict[str, Any] | None, contact: AuthorizedContact) -> dict[str, Any]:
-        roles = self.mapping.roles(dev=True, include_state=True)
-        configured_roles = [role for role in roles if role.get("active", True)]
+        configured_roles = self._configured_roles(include_state=True)
         timeline = self.sentero.behavior_timeline_today(live_snapshot=False)
         events = [event for event in timeline.get("events") or [] if self._is_activity_event(event)]
         if not events and activity:
             events = [activity]
-        current_presence = self._current_presence_event(events)
+
+        # Live presence is authoritative for "in house" and room. Motion only
+        # describes movement. presence=True + motion=still is still "in room".
+        current_presence = self._current_presence_from_roles(configured_roles)
         first_activity = self._first_activity_event(events)
         latest_activity = self._latest_event(events) or activity
         learning = self.sentero.behavior_learning_status()
@@ -259,6 +268,52 @@ class MailQueryService:
             "battery_level": role.get("battery_level"),
             "last_updated": role.get("last_updated") or role.get("last_changed") or role.get("updated_at"),
         }
+
+    def _configured_roles(self, include_state: bool = True) -> list[dict[str, Any]]:
+        roles = self.mapping.roles(dev=True, include_state=include_state)
+        return [role for role in roles if role.get("active", True) and role.get("enabled", True)]
+
+    def _current_presence_from_roles(self, roles: list[dict[str, Any]]) -> dict[str, Any] | None:
+        candidates: list[dict[str, Any]] = []
+        for role in roles:
+            if role.get("presence") is not True:
+                continue
+            at = role.get("last_updated") or role.get("last_changed") or role.get("updated_at")
+            motion_raw = role.get("motion_state") if role.get("motion_state") is not None else role.get("motion")
+            motion_text = str(motion_raw or "").strip().lower()
+            motion_active = motion_text in {"moving", "move", "movement", "motion", "active", "detected", "moving_target", "true", "on", "1"}
+            candidates.append({
+                "role": role.get("role"),
+                "room": role.get("room"),
+                "room_label": self._room_label(role.get("room")),
+                "entity_id": role.get("entity_id"),
+                "state": "on",
+                "presence": True,
+                "motion_state": motion_raw,
+                "motion_active": motion_active,
+                "event_time": at,
+                "freshness": self._freshness(at),
+                "source": role.get("source"),
+                "live": True,
+            })
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda item: self._parse_time(item.get("event_time")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[0]
+
+    def _environment_readings_from_configured_role(self, role: dict[str, Any]) -> list[dict[str, Any]]:
+        at = role.get("last_updated") or role.get("last_changed") or role.get("updated_at")
+        label = role.get("friendly_name") or role.get("label") or role.get("role") or role.get("entity_id")
+        room_label = self._room_label(role.get("room"))
+        readings: list[dict[str, Any]] = []
+        for field, key in (("temperature", "temperature_c"), ("humidity", "humidity_percent"), ("illuminance", "illuminance_lux")):
+            value = _number(role.get(field))
+            if value is None:
+                continue
+            readings.append({"key": key, "value": value, "at": at, "freshness": self._freshness(at), "source": "sentero_configured_live", "label": label, "room_label": room_label})
+        dedicated = self._environment_reading_from_row(role, source="sentero_configured_live")
+        if dedicated and all(item["key"] != dedicated["key"] for item in readings):
+            readings.append(dedicated)
+        return readings
 
     def _latest_activity_event(self) -> dict[str, Any] | None:
         with self.mapping.connect() as con:
@@ -342,35 +397,44 @@ class MailQueryService:
         return "Normal"
 
     def _latest_environment(self) -> dict[str, Any] | None:
+        # User-facing queries must only use sensors explicitly registered in
+        # Sentero. mapping.snapshot() sees every MQTT/Zigbee2MQTT device and is
+        # intentionally not used here. Telegram and e-mail share this service.
         result: dict[str, Any] = {}
-        live_snapshot_failed = False
         try:
-            live_rows = self.mapping.snapshot()
+            roles = self._configured_roles(include_state=True)
         except Exception:
-            live_rows = []
-            live_snapshot_failed = True
-        for item in live_rows:
-            reading = self._environment_reading_from_row(item, source="live")
-            if not reading:
-                continue
-            key = str(reading["key"])
-            current_time = self._parse_time(result.get(f"{key}_at")) if result.get(f"{key}_at") else None
-            reading_time = self._parse_time(reading.get("at"))
-            if key not in result or (reading_time and (not current_time or reading_time >= current_time)):
-                self._set_environment_result(result, reading)
+            roles = []
+        for role in roles:
+            for reading in self._environment_readings_from_configured_role(role):
+                key = str(reading["key"])
+                current_time = self._parse_time(result.get(f"{key}_at")) if result.get(f"{key}_at") else None
+                reading_time = self._parse_time(reading.get("at"))
+                if key not in result or (reading_time and (not current_time or reading_time >= current_time)):
+                    self._set_environment_result(result, reading)
 
-        history = self._latest_environment_history()
+        try:
+            history = self._latest_environment_history(roles)
+        except Exception:
+            history = {}
         for key, reading in history.items():
             if key in result:
                 continue
-            if live_snapshot_failed:
-                reading["fallback_reason"] = "sensor_snapshot_unavailable"
-            else:
-                reading["fallback_reason"] = "sensor_not_answering"
+            reading["fallback_reason"] = "configured_sensor_last_known_value"
             self._set_environment_result(result, reading)
         return result or None
 
-    def _latest_environment_history(self) -> dict[str, dict[str, Any]]:
+    def _latest_environment_history(self, configured_roles: list[dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+        roles = configured_roles if configured_roles is not None else self._configured_roles(include_state=False)
+        allowed_roles = {str(role.get("role") or "").strip() for role in roles if role.get("role")}
+        allowed_entities: set[str] = set()
+        for role in roles:
+            for key in ("entity_id", "source_ref", "primary_entity_id"):
+                value = str(role.get(key) or "").strip()
+                if value:
+                    allowed_entities.add(value)
+        if not allowed_roles and not allowed_entities:
+            return {}
         with self.mapping.connect() as con:
             rows = con.execute(
                 """select * from sentero_sensor_events
@@ -379,18 +443,21 @@ class MailQueryService:
                       or role like '%humidity%'
                       or role like '%illuminance%'
                       or role like '%helligkeit%'
-                   order by event_time desc, id desc limit 20"""
+                   order by event_time desc, id desc limit 100"""
             ).fetchall()
         result: dict[str, dict[str, Any]] = {}
         for row in rows:
             event = dict(row)
+            role_name = str(event.get("role") or "").strip()
+            entity_id = str(event.get("entity_id") or "").split("#", 1)[0].strip()
+            if role_name not in allowed_roles and entity_id not in allowed_entities:
+                continue
             reading = self._environment_reading_from_row(event, source="history")
             if not reading:
                 continue
             key = str(reading["key"])
-            if key in result:
-                continue
-            result[key] = reading
+            if key not in result:
+                result[key] = reading
         return result
 
     def _environment_reading_from_row(self, row: dict[str, Any], source: str) -> dict[str, Any] | None:

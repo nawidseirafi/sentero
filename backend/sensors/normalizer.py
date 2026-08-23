@@ -61,7 +61,7 @@ def normalize_snapshot(rows: list[dict[str, Any]]) -> tuple[list[SenteroDevice],
 
 
 def normalize_row(row: dict[str, Any]) -> tuple[str, dict[str, Any], SenteroEvent] | None:
-    source = str(row.get("source") or row.get("platform") or "homeassistant").strip() or "homeassistant"
+    source = str(row.get("source") or row.get("platform") or "mqtt").strip() or "mqtt"
     source_ref = str(row.get("entity_id") or row.get("unique_id") or row.get("sensor_id") or "").strip()
     device_id_raw = str(row.get("device_id") or row.get("device_name") or row.get("friendly_name") or source_ref).strip()
     if not source_ref and not device_id_raw:

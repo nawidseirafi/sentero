@@ -137,6 +137,17 @@ class SPAStaticFiles(StaticFiles):
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     logger.info("Application started", extra={"component": "app"})
+    services = get_services()
+    # Register behavior ingestion before opening the MQTT listener so no motion
+    # message can arrive in the gap between connect and callback registration.
+    services.mapping.mqtt.add_message_listener(services.sentero.behavior.handle_mqtt_message)
+    try:
+        services.mapping.start_mqtt_listener()
+    except Exception:
+        # Keep the API available if the broker is temporarily down. Paho's live
+        # listener retries automatically once it has started; a hard setup error
+        # is logged here and sensor endpoints will report no current state.
+        logger.exception("MQTT live listener startup failed", extra={"component": "mqtt"})
     await network_startup_check()
     behavior_task = asyncio.create_task(behavior_snapshot_loop())
     network_task = asyncio.create_task(network_maintenance_loop())
@@ -157,6 +168,8 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
             await mail_task
         with suppress(asyncio.CancelledError):
             await telegram_task
+        services.mapping.mqtt.remove_message_listener(services.sentero.behavior.handle_mqtt_message)
+        services.mapping.stop_mqtt_listener()
         logger.info("Application stopped", extra={"component": "app"})
 
 

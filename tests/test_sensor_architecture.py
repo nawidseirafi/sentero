@@ -38,10 +38,10 @@ class FailingMqtt:
 
 
 class SensorArchitectureTests(unittest.TestCase):
-    def test_mixed_source_can_be_selected_explicitly(self) -> None:
+    def test_mixed_source_env_still_uses_mqtt_source(self) -> None:
         with patch.dict(os.environ, {"SENTERO_SENSOR_SOURCE": "mixed"}, clear=True):
             source = create_sensor_source()
-        self.assertEqual(source.name, "mixed")
+        self.assertEqual(source.name, "zigbee2mqtt")
 
     def test_mqtt_source_can_be_selected_explicitly(self) -> None:
         with patch.dict(os.environ, {"SENTERO_SENSOR_SOURCE": "mqtt"}, clear=True):

@@ -24,7 +24,7 @@ class SensorManager:
     """Product-facing facade for all sensor operations.
 
     The UI and higher-level services should call this manager instead of
-    addressing Home Assistant, MQTT or Zigbee2MQTT directly.
+    addressing MQTT or Zigbee2MQTT directly.
     """
 
     def __init__(self, mapping: DeviceMappingService) -> None:
@@ -83,7 +83,7 @@ class SensorManager:
         home_status = self.mapping.home_status()
         network = self.network_settings(public=True)
         return {
-            "ready": bool(home_status.get("sensor_ready")) or source in {"mqtt", "zigbee2mqtt", "z2m", "mixed"},
+            "ready": bool(home_status.get("sensor_ready")) or source in {"mqtt", "zigbee2mqtt", "z2m"},
             "mode": source,
             "status_label": "Bereit" if bool(home_status.get("sensor_ready")) else "Wartet auf Sensorverbindung",
             "network": network,
@@ -188,10 +188,7 @@ class SensorManager:
                 "transport": requested_transport,
                 "detail": {"reason": "wifi_esphome_requires_provisioning"},
             }
-        if source in {"mqtt", "zigbee2mqtt", "z2m", "mixed"}:
-            result = self.mapping.start_mqtt_discovery(target_role, room_id, duration=duration, sensor_type=public_sensor_type(clean_type))
-        else:
-            result = self.mapping.start_zigbee_pairing(target_role, room_id, duration=duration, sensor_type=public_sensor_type(clean_type))
+        result = self.mapping.start_mqtt_discovery(target_role, room_id, duration=duration, sensor_type=public_sensor_type(clean_type))
         return {
             "discovery_id": result["session_id"],
             "status": product_status(result.get("status")),

@@ -1086,7 +1086,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                             <SensorEnvironment sensor={sensor} />
                             <span className={sensor.reachable === false ? 'offline' : sensor.reachable == null ? 'unknown' : 'online'}>
                               {sensor.reachable === false ? <WifiOff size={17} /> : <CheckCircle2 size={17} />}
-                              {sensor.reachable === false ? 'Nicht erreichbar' : sensor.reachable == null ? 'In HA vorhanden' : 'Erreichbar'}
+                              {sensor.reachable === false ? 'Nicht erreichbar' : sensor.reachable == null ? 'Verbunden' : 'Verbunden'}
                             </span>
                             {sensorPowerLabel(sensor) === 'USB-Strom' ? (
                               <span className="battery"><Plug size={17} /> USB-Strom</span>
@@ -2290,11 +2290,11 @@ function presenceMotionStatus(sensor: SenteroSensorRole) {
   if (sensor.fall_detected) {
     return { tone: 'alert', label: 'Sturz', icon: <WarningAmberIcon fontSize="small" /> };
   }
+  const motion = String(sensor.motion || '').toLowerCase();
   if (sensor.presence === false) {
     return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
   }
   if (sensor.presence === true) {
-    const motion = String(sensor.motion || '').toLowerCase();
     if (['active', 'move', 'moving'].includes(motion)) {
       return { tone: 'motion', label: 'Bewegung', icon: <DirectionsRunIcon fontSize="small" /> };
     }
@@ -2302,6 +2302,12 @@ function presenceMotionStatus(sensor: SenteroSensorRole) {
       return { tone: 'still', label: 'Still', icon: <AccessibilityNewIcon fontSize="small" /> };
     }
     return { tone: 'motion', label: 'Bewegung', icon: <PersonIcon fontSize="small" /> };
+  }
+  if (['none', 'clear', 'off', 'false', '0', 'no_motion'].includes(motion)) {
+    return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
+  }
+  if (['active', 'move', 'moving', 'motion', 'detected'].includes(motion)) {
+    return { tone: 'motion', label: 'Bewegung', icon: <DirectionsRunIcon fontSize="small" /> };
   }
   const value = String(sensor.state || '').toLowerCase();
   if (['on', 'true', '1', 'active', 'occupied', 'detected'].includes(value)) {

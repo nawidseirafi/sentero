@@ -150,14 +150,14 @@ class SenteroBehaviorAgent:
         profile = self._profile()
         contacts = self._contacts()
         sensor_snapshot = self.mapping.roles(dev=True, include_state=True)
-        try:
-            ha_snapshot = self.mapping.snapshot()
-        except Exception as exc:
-            logger.exception("Behavior HA snapshot unavailable", extra={"component": "behavior"})
-            ha_snapshot = []
+        # Analysis is scoped to sensors explicitly configured in Sentero. The raw
+        # MQTT snapshot can contain unrelated household devices and must not feed
+        # behavior/AI context. Keep the historical variable name for compatibility
+        # with existing helper signatures.
+        ha_snapshot = list(sensor_snapshot)
         if not dry_run:
             self._record_snapshot(sensor_snapshot, ha_snapshot)
-            self._notify_system_warnings(sensor_snapshot, ha_snapshot)
+            self._notify_system_warnings(sensor_snapshot)
             self._cleanup_old_data()
         history = self._history(days=30)
         daily_summary = self._upsert_daily_summary(history, dry_run=dry_run)
@@ -220,14 +220,132 @@ class SenteroBehaviorAgent:
 
     def record_current_snapshot(self) -> int:
         sensor_snapshot = self.mapping.roles(dev=True, include_state=True)
-        try:
-            ha_snapshot = self.mapping.snapshot()
-        except Exception:
-            logger.exception("Behavior live snapshot unavailable", extra={"component": "behavior"})
-            ha_snapshot = []
+        ha_snapshot = list(sensor_snapshot)
         written = self._record_snapshot(sensor_snapshot, ha_snapshot)
-        self._notify_system_warnings(sensor_snapshot, ha_snapshot)
+        self._notify_system_warnings(sensor_snapshot)
         return written
+
+    def handle_mqtt_message(self, topic: str, payload: Any, received_at: str) -> int:
+        """Persist behavior-relevant MQTT changes at ingestion time.
+
+        The MQTT last-state table answers "what is the current value?". This
+        method answers "what happened when?" by writing presence/motion events to
+        the behavior history as soon as Zigbee2MQTT publishes them.
+        """
+        clean_topic = str(topic or "").strip().strip("/")
+        if not clean_topic or not isinstance(payload, dict):
+            return 0
+        # Bridge metadata and availability are technical transport messages, not
+        # human behavior observations.
+        if "/bridge/" in f"/{clean_topic}/" or clean_topic.endswith("/availability"):
+            return 0
+
+        matched_roles = self._roles_for_mqtt_topic(clean_topic)
+        if not matched_roles:
+            return 0
+
+        written = 0
+        for role in matched_roles:
+            events = self._mqtt_behavior_events(role, clean_topic, payload, received_at)
+            if events:
+                written += self._write_sensor_events(events, created_at=now())
+        if written:
+            logger.debug(
+                "MQTT behavior events recorded",
+                extra={"component": "behavior", "topic": clean_topic, "written_events": written},
+            )
+        return written
+
+    def _roles_for_mqtt_topic(self, topic: str) -> list[dict[str, Any]]:
+        clean = str(topic or "").strip().strip("/")
+        if not clean:
+            return []
+        result: list[dict[str, Any]] = []
+        for role in self.mapping.roles(dev=True, include_state=False):
+            candidates = {
+                str(role.get("entity_id") or "").strip().strip("/"),
+                str(role.get("source_ref") or "").strip().strip("/"),
+                str(role.get("primary_entity_id") or "").strip().strip("/"),
+            }
+            entity_ids = role.get("entity_ids")
+            if isinstance(entity_ids, list):
+                candidates.update(str(item or "").strip().strip("/") for item in entity_ids)
+            if clean in {item for item in candidates if item}:
+                result.append(role)
+        return result
+
+    def _mqtt_behavior_events(
+        self,
+        role: dict[str, Any],
+        topic: str,
+        payload: dict[str, Any],
+        event_time: str,
+    ) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        role_name = str(role.get("role") or "").strip() or "sensor"
+        room = role.get("room")
+        source = str(role.get("source") or "zigbee2mqtt")
+
+        presence_value = payload.get("presence") if "presence" in payload else payload.get("occupancy")
+        presence = self._mqtt_bool(presence_value)
+        if presence is not None:
+            events.append({
+                "event_time": event_time,
+                "role": role_name,
+                "room": room,
+                "entity_id": f"{topic}#presence",
+                "state": "on" if presence else "off",
+                "device_class": "presence",
+                "source": source,
+                "event_type": "presence",
+                # Presence is a state. Repeated telemetry with unchanged presence
+                # must not look like repeated human activity.
+                "transition_only": True,
+            })
+
+        motion_raw = payload.get("motion_state") if "motion_state" in payload else payload.get("motion")
+        motion = self._mqtt_motion_active(motion_raw)
+        if motion is not None:
+            events.append({
+                "event_time": event_time,
+                "role": f"{role_name}_motion",
+                "room": room,
+                "entity_id": f"{topic}#motion",
+                "state": "on" if motion else "off",
+                "device_class": "motion",
+                "source": source,
+                "event_type": "motion",
+                # Every explicit moving message is useful as a fresh last-movement
+                # timestamp. Repeated inactive messages are only state transitions.
+                "transition_only": not motion,
+            })
+        return events
+
+    @staticmethod
+    def _mqtt_bool(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and value in {0, 1}:
+            return bool(value)
+        text = str(value or "").strip().lower()
+        if text in {"true", "on", "yes", "1", "present", "occupied", "detected"}:
+            return True
+        if text in {"false", "off", "no", "0", "absent", "clear", "none", "not_present", "not present"}:
+            return False
+        return None
+
+    @staticmethod
+    def _mqtt_motion_active(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and value in {0, 1}:
+            return bool(value)
+        text = str(value or "").strip().lower().replace("-", "_")
+        if text in {"moving", "move", "movement", "motion", "active", "detected", "moving_target"}:
+            return True
+        if text in {"none", "still", "static", "stationary", "standstill", "inactive", "clear", "off", "false", "0", "no_motion", "no motion"}:
+            return False
+        return None
 
     def _profile(self) -> dict[str, Any]:
         with self.mapping.connect() as con:
@@ -248,19 +366,50 @@ class SenteroBehaviorAgent:
         extra_events = [
             *self._smart_meter_snapshot_events(snapshot_rows, timestamp),
         ]
+        normalized: list[dict[str, Any]] = []
+        for role in roles:
+            behavior_events = self._behavior_events_from_role(role, timestamp)
+            normalized.extend(behavior_events if behavior_events else [role])
+        normalized.extend(extra_events)
+        written = self._write_sensor_events(normalized, created_at=timestamp)
+        logger.debug(
+            "Behavior snapshot recorded",
+            extra={"component": "behavior", "role_count": len(roles), "extra_event_count": len(extra_events), "written_events": written},
+        )
+        return written
+
+    def _behavior_events_from_role(self, role: dict[str, Any], fallback_time: str) -> list[dict[str, Any]]:
+        if not self._is_presence_role(role):
+            return []
+        event_time = str(role.get("last_changed") or role.get("last_updated") or fallback_time)
+        topic = str(role.get("entity_id") or role.get("resolved_entity_id") or role.get("role") or "sensor").strip()
+        payload: dict[str, Any] = {}
+        if role.get("presence") is not None:
+            payload["presence"] = role.get("presence")
+        if role.get("motion_state") is not None:
+            payload["motion_state"] = role.get("motion_state")
+        elif role.get("motion") is not None:
+            payload["motion"] = role.get("motion")
+        if not payload:
+            return []
+        return self._mqtt_behavior_events(role, topic, payload, event_time)
+
+    def _write_sensor_events(self, events: list[dict[str, Any]], created_at: str) -> int:
         written = 0
         with self.mapping.connect() as con:
-            for role in [*roles, *extra_events]:
-                state = role.get("state")
+            for event in events:
+                state = event.get("state")
                 if state in (None, "", "unknown", "unavailable"):
                     continue
-                event_time = role.get("last_changed") or role.get("last_updated") or timestamp
-                role_name = role.get("role")
-                entity_id = role.get("entity_id")
+                event_time = str(event.get("event_time") or event.get("last_changed") or event.get("last_updated") or created_at)
+                role_name = event.get("role")
+                entity_id = event.get("entity_id")
                 if self._event_already_recorded(con, event_time, role_name, entity_id, state):
                     continue
-                event_type = self._event_type(role)
-                data_class = classify_sensor_event(event_type, role.get("device_class"), role_name)
+                if event.get("transition_only") and self._latest_sensor_state(con, entity_id, role_name) == str(state):
+                    continue
+                event_type = str(event.get("event_type") or self._event_type(event))
+                data_class = classify_sensor_event(event_type, event.get("device_class"), role_name)
                 con.execute(
                     """insert into sentero_sensor_events
                        (event_time, role, room, entity_id, state, device_class, source, data_class, aggregation_level, created_at)
@@ -268,14 +417,14 @@ class SenteroBehaviorAgent:
                     (
                         event_time,
                         role_name,
-                        role.get("room"),
+                        event.get("room"),
                         entity_id,
                         state,
-                        role.get("device_class"),
-                        role.get("source") or "snapshot",
+                        event.get("device_class"),
+                        event.get("source") or "snapshot",
                         data_class,
                         "raw",
-                        timestamp,
+                        created_at,
                     ),
                 )
                 con.execute(
@@ -285,13 +434,13 @@ class SenteroBehaviorAgent:
                     (
                         event_time,
                         entity_id or role_name,
-                        role.get("device_class") or role.get("type") or role.get("domain"),
-                        role.get("room"),
+                        event.get("device_class") or event.get("type") or event.get("domain"),
+                        event.get("room"),
                         event_type,
                         json.dumps({
                             "role": role_name,
                             "state": state,
-                            "source": role.get("source") or "snapshot",
+                            "source": event.get("source") or "snapshot",
                         }, ensure_ascii=False),
                         data_class,
                         "raw",
@@ -299,11 +448,18 @@ class SenteroBehaviorAgent:
                 )
                 written += 1
             con.commit()
-        logger.debug(
-            "Behavior snapshot recorded",
-            extra={"component": "behavior", "role_count": len(roles), "extra_event_count": len(extra_events), "written_events": written},
-        )
         return written
+
+    def _latest_sensor_state(self, con: Any, entity_id: Any, role: Any) -> str | None:
+        row = con.execute(
+            """select state from sentero_sensor_events
+               where coalesce(entity_id, '') = coalesce(?, '')
+                 and coalesce(role, '') = coalesce(?, '')
+               order by event_time desc, id desc
+               limit 1""",
+            (entity_id, role),
+        ).fetchone()
+        return str(row["state"]) if row else None
 
     def _event_already_recorded(self, con: Any, event_time: Any, role: Any, entity_id: Any, state: Any) -> bool:
         row = con.execute(
@@ -498,9 +654,11 @@ class SenteroBehaviorAgent:
         logger.debug("Behavior assessment stored", extra={"component": "behavior", "assessment_id": stored.get("id"), "status": stored.get("status")})
         return stored
 
-    def _notify_system_warnings(self, sensor_snapshot: list[dict[str, Any]], environmental_snapshot: list[dict[str, Any]] | None = None) -> None:
+    def _notify_system_warnings(self, sensor_snapshot: list[dict[str, Any]]) -> None:
         try:
-            result = self.notifications.notify_system_warnings(sensor_snapshot, environmental_sensors=environmental_snapshot)
+            # Only configured Sentero roles are eligible for warnings. The raw
+            # MQTT snapshot may contain unrelated devices on the same broker.
+            result = self.notifications.notify_system_warnings(sensor_snapshot)
             if result.get("warnings"):
                 logger.info(
                     "System warnings generated",
