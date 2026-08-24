@@ -45,14 +45,23 @@ class TelegramApiClient:
         }
         if offset is not None:
             params["offset"] = offset
-        response = requests.get(self._url("getUpdates"), params=params, timeout=self.config.timeout_seconds + 5)
+        # Telegram getUpdates is a long-poll request. The HTTP read timeout must
+        # be comfortably longer than Telegram's own long-poll timeout; otherwise a
+        # healthy idle poll can be reported as an application error.
+        connect_timeout = 5
+        read_timeout = max(self.config.timeout_seconds + 15, 20)
+        response = requests.get(
+            self._url("getUpdates"),
+            params=params,
+            timeout=(connect_timeout, read_timeout),
+        )
         response.raise_for_status()
         data = response.json()
         result = data.get("result") if isinstance(data, dict) else None
         return result if isinstance(result, list) else []
 
     def get_me(self) -> dict[str, Any]:
-        response = requests.get(self._url("getMe"), timeout=self.config.timeout_seconds + 5)
+        response = requests.get(self._url("getMe"), timeout=(5, 15))
         response.raise_for_status()
         data = response.json()
         result = data.get("result") if isinstance(data, dict) else None

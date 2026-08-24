@@ -110,10 +110,15 @@ class InboundMail:
     subject: str
     body: str
     received_at: str
+    delivery_addresses: list[str] = field(default_factory=list)
     in_reply_to: str | None = None
     references: str | None = None
     x_sentero_generated: str | None = None
     auto_submitted: str | None = None
+    precedence: str | None = None
+    x_auto_response_suppress: str | None = None
+    list_id: str | None = None
+    return_path: str | None = None
     has_attachments: bool = False
 
 

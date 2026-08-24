@@ -6,6 +6,8 @@ import time
 from contextlib import asynccontextmanager
 from contextlib import suppress
 
+import requests
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -83,7 +85,14 @@ async def mail_assistant_loop() -> None:
                 continue
             result = await asyncio.to_thread(assistant.poll_once)
             if result.get("processed"):
-                logger.info("Mail assistant processed messages", extra={"component": "mail_assistant", "processed": result.get("processed")})
+                logger.info(
+                    "Mail assistant processed messages",
+                    extra={
+                        "component": "mail_assistant",
+                        "processed": result.get("processed"),
+                        "results": result.get("results") or {},
+                    },
+                )
             backoff = 1
             await asyncio.sleep(assistant.config.poll_interval_seconds)
         except asyncio.CancelledError:
@@ -111,7 +120,42 @@ async def telegram_assistant_loop() -> None:
             await asyncio.sleep(assistant.config.poll_interval_seconds)
         except asyncio.CancelledError:
             raise
+        except requests.exceptions.ReadTimeout:
+            # A Telegram long-poll read timeout is transient and expected from
+            # time to time. Do not emit a full ERROR traceback; retry shortly.
+            logger.warning(
+                "Telegram polling timed out; retrying",
+                extra={"component": "telegram_assistant"},
+            )
+            backoff = 1
+            await asyncio.sleep(2)
+        except requests.exceptions.ConnectionError as exc:
+            # Temporary DNS/TLS/routing failures are network conditions rather
+            # than application failures. Back off, but keep the assistant alive.
+            logger.warning(
+                "Telegram connection failed; retrying",
+                extra={
+                    "component": "telegram_assistant",
+                    "error_type": type(exc).__name__,
+                    "retry_in_seconds": min(60, 5 * backoff),
+                },
+            )
+            await asyncio.sleep(min(60, 5 * backoff))
+            backoff = min(backoff * 2, 12)
+        except requests.exceptions.RequestException as exc:
+            logger.warning(
+                "Telegram API request failed; retrying",
+                extra={
+                    "component": "telegram_assistant",
+                    "error_type": type(exc).__name__,
+                    "retry_in_seconds": min(120, 5 * backoff),
+                },
+            )
+            await asyncio.sleep(min(120, 5 * backoff))
+            backoff = min(backoff * 2, 24)
         except Exception:
+            # Unexpected programming/service errors remain ERRORs and keep their
+            # traceback because they require investigation.
             logger.exception("Telegram assistant polling failed", extra={"component": "telegram_assistant"})
             await asyncio.sleep(min(300, 5 * backoff))
             backoff = min(backoff * 2, 60)

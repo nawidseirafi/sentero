@@ -42,7 +42,27 @@ class ImapMailClient:
 def parse_message(uid: str, raw: bytes) -> InboundMail:
     msg = email.message_from_bytes(raw)
     sender = first_address(msg.get("From", ""))
-    recipients = [addr for _, addr in getaddresses([msg.get("To", ""), msg.get("Cc", ""), msg.get("Delivered-To", "")]) if addr]
+    recipients = [
+        addr.lower()
+        for _, addr in getaddresses([
+            msg.get("To", ""),
+            msg.get("Cc", ""),
+            msg.get("Resent-To", ""),
+            msg.get("Resent-Cc", ""),
+        ])
+        if addr
+    ]
+    delivery_addresses = [
+        addr.lower()
+        for _, addr in getaddresses([
+            msg.get("Delivered-To", ""),
+            msg.get("X-Original-To", ""),
+            msg.get("Envelope-To", ""),
+            msg.get("X-Envelope-To", ""),
+            msg.get("X-Delivered-To", ""),
+        ])
+        if addr
+    ]
     received_at = now()
     if msg.get("Date"):
         try:
@@ -54,6 +74,7 @@ def parse_message(uid: str, raw: bytes) -> InboundMail:
         message_id=str(msg.get("Message-ID") or f"imap:{uid}").strip(),
         sender_email=sender,
         recipient_addresses=recipients,
+        delivery_addresses=delivery_addresses,
         subject=str(msg.get("Subject") or ""),
         body=plain_body(msg),
         received_at=received_at,
@@ -61,6 +82,10 @@ def parse_message(uid: str, raw: bytes) -> InboundMail:
         references=str(msg.get("References") or "").strip() or None,
         x_sentero_generated=str(msg.get("X-Sentero-Generated") or "").strip() or None,
         auto_submitted=str(msg.get("Auto-Submitted") or "").strip() or None,
+        precedence=str(msg.get("Precedence") or "").strip() or None,
+        x_auto_response_suppress=str(msg.get("X-Auto-Response-Suppress") or "").strip() or None,
+        list_id=str(msg.get("List-Id") or "").strip() or None,
+        return_path=str(msg.get("Return-Path") or "").strip() or None,
         has_attachments=has_attachments(msg),
     )
 
