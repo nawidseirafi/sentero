@@ -16,7 +16,7 @@ app:
   dev_mode: false
 
 box_setup:
-  mode: disabled
+  mode: SENTERO_BOX_SETUP_MODE
   hostname: sentero
 
 network:
@@ -32,18 +32,9 @@ network:
 logging:
   level: INFO
 
-sensor_sources:
-  source: homeassistant
-  development:
-    adapter: homeassistant
-  production:
-    adapters:
-      - zigbee2mqtt
-      - mqtt
-
-home_assistant:
-  url: http://homeassistant.local:8123
-  token: HA_TOKEN
+# Sensor data is read directly from MQTT.
+# Zigbee devices arrive through Zigbee2MQTT; ESP32/generic MQTT topics are
+# normalized by the same MQTT sensor pipeline.
 
 mqtt:
   host: 192.168.178.159
@@ -68,7 +59,7 @@ zigbee:
 
 updates:
   channel: stable
-  mode: appliance
+  mode: zip
   base_url: https://seirafi.de/robotersteve/sentero
   manifest_path: update-manifest.json
   manifest_url: ""
@@ -77,7 +68,7 @@ llm:
   # rule_based keeps Sentero fully local and is the safe default.
   # Set provider to openai, gemini, claude or llama/ollama when wanted.
   # rule_based/openai/emini/claude/llama:
-  provider: ollama
+  provider: gemini
   timeout_seconds: 30
   openai:
     api_key: OPENAI_API_KEY
@@ -90,7 +81,4 @@ llm:
     model: claude-3-5-sonnet-latest
   llama:
     base_url: http://localhost:11434
-    model: qwen2.5:3b
-  ollama:
-    base_url: http://ollama:11434
     model: qwen2.5:3b
