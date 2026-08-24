@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, time, timedelta, timezone
+import os
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from backend.agents.sentero.mail.models import INTENT_PERMISSIONS, AuthorizedContact, MailIntent, MailPermission, MailThreadContext, QueryResult
@@ -292,7 +294,10 @@ class MailQueryService:
                 "motion_state": motion_raw,
                 "motion_active": motion_active,
                 "event_time": at,
+                "event_time_local": self._local_timestamp(at),
+                "event_time_label": self._local_time_label(at),
                 "freshness": self._freshness(at),
+                "relative_time": self._relative_time_label(at),
                 "source": role.get("source"),
                 "live": True,
             })
@@ -332,6 +337,7 @@ class MailQueryService:
             event = dict(row)
             if self._is_activity_event(event):
                 event["room_label"] = self._room_label(event.get("room"))
+                self._add_time_labels(event)
                 return event
         return None
 
@@ -354,14 +360,18 @@ class MailQueryService:
         if not valid:
             return None
         event = sorted(valid, key=lambda item: self._parse_time(item.get("event_time")) or datetime.min.replace(tzinfo=timezone.utc))[0]
-        return {**event, "room_label": self._room_label(event.get("room"))}
+        result = {**event, "room_label": self._room_label(event.get("room"))}
+        self._add_time_labels(result)
+        return result
 
     def _latest_event(self, events: list[dict[str, Any]]) -> dict[str, Any] | None:
         valid = [event for event in events if self._parse_time(event.get("event_time"))]
         if not valid:
             return None
         event = sorted(valid, key=lambda item: self._parse_time(item.get("event_time")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[0]
-        return {**event, "room_label": self._room_label(event.get("room")), "freshness": self._freshness(event.get("event_time"))}
+        result = {**event, "room_label": self._room_label(event.get("room")), "freshness": self._freshness(event.get("event_time"))}
+        self._add_time_labels(result)
+        return result
 
     def _activity_slots(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         slots = [{"hour": hour, "label": str(hour).zfill(2), "active": False} for hour in (0, 6, 12, 18, 24)]
@@ -369,7 +379,7 @@ class MailQueryService:
             parsed = self._parse_time(event.get("event_time"))
             if not parsed:
                 continue
-            local_hour = parsed.astimezone().hour
+            local_hour = parsed.astimezone(self._sentero_timezone()).hour
             for index, slot in enumerate(slots):
                 next_hour = slots[index + 1]["hour"] if index + 1 < len(slots) else 24
                 if slot["hour"] <= local_hour < next_hour:
@@ -613,6 +623,50 @@ class MailQueryService:
         age = max(int((datetime.now(timezone.utc) - parsed).total_seconds()), 0)
         bucket = "fresh" if age <= self.fresh_seconds else "recent" if age <= self.recent_seconds else "stale" if age >= self.stale_seconds else "old"
         return {"age_seconds": age, "bucket": bucket}
+
+    def _sentero_timezone(self) -> ZoneInfo:
+        name = str(os.getenv("SENTERO_TIMEZONE") or os.getenv("TZ") or "Europe/Berlin").strip()
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            return ZoneInfo("Europe/Berlin")
+
+    def _local_timestamp(self, value: Any) -> str | None:
+        parsed = self._parse_time(value)
+        if not parsed:
+            return None
+        return parsed.astimezone(self._sentero_timezone()).isoformat(timespec="seconds")
+
+    def _local_time_label(self, value: Any) -> str | None:
+        parsed = self._parse_time(value)
+        if not parsed:
+            return None
+        return parsed.astimezone(self._sentero_timezone()).strftime("%H:%M")
+
+    def _relative_time_label(self, value: Any) -> str | None:
+        parsed = self._parse_time(value)
+        if not parsed:
+            return None
+        age = max(int((datetime.now(timezone.utc) - parsed).total_seconds()), 0)
+        minutes = age // 60
+        if minutes < 1:
+            return "gerade eben"
+        if minutes < 60:
+            return f"vor {minutes} {'Minute' if minutes == 1 else 'Minuten'}"
+        hours, rest = divmod(minutes, 60)
+        if hours < 24:
+            if rest == 0:
+                return f"vor {hours} {'Stunde' if hours == 1 else 'Stunden'}"
+            return f"vor {hours} {'Stunde' if hours == 1 else 'Stunden'} und {rest} {'Minute' if rest == 1 else 'Minuten'}"
+        days = hours // 24
+        return f"vor {days} {'Tag' if days == 1 else 'Tagen'}"
+
+    def _add_time_labels(self, event: dict[str, Any]) -> dict[str, Any]:
+        value = event.get("event_time")
+        event["event_time_local"] = self._local_timestamp(value)
+        event["event_time_label"] = self._local_time_label(value)
+        event["relative_time"] = self._relative_time_label(value)
+        return event
 
     def _parse_time(self, value: Any) -> datetime | None:
         if not value:

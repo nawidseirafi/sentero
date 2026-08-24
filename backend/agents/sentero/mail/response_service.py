@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from backend.agents.sentero.mail.models import MailIntent, QueryResult
@@ -350,12 +352,22 @@ def _decimal_label(value: Any) -> str:
     return text.replace(".", ",")
 
 
+def _sentero_timezone() -> ZoneInfo:
+    name = str(os.getenv("SENTERO_TIMEZONE") or os.getenv("TZ") or "Europe/Berlin").strip()
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return ZoneInfo("Europe/Berlin")
+
+
 def _time_label(value: Any) -> str:
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         return "noch offen"
-    return parsed.astimezone().strftime("%H:%M")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(_sentero_timezone()).strftime("%H:%M")
 
 
 def _context_sentence(result: QueryResult) -> str:

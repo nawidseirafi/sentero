@@ -113,7 +113,7 @@ class TelegramNotificationProvider(NotificationProvider):
             raise ValueError("telegram_not_configured")
         response = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": f"{title}\n\n{text}"},
+            json={"chat_id": chat_id, "text": f"{text}"},
             timeout=10,
         )
         response.raise_for_status()
@@ -140,7 +140,7 @@ class WhatsAppNotificationProvider(NotificationProvider):
                 "messaging_product": "whatsapp",
                 "to": recipient,
                 "type": "text",
-                "text": {"preview_url": False, "body": f"{title}\n\n{text}"},
+                "text": {"preview_url": False, "body": f"{text}"},
             },
             timeout=10,
         )
