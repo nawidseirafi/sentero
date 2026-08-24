@@ -173,16 +173,83 @@ class SenteroMailAssistant:
             },
         )
 
+        # Activation gate:
+        # - A NEW Sentero conversation must carry the configured marker in the
+        #   subject (default: "Sentero:").
+        # - A REPLY is accepted when In-Reply-To/References points to a message
+        #   Sentero actually sent to the same trusted contact.
+        #
+        # A normal email from an authorized family member therefore remains a
+        # normal email and is never sent to intent classification or the LLM.
+        context = self.store.find_thread_context(reply_context_message_id(message))
+        if context and context.contact_id not in {None, contact.id}:
+            context = None
+
+        subject_activated = subject_activates_sentero(
+            message.subject,
+            self.config.activation_subject_prefix,
+        )
+        thread_activated = context is not None
+
+        if not subject_activated and not thread_activated:
+            return self._ignore_silently(message, "missing_sentero_activation")
+
+        logger.info(
+            "Mail activation accepted",
+            extra={
+                "component": "mail_assistant",
+                "contact_id": contact.id,
+                "activation": "thread" if thread_activated else "subject",
+            },
+        )
+
         if self.store.rate_limit_exceeded(contact.id, self.config.hourly_limit, self.config.daily_limit):
             body = "Guten Tag,\n\ndas Anfrage-Limit für E-Mail-Statusabfragen ist erreicht. Bitte versuchen Sie es später erneut.\n\nViele Grüße\nSentero"
             self._send_response(message, contact.email, body, contact_id=contact.id)
             self.store.record_query(received_at=message.received_at, message_id=message.message_id, contact_id=contact.id, sender_email=message.sender_email, intent=None, confidence=None, question="", response_status="rate_limited", error_code="rate_limit", processing_ms=_elapsed_ms(started), response_sent_at=now())
             return {"status": "rate_limited", "response_sent": True}
 
-        context = self.store.find_thread_context(reply_context_message_id(message))
-        if context and context.contact_id not in {None, contact.id}:
-            context = None
-        question = sanitize_question(message.body or message.subject)
+        # The subject is only the activation switch. The actual user question is
+        # deliberately taken from the email body, never from the subject.
+        question = sanitize_question(message.body)
+        if not question:
+            body = (
+                "Guten Tag,\n\n"
+                "ich habe Ihre Sentero-Anfrage erkannt, aber im Nachrichtentext "
+                "keine Frage gefunden. Bitte schreiben Sie Ihre Frage in den Text "
+                "der E-Mail.\n\nViele Grüße\nSentero"
+            )
+            try:
+                self._send_response(message, contact.email, body, contact_id=contact.id)
+            except Exception as exc:
+                logger.exception(
+                    "Mail empty-question response failed",
+                    extra={"component": "mail_assistant", "contact_id": contact.id},
+                )
+                return {
+                    "status": "failed",
+                    "error": exc.__class__.__name__,
+                    "response_sent": False,
+                }
+            self.store.record_query(
+                received_at=message.received_at,
+                message_id=message.message_id,
+                contact_id=contact.id,
+                sender_email=message.sender_email,
+                intent=None,
+                confidence=None,
+                question="",
+                response_status="sent",
+                error_code="empty_question",
+                processing_ms=_elapsed_ms(started),
+                response_sent_at=now(),
+            )
+            return {
+                "status": "sent",
+                "error": "empty_question",
+                "response_sent": True,
+            }
+
         routed = self.conversation.classify(question, self.intent)
         if routed.is_action_request:
             body = self.response.read_only_action_rejected()
@@ -225,7 +292,15 @@ class SenteroMailAssistant:
 
     def _send_response(self, message: InboundMail, recipient: str, body: str, contact_id: int | None = None) -> None:
         incoming_subject = sanitize_header_value(message.subject)
-        subject = incoming_subject if incoming_subject.lower().startswith("re:") else f"Re: {incoming_subject or 'Sentero – Status'}"
+        if subject_activates_sentero(incoming_subject, self.config.activation_subject_prefix):
+            subject = incoming_subject if incoming_subject.lower().startswith("re:") else f"Re: {incoming_subject}"
+        else:
+            # Preserve human-readable context, but always leave the Sentero marker
+            # visible in Sentero-generated conversation threads.
+            suffix = strip_reply_prefixes(incoming_subject)
+            subject = f"Re: {self.config.activation_subject_prefix}"
+            if suffix and not subject_activates_sentero(suffix, self.config.activation_subject_prefix):
+                subject = f"{subject} {suffix}"
         headers = {
             "In-Reply-To": sanitize_message_id(message.message_id),
             "References": sanitize_references(message.references, message.message_id),
@@ -342,7 +417,37 @@ def config_from_notification_settings(mapping: DeviceMappingService) -> MailAssi
         stale_seconds=_int_from_value(data.get("stale_seconds"), 1800, minimum=120),
         hourly_limit=_int_from_value(data.get("hourly_limit"), 20, minimum=1),
         daily_limit=_int_from_value(data.get("daily_limit"), 50, minimum=1),
+        activation_subject_prefix=normalize_activation_prefix(
+            data.get("activation_subject_prefix") or "Sentero:"
+        ),
     )
+
+
+REPLY_SUBJECT_PREFIX_RE = re.compile(r"^\\s*(?:(?:re|aw|wg|fw|fwd)\\s*:\\s*)+", re.IGNORECASE)
+
+
+def normalize_activation_prefix(value: Any) -> str:
+    text = sanitize_header_value(value).strip()
+    if not text:
+        return "Sentero:"
+    # A colon makes the marker visually obvious and prevents accidental matches
+    # with ordinary subjects such as "Sentero Installation".
+    return text if text.endswith(":") else f"{text}:"
+
+
+def strip_reply_prefixes(subject: Any) -> str:
+    text = sanitize_header_value(subject)
+    previous = None
+    while text and text != previous:
+        previous = text
+        text = REPLY_SUBJECT_PREFIX_RE.sub("", text, count=1).strip()
+    return text
+
+
+def subject_activates_sentero(subject: Any, activation_prefix: Any) -> bool:
+    normalized_subject = strip_reply_prefixes(subject).casefold()
+    prefix = normalize_activation_prefix(activation_prefix).casefold()
+    return normalized_subject.startswith(prefix)
 
 
 def sanitize_question(value: str) -> str:
@@ -503,7 +608,15 @@ class SenteroMailAssistantSettings:
                 "email_queries_enabled": bool(data.get("email_queries_enabled")),
                 "email_permissions": _decode_permissions(data.get("email_permissions")),
             })
-        return {"enabled": config.enabled, "contacts": contacts}
+        return {
+            "enabled": config.enabled,
+            "contacts": contacts,
+            "activation_subject_prefix": config.activation_subject_prefix,
+            "usage_hint": (
+                f"Neue Anfrage: Betreff '{config.activation_subject_prefix}' und Frage im Nachrichtentext. "
+                "Rückfragen: einfach auf eine Sentero-Antwort antworten."
+            ),
+        }
 
     def update_contact(self, contact_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         permissions = [str(item) for item in payload.get("email_permissions") or [] if str(item) in {"STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT", "HISTORY", "TECHNICAL_HEALTH"}]

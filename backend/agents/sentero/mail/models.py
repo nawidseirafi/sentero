@@ -99,6 +99,7 @@ class MailAssistantConfig:
     stale_seconds: int = 1800
     hourly_limit: int = 20
     daily_limit: int = 50
+    activation_subject_prefix: str = "Sentero:"
 
 
 @dataclass(frozen=True)
