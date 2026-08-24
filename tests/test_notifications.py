@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.fakes import NoNetworkSensorSource
+
 import json
 import sqlite3
 import tempfile
@@ -25,9 +27,6 @@ from backend.services.setup_service import SenteroSetupService
 from backend.agents.sentero.mail.store import MailAssistantStore
 
 
-class DummyHomeAssistant:
-    def configured(self) -> bool:
-        return False
 
 
 class RecordingProvider:
@@ -81,6 +80,12 @@ class MemoryMapping:
 
     def close(self) -> None:
         self.con.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class FakeSmtp:
@@ -141,7 +146,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_email_message_id_is_generated_and_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping)
             with mapping.connect() as con:
                 con.execute(
@@ -185,7 +191,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_transparency_includes_mail_queries_and_cleanup_retains_them(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             MailAssistantStore(mapping)
             contact_id = insert_contact(mapping)
             with mapping.connect() as con:
@@ -217,7 +224,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_auto_submitted_mail_is_transparency_metadata_not_query(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             MailAssistantStore(mapping)
             with mapping.connect() as con:
                 con.execute(
@@ -269,7 +277,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_masked_email_channel_save_keeps_existing_passwords(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             service = NotificationService(mapping)
             service.save_channel(
                 "email",
@@ -303,7 +312,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_telegram_channel_can_be_saved_tested_and_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             service = NotificationService(mapping)
             service.save_channel("telegram", False, {"bot_token": "telegram-secret", "default_chat_id": "12345"})
 
@@ -324,7 +334,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_telegram_channel_can_be_enabled_with_bot_token_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             service = NotificationService(mapping)
             service.save_channel("telegram", False, {"bot_token": "telegram-secret"})
 
@@ -340,7 +351,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_contact_update_preserves_query_settings_when_not_in_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             setup = SenteroSetupService(mapping)
             setup.contact({"name": "Nawid", "email": "nawid@example.test", "preferred_channels": ["email"]})
             with mapping.connect() as con:
@@ -360,7 +372,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_trusted_contact_requires_email_and_keeps_email_channel(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             setup = SenteroSetupService(mapping)
 
             with self.assertRaises(ValueError):
@@ -375,7 +388,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_whatsapp_channel_can_be_saved_tested_and_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             service = NotificationService(mapping)
             service.save_channel(
                 "whatsapp",
@@ -406,7 +420,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_telegram_http_errors_include_provider_description(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             service = NotificationService(mapping)
             service.save_channel("telegram", False, {"bot_token": "telegram-secret", "default_chat_id": "Sentero_bot"})
 
@@ -419,7 +434,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_system_warnings_are_deduplicated_and_resolved(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             timestamp = now()
             with mapping.connect() as con:
                 con.execute(
@@ -474,7 +490,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_temperature_warning_is_red_and_not_learning_gated(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             timestamp = now()
             with mapping.connect() as con:
                 con.execute(
@@ -525,7 +542,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_humidity_warning_is_orange(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             timestamp = now()
             with mapping.connect() as con:
                 con.execute(
@@ -561,7 +579,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_same_sensor_warning_rechecked_after_restart_sends_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             insert_contact(mapping)
             provider = RecordingProvider()
             first_service = NotificationService(mapping)
@@ -583,7 +602,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_system_recovery_requires_stable_healthy_checks_before_new_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             insert_contact(mapping)
             provider = RecordingProvider()
             service = NotificationService(mapping)
@@ -608,7 +628,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_sensor_rename_keeps_same_incident_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             insert_contact(mapping)
             provider = RecordingProvider()
             service = NotificationService(mapping)
@@ -624,7 +645,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_parallel_system_checks_create_at_most_one_delivery(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             insert_contact(mapping)
             provider = RecordingProvider()
             sensor = sensor_warning_row(device_id="0xaaa", reachable=False)
@@ -644,7 +666,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_offline_outbox_is_deduplicated_for_active_incident(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             insert_contact(mapping)
             service = NotificationService(mapping, connectivity=OfflineConnectivity())
             sensor = sensor_warning_row(device_id="0xaaa", reachable=False)
@@ -659,7 +682,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_humidity_high_repeated_checks_keep_one_active_incident_and_one_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             insert_contact(mapping)
             provider = RecordingProvider()
             service = NotificationService(mapping)
@@ -701,7 +725,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_different_sensors_and_warning_types_are_distinct_incidents(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             insert_contact(mapping)
             provider = RecordingProvider()
             service = NotificationService(mapping)
@@ -723,20 +748,25 @@ class NotificationSystemWarningTests(unittest.TestCase):
             self.assertEqual(len(provider.sent), 4)
 
     def test_environmental_warning_ignores_battery_voltage_pressure_and_calibration_entities(self) -> None:
-        service = NotificationService(MemoryMapping())
+        mapping = MemoryMapping()
+        try:
+            service = NotificationService(mapping)
 
-        warnings = service._environmental_warnings([
-            {"domain": "sensor", "entity_id": "sensor.kitchen_temperature_sensor_battery", "friendly_name": "Kitchen Temperature Sensor Batterie", "device_class": "battery", "state": 100},
-            {"domain": "sensor", "entity_id": "sensor.kitchen_temperature_sensor_voltage", "friendly_name": "Kitchen Temperature Sensor Spannung", "device_class": "voltage", "state": 3000},
-            {"domain": "sensor", "entity_id": "sensor.kitchen_temperature_sensor_pressure", "friendly_name": "Kitchen Temperature Sensor Pressure", "device_class": "pressure", "state": 1000},
-            {"domain": "number", "entity_id": "number.guest_wc_presence_sensor_temperature_calibration", "friendly_name": "Guest WC Presence Sensor Temperature calibration", "state": -2},
-        ])
+            warnings = service._environmental_warnings([
+                {"domain": "sensor", "entity_id": "sensor.kitchen_temperature_sensor_battery", "friendly_name": "Kitchen Temperature Sensor Batterie", "device_class": "battery", "state": 100},
+                {"domain": "sensor", "entity_id": "sensor.kitchen_temperature_sensor_voltage", "friendly_name": "Kitchen Temperature Sensor Spannung", "device_class": "voltage", "state": 3000},
+                {"domain": "sensor", "entity_id": "sensor.kitchen_temperature_sensor_pressure", "friendly_name": "Kitchen Temperature Sensor Pressure", "device_class": "pressure", "state": 1000},
+                {"domain": "number", "entity_id": "number.guest_wc_presence_sensor_temperature_calibration", "friendly_name": "Guest WC Presence Sensor Temperature calibration", "state": -2},
+            ])
+        finally:
+            mapping.close()
 
         self.assertEqual(warnings, [])
 
     def test_system_warning_sends_once_to_each_contact(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             insert_contact(mapping)
             insert_contact(mapping)
             with mapping.connect() as con:
@@ -785,7 +815,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_behavior_notifications_require_active_consent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping)
             provider = RecordingProvider()
             service = NotificationService(mapping)
@@ -819,7 +850,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_behavior_warning_is_sent_once_until_resolved(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping)
             ConsentService(mapping).grant({"contact_id": contact_id})
             provider = RecordingProvider()
@@ -850,7 +882,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_behavior_orange_is_sent_once_and_red_escalates_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping)
             ConsentService(mapping).grant({"contact_id": contact_id})
             provider = RecordingProvider()
@@ -870,7 +903,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_behavior_red_to_orange_does_not_send_downgrade(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping)
             ConsentService(mapping).grant({"contact_id": contact_id})
             provider = RecordingProvider()
@@ -908,7 +942,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_daily_summary_is_sent_once_after_configured_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping)
             ConsentService(mapping).grant({"contact_id": contact_id})
             with mapping.connect() as con:
@@ -931,7 +966,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_daily_summary_disabled_does_not_send(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             insert_contact(mapping)
             provider = RecordingProvider()
             service = NotificationService(mapping)
@@ -944,7 +980,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_expired_consent_is_not_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping)
             ConsentService(mapping).grant({"contact_id": contact_id, "valid_until": "2020-01-01T00:00:00+00:00"})
 
@@ -958,7 +995,8 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
     def test_housing_provider_cannot_receive_behavior_notification(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping, actor_role="housing_provider")
             provider = RecordingProvider()
             service = NotificationService(mapping)

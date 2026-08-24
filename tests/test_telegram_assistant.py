@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.fakes import NoNetworkSensorSource
+
 import json
 import tempfile
 import unittest
@@ -13,9 +15,6 @@ from backend.services.notification_service import NotificationService
 from backend.services.service import SenteroService
 
 
-class DummyHomeAssistant:
-    def configured(self) -> bool:
-        return False
 
 
 class RecordingTelegramProvider:
@@ -37,7 +36,8 @@ class TelegramAssistantTests(unittest.TestCase):
 
     def test_authorized_telegram_contact_receives_answer(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping, queries_enabled=True)
             notification = NotificationService(mapping)
             provider = RecordingTelegramProvider()
@@ -65,7 +65,8 @@ class TelegramAssistantTests(unittest.TestCase):
 
     def test_start_invite_links_contact_to_chat_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping, chat_id="", queries_enabled=True)
             notification = NotificationService(mapping)
             provider = RecordingTelegramProvider()
@@ -90,7 +91,8 @@ class TelegramAssistantTests(unittest.TestCase):
 
     def test_start_invite_moves_chat_id_from_other_contact(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             first_id = insert_contact(mapping, chat_id="6516768203", invite_code="firstinvite", queries_enabled=True)
             second_id = insert_contact(mapping, name="Steve", email="steve@example.test", chat_id="", invite_code="secondinvite", queries_enabled=True)
             notification = NotificationService(mapping)
@@ -114,7 +116,8 @@ class TelegramAssistantTests(unittest.TestCase):
 
     def test_telegram_contact_needs_queries_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             insert_contact(mapping, queries_enabled=False)
             notification = NotificationService(mapping)
             provider = RecordingTelegramProvider()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.fakes import NoNetworkSensorSource
+
 import json
 import tempfile
 import unittest
@@ -15,12 +17,6 @@ from backend.services.export_service import ExportService
 from backend.services.service import SenteroService
 
 
-class DummyHomeAssistant:
-    def configured(self) -> bool:
-        return False
-
-    def get_states(self) -> list[dict[str, Any]]:
-        return []
 
 
 class FakeMapping:
@@ -28,7 +24,7 @@ class FakeMapping:
         return [
             {
                 "entity_id": "sensor.stromzaehler_energy",
-                "source": "homeassistant",
+                "source": "mqtt",
                 "friendly_name": "Stromzaehler Energie",
                 "device_class": "energy",
                 "state": "1234.5",
@@ -43,7 +39,8 @@ class FakeMapping:
 class ExportServiceTests(unittest.TestCase):
     def test_event_summary_export_is_aggregated_and_audited(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping, actor_role="relative")
             classes = ["personal_behavior", "health_adjacent", "emergency"]
             ConsentService(mapping).grant({"contact_id": contact_id, "purpose": "aal_partner_export", "data_classes": classes})
@@ -73,7 +70,8 @@ class ExportServiceTests(unittest.TestCase):
 
     def test_revoked_and_expired_tokens_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping, actor_role="relative")
             classes = ["personal_behavior", "health_adjacent", "emergency"]
             ConsentService(mapping).grant({"contact_id": contact_id, "purpose": "aal_partner_export", "data_classes": classes})
@@ -95,7 +93,8 @@ class ExportServiceTests(unittest.TestCase):
 
     def test_system_status_export_uses_technical_class_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping, actor_role="housing_provider")
             ConsentService(mapping).grant({"contact_id": contact_id, "purpose": "aal_partner_export", "recipient_type": "housing_provider", "data_classes": ["technical"]})
             service = ExportService(mapping, sentero=SenteroService(mapping), sensors=SenteroSensorService(FakeMapping()))

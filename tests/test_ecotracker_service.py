@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.fakes import NoNetworkSensorSource
+
 import json
 import tempfile
 import unittest
@@ -12,12 +14,6 @@ from backend.services.ecotracker_service import normalize_ecotracker_host
 from backend.services.sensor_manager import SensorManager, public_ecotracker_reading
 
 
-class DummyHomeAssistant:
-    def configured(self) -> bool:
-        return False
-
-    def get_states(self) -> list[dict[str, Any]]:
-        raise AssertionError("Home Assistant must not be used for EcoTracker")
 
 
 class FakeEcoTrackerResponse:
@@ -42,7 +38,8 @@ class EcoTrackerServiceTests(unittest.TestCase):
 
     def test_connect_registers_local_home_energy_role(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             manager = SensorManager(mapping)
 
             with patch("backend.services.ecotracker_service.requests.get", return_value=FakeEcoTrackerResponse()) as get:
@@ -69,7 +66,8 @@ class EcoTrackerServiceTests(unittest.TestCase):
 
     def test_status_includes_current_ecotracker_reading_when_configured(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             manager = SensorManager(mapping)
             with mapping.connect() as con:
                 con.execute(
@@ -86,7 +84,8 @@ class EcoTrackerServiceTests(unittest.TestCase):
 
     def test_existing_ecotracker_energy_role_is_migrated_to_power(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             timestamp = "2026-08-19T10:00:00+00:00"
             with mapping.connect() as con:
                 con.execute(
@@ -103,9 +102,10 @@ class EcoTrackerServiceTests(unittest.TestCase):
             self.assertEqual(roles[0]["entity_id"], "ecotracker.power")
             self.assertEqual(roles[0]["device_class"], "power")
 
-    def test_snapshot_contains_ecotracker_rows_without_home_assistant(self) -> None:
+    def test_snapshot_contains_ecotracker_rows_without_external_sensor_backend(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             SensorManager(mapping)
             with mapping.connect() as con:
                 con.execute(

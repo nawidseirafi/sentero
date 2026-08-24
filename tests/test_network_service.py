@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.fakes import NoNetworkSensorSource
+
 import os
 import tempfile
 import unittest
@@ -141,6 +143,7 @@ class NetworkServiceTests(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp(dir="/private/tmp"))
         db_path = tmp / "sentero.db"
         mapping = DeviceMappingService(database_path=db_path)
+        mapping.sensor_source = NoNetworkSensorSource()
         store = NetworkSecretStore(tmp / "network-secrets.json")
         ap = FakeAp()
         service = NetworkService(mapping, wifi=wifi or FakeWifi(), access_point=ap, cellular=cellular or FakeCellular(), connectivity=connectivity or FakeConnectivity(), secret_store=store)
@@ -161,6 +164,7 @@ class OfflineQueueTests(unittest.TestCase):
     def test_offline_notifications_are_persisted_and_sent_after_recovery(self) -> None:
         tmp = Path(tempfile.mkdtemp(dir="/private/tmp"))
         mapping = DeviceMappingService(database_path=tmp / "sentero.db")
+        mapping.sensor_source = NoNetworkSensorSource()
         provider = CapturingProvider()
         offline = FakeConnectivity(NetworkStatusCode.OFFLINE)
         service = NotificationService(mapping, connectivity=offline)

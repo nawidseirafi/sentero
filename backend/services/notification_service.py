@@ -488,7 +488,7 @@ class NotificationService:
         # arbitrary MQTT devices visible on the broker for customer notifications.
         sensor_rows = sensors if sensors is not None else self.mapping.roles(dev=True, include_state=True)
         sensor_rows = [row for row in sensor_rows if row.get("active", True) and row.get("enabled", True)]
-        environmental_rows = self._environmental_snapshot_rows(sensor_rows)
+        environmental_rows = environmental_sensors if environmental_sensors is not None else self._environmental_snapshot_rows(sensor_rows)
         active_warnings = self._system_warnings(sensor_rows, battery_threshold=battery_threshold, environmental_sensors=environmental_rows)
         logger.debug(
             "System warnings evaluated",

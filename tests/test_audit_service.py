@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.fakes import NoNetworkSensorSource
+
 import json
 import tempfile
 import unittest
@@ -12,15 +14,13 @@ from backend.services.export_service import ExportService
 from backend.services.service import SenteroService
 
 
-class DummyHomeAssistant:
-    def configured(self) -> bool:
-        return False
 
 
 class AuditServiceTests(unittest.TestCase):
     def test_transparency_includes_consent_export_and_no_token_secret(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping, "relative")
             classes = ["personal_behavior", "health_adjacent", "emergency"]
 
@@ -40,7 +40,8 @@ class AuditServiceTests(unittest.TestCase):
 
     def test_cleanup_removes_old_audit_rows_and_records_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             record_audit(mapping, event_type="consent_granted", category="consent", status="active", summary="Alt")
             with mapping.connect() as con:
                 con.execute("update aal_audit_log set created_at = '2020-01-01T00:00:00+00:00'")

@@ -332,7 +332,7 @@ def _illuminance_line(env: dict[str, Any]) -> str:
     room = str(env.get("illuminance_lux_room_label") or "").strip()
     room_text = f" im Raum {room}" if room and room != "unbekannter Raum" else ""
 
-    if source == "live":
+    if source in {"live", "sentero_configured_live"}:
         return (
             f"Der Sensor meldet aktuell{room_text}: "
             f"{description} ({lux} lx). {freshness}"
@@ -355,7 +355,7 @@ def _environment_line(env: dict[str, Any], key: str, label: str, unit: str) -> s
     freshness = _freshness_sentence(env.get(f"{key}_freshness"))
     room = str(env.get(f"{key}_room_label") or "").strip()
     room_text = f" im Raum {room}" if room and room != "unbekannter Raum" else ""
-    if source == "live":
+    if source in {"live", "sentero_configured_live"}:
         return f"Der Sensor meldet aktuell{room_text}: {label} {value} {unit}. {freshness}".strip()
     fallback = str(env.get(f"{key}_fallback_reason") or "")
     reason = "der aktuelle Sensorzustand nicht abgerufen werden konnte"

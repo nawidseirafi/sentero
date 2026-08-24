@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.fakes import NoNetworkSensorSource
+
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -9,17 +11,13 @@ from backend.behavior_agent import SenteroBehaviorAgent
 from backend.services.device_mapping_service import DeviceMappingService
 
 
-class DummyHomeAssistant:
-    base_url = "http://homeassistant.local:8123"
-
-    def get_states(self) -> list[dict]:
-        return []
 
 
 class SmartMeterBehaviorTests(unittest.TestCase):
     def test_smart_meter_snapshots_are_stored_as_utility_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db", ha=DummyHomeAssistant())
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
             agent = SenteroBehaviorAgent(mapping)
             timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
 

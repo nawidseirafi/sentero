@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.fakes import NoNetworkSensorSource
+
 import json
 import tempfile
 import unittest
@@ -51,6 +53,7 @@ class MailAssistantTest(unittest.TestCase):
         self.env_patch.start()
         self.tmp = tempfile.TemporaryDirectory()
         self.mapping = DeviceMappingService(database_path=Path(self.tmp.name) / "sentero.db")
+        self.mapping.sensor_source = NoNetworkSensorSource()
         self.sentero = SenteroService(self.mapping)
         self.notification = FakeNotification()
         self.config = MailAssistantConfig(
@@ -119,8 +122,9 @@ class MailAssistantTest(unittest.TestCase):
 
     def test_unknown_sender_gets_neutral_rejection(self) -> None:
         result = self.assistant.process_message(self._mail("Ist alles gut?", sender="unknown@example.test"))
-        self.assertEqual(result["status"], "rejected")
-        self.assertIn("nicht für Statusabfragen freigeschaltet", self.notification.sent[-1]["text"])
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["error"], "unknown_sender")
+        self.assertEqual(self.notification.sent, [])
 
     def test_plus_address_is_not_required_for_authorized_sender(self) -> None:
         result = self.assistant.process_message(self._mail("Ist alles gut?", recipient="status+wrong@example.test"))
@@ -131,7 +135,8 @@ class MailAssistantTest(unittest.TestCase):
             con.execute("update trusted_contacts set active = 0 where id = ?", (self.contact_id,))
             con.commit()
         result = self.assistant.process_message(self._mail("Ist alles gut?"))
-        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["error"], "unknown_sender")
 
     def test_permissions_block_room_intent(self) -> None:
         with self.mapping.connect() as con:
@@ -143,7 +148,7 @@ class MailAssistantTest(unittest.TestCase):
     def test_room_intent_uses_last_activity_not_location_claim(self) -> None:
         self.assistant.process_message(self._mail("Wo ist Mama?"))
         text = self.notification.sent[-1]["text"]
-        self.assertIn("Die letzte erkannte Aktivität war vor 3 Minuten im Wohnzimmer", text)
+        self.assertIn("Aktuell wurde Aktivität im Wohnzimmer erkannt", text)
         self.assertNotIn("Ihre Mutter ist", text)
 
     def test_where_was_question_uses_last_known_room_even_when_stale(self) -> None:
@@ -195,49 +200,38 @@ class MailAssistantTest(unittest.TestCase):
         self.assertNotIn("372 Minuten", text)
 
     def test_environment_intent(self) -> None:
+        self._register_environment_role()
         self.assistant.process_message(self._mail("Wie warm ist es?"))
         self.assertIn("22,4 °C", self.notification.sent[-1]["text"])
 
     def test_environment_intent_prefers_live_sensor_values(self) -> None:
         self._environment(minutes_ago=1, value="19.1")
-        self.mapping.snapshot = lambda: [  # type: ignore[method-assign]
+        live_roles = [
             {
-                "entity_id": "sensor.living_room_temperature",
+                "role": "living_room_presence",
+                "room": "living_room",
+                "entity_id": "binary_sensor.living_presence",
                 "friendly_name": "Wohnzimmer Temperatur",
-                "device_class": "temperature",
-                "state": "23.8",
-                "area_id": "living_room",
+                "temperature": 23.8,
+                "humidity": 46,
+                "illuminance": 120,
                 "last_updated": now(),
-            },
-            {
-                "entity_id": "sensor.living_room_humidity",
-                "friendly_name": "Wohnzimmer Luftfeuchtigkeit",
-                "device_class": "humidity",
-                "state": "46",
-                "area_id": "living_room",
-                "last_updated": now(),
-            },
-            {
-                "entity_id": "sensor.living_room_illuminance",
-                "friendly_name": "Wohnzimmer Helligkeit",
-                "device_class": "illuminance",
-                "state": "120",
-                "area_id": "living_room",
-                "last_updated": now(),
-            },
+            }
         ]
 
-        self.assistant.process_message(self._mail("Wie sind Temperatur, Feuchtigkeit und Helligkeit?", message_id="<live-env@example.test>"))
+        with patch.object(self.mapping, "roles", return_value=live_roles):
+            self.assistant.process_message(self._mail("Wie sind Temperatur, Feuchtigkeit und Helligkeit?", message_id="<live-env@example.test>"))
 
         text = self.notification.sent[-1]["text"]
         self.assertIn("Sensor meldet aktuell", text)
         self.assertIn("Temperatur 23,8 °C", text)
         self.assertIn("Luftfeuchtigkeit 46 %", text)
-        self.assertIn("Helligkeit 120 lx", text)
+        self.assertIn("Gedämpft (120 lx)", text)
         self.assertNotIn("19,1 °C", text)
         self.assertNotIn("aus der Historie verwendet", text)
 
     def test_environment_intent_falls_back_to_history_when_sensor_unreachable(self) -> None:
+        self._register_environment_role()
         self.mapping.snapshot = lambda: (_ for _ in ()).throw(RuntimeError("sensor_unreachable"))  # type: ignore[method-assign]
 
         self.assistant.process_message(self._mail("Wie warm ist es?", message_id="<history-env@example.test>"))
@@ -362,8 +356,9 @@ diese Frage konnte ich noch nicht sicher einordnen. Sie können mich zum Beispie
 
         result = self.assistant.process_message(self._mail(body, message_id="<quoted-reply@example.test>"))
 
-        self.assertEqual(result["intent"], MailIntent.UNKNOWN.value)
-        self.assertIn("nicht sicher einordnen", self.notification.sent[-1]["text"])
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["error"], "empty_question")
+        self.assertIn("keine Frage gefunden", self.notification.sent[-1]["text"])
 
     def test_reply_with_in_reply_to_is_matched_to_notification(self) -> None:
         with self.mapping.connect() as con:
@@ -444,7 +439,7 @@ diese Frage konnte ich noch nicht sicher einordnen. Sie können mich zum Beispie
         )
 
         sent = self.notification.sent[-1]
-        self.assertEqual(sent["title"], "Re: Sentero – Tagesstatus")
+        self.assertEqual(sent["title"], "Re: Sentero: Tagesstatus")
         self.assertEqual(sent["headers"]["In-Reply-To"], "")
         self.assertEqual(sent["headers"]["References"], "<root@example> <folded@example> <msg-1@example.test> <bad>")
 
@@ -602,10 +597,24 @@ diese Frage konnte ich noch nicht sicher einordnen. Sie können mich zum Beispie
             con.execute(
                 """insert into sentero_sensor_events
                    (event_time, role, room, entity_id, state, device_class, source, data_class, aggregation_level, created_at)
-                   values (?, 'living_room_temperature', 'living_room', 'sensor.temp', ?, 'temperature', 'test', 'environmental', 'raw', ?)""",
+                   values (?, 'living_room_presence', 'living_room', 'sensor.temp', ?, 'temperature', 'test', 'environmental', 'raw', ?)""",
                 (event_time, value, now()),
             )
             con.commit()
+
+    def _register_environment_role(self) -> None:
+        self.mapping.upsert_role(
+            {
+                "role": "living_room_presence",
+                "room": "living_room",
+                "entity_id": "binary_sensor.living_presence",
+                "friendly_name": "Wohnzimmer Präsenz",
+                "device_class": "presence",
+                "domain": "binary_sensor",
+                "source": "test",
+                "confidence": 100,
+            }
+        )
 
     def _meter(self, *, minutes_ago: int, role: str, state: str, device_class: str, entity_id: str | None = None) -> None:
         event_time = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
@@ -646,7 +655,7 @@ diese Frage konnte ich noch nicht sicher einordnen. Sie können mich zum Beispie
             message_id=message_id,
             sender_email=sender,
             recipient_addresses=[recipient],
-            subject="Sentero – Tagesstatus",
+            subject="Sentero: Tagesstatus",
             body=body,
             received_at=now(),
             in_reply_to=in_reply_to,

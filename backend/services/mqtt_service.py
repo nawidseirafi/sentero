@@ -5,6 +5,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -265,12 +266,16 @@ class MqttService:
                 self._live_messages[message.topic] = cached
                 self._persist_message(cached)
 
-    def _cache_connection(self) -> sqlite3.Connection:
+    @contextmanager
+    def _cache_connection(self):
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         con = sqlite3.connect(self.database_path, timeout=30)
-        con.execute("pragma busy_timeout = 30000")
-        con.execute("pragma journal_mode = WAL")
-        return con
+        try:
+            con.execute("pragma busy_timeout = 30000")
+            con.execute("pragma journal_mode = WAL")
+            yield con
+        finally:
+            con.close()
 
     def _ensure_persistent_cache_schema(self) -> None:
         try:

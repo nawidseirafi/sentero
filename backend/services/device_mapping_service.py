@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -83,13 +84,17 @@ class DeviceMappingService:
             extra={"component": "device_mapping", "sensor_source": self.source_mode, "database_path": str(self.database_path)},
         )
 
-    def connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def connect(self):
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         logger.debug("Database connection opening", extra={"component": "database", "database_path": str(self.database_path)})
         con = sqlite3.connect(self.database_path, timeout=DB_TIMEOUT_SECONDS)
-        con.row_factory = sqlite3.Row
-        configure_sqlite_connection(con)
-        return con
+        try:
+            con.row_factory = sqlite3.Row
+            configure_sqlite_connection(con)
+            yield con
+        finally:
+            con.close()
 
     def ensure_schema(self) -> None:
         with self.connect() as con:
