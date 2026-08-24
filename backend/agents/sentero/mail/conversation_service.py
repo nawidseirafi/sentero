@@ -27,6 +27,7 @@ Formuliere natuerlich, ruhig und knapp. Sage Unsicherheiten klar, ohne alarmisti
 Wenn nur eine letzte Aktivitaet bekannt ist, formuliere sie als letzte erkannte Aktivitaet, nicht als sicheren aktuellen Aufenthaltsort.
 Bei Zeitangaben gilt: Nutze bevorzugt relative_time (z. B. "vor 1 Minute") oder event_time_label/event_time_local. event_time ist ein technischer UTC-Zeitstempel und darf niemals direkt als lokale Uhrzeit ausgegeben werden.
 Wenn event_time_label vorhanden ist, ist dies die lokale Sentero-Uhrzeit.
+Bei Helligkeitswerten nutze illuminance_description bzw. illuminance_display, wenn vorhanden. Formuliere z. B. "Sehr hell (2910 lx)" statt nur "2910 lx". Erfinde keine eigene Kategorie.
 Antworte ohne Markdown und ohne JSON."""
 
 ROUTER_CONFIDENCE_FLOOR = 0.55

@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from typing import Any
 
 from backend.agents.sentero.mail.models import MailIntent, QueryResult
+from backend.services.environment_labels import illuminance_description
 
 
 class MailResponseService:
@@ -130,7 +131,7 @@ class MailResponseService:
         if env.get("humidity_percent") is not None:
             lines.append(_environment_line(env, "humidity_percent", "Luftfeuchtigkeit", "%"))
         if env.get("illuminance_lux") is not None:
-            lines.append(_environment_line(env, "illuminance_lux", "Helligkeit", "lx"))
+            lines.append(_illuminance_line(env))
         lines.extend(["", "Viele Grüße", "Sentero"])
         return "\n".join(line for line in lines if line)
 
@@ -320,6 +321,32 @@ def _sensor_label(item: dict[str, Any], include_battery: bool = False) -> str:
     if include_battery and isinstance(battery, (int, float)):
         text += f" {int(battery)} %"
     return text
+
+
+def _illuminance_line(env: dict[str, Any]) -> str:
+    value = env.get("illuminance_lux")
+    description = str(env.get("illuminance_description") or illuminance_description(value) or "Helligkeit")
+    lux = _decimal_label(value)
+    source = str(env.get("illuminance_lux_source") or "")
+    freshness = _freshness_sentence(env.get("illuminance_lux_freshness"))
+    room = str(env.get("illuminance_lux_room_label") or "").strip()
+    room_text = f" im Raum {room}" if room and room != "unbekannter Raum" else ""
+
+    if source == "live":
+        return (
+            f"Der Sensor meldet aktuell{room_text}: "
+            f"{description} ({lux} lx). {freshness}"
+        ).strip()
+
+    fallback = str(env.get("illuminance_lux_fallback_reason") or "")
+    reason = "der aktuelle Sensorzustand nicht abgerufen werden konnte"
+    if fallback == "sensor_not_answering":
+        reason = "der Sensor aktuell nicht antwortet"
+    return (
+        f"Der letzte bekannte Helligkeitswert aus der Historie{room_text}: "
+        f"{description} ({lux} lx). Hinweis: Dieser Wert wird aus der Historie "
+        f"verwendet, weil {reason}. {freshness}"
+    ).strip()
 
 
 def _environment_line(env: dict[str, Any], key: str, label: str, unit: str) -> str:

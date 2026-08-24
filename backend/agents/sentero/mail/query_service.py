@@ -9,6 +9,7 @@ from typing import Any
 from backend.agents.sentero.mail.models import INTENT_PERMISSIONS, AuthorizedContact, MailIntent, MailPermission, MailThreadContext, QueryResult
 from backend.services.device_mapping_service import DeviceMappingService, ROOM_LABELS
 from backend.services.service import SenteroService
+from backend.services.environment_labels import illuminance_description, illuminance_display
 
 ACTIVITY_CLASSES = {"presence", "motion", "occupancy"}
 ENV_CLASSES = {"temperature", "humidity", "illuminance", "illuminance_lux"}
@@ -508,6 +509,9 @@ class MailQueryService:
         result[f"{key}_room_label"] = reading.get("room_label")
         if reading.get("fallback_reason"):
             result[f"{key}_fallback_reason"] = reading.get("fallback_reason")
+        if key == "illuminance_lux":
+            result["illuminance_description"] = illuminance_description(reading.get("value"))
+            result["illuminance_display"] = illuminance_display(reading.get("value"))
 
     def _latest_meter_readings(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         latest: dict[str, dict[str, Any]] = {}
