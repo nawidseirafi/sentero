@@ -1111,7 +1111,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                             ) : (
                               <span className={batteryClass(sensor.battery_level)}>
                                 <Battery size={17} />
-                                Akku {sensor.battery_level ?? 'unbekannt'}{sensor.battery_level == null ? '' : '%'}
+                                {sensor.battery_level ?? 'unbekannt'}{sensor.battery_level == null ? '' : '%'}
                               </span>
                             )}
                           </div>
