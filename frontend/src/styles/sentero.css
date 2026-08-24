@@ -2406,6 +2406,36 @@ button:disabled {
   line-height: 1.2;
 }
 
+.sc-sensor-title-line {
+  align-items: center;
+  display: flex;
+  gap: 9px;
+  min-width: 0;
+}
+
+.sc-sensor-connection-dot {
+  border-radius: 50%;
+  box-shadow: 0 0 0 4px rgba(69, 163, 121, 0.10);
+  flex: 0 0 auto;
+  height: 9px;
+  width: 9px;
+}
+
+.sc-sensor-connection-dot.online {
+  background: #32c97b;
+  box-shadow: 0 0 0 4px rgba(50, 201, 123, 0.12);
+}
+
+.sc-sensor-connection-dot.offline {
+  background: #df5a5a;
+  box-shadow: 0 0 0 4px rgba(223, 90, 90, 0.12);
+}
+
+.sc-sensor-connection-dot.unknown {
+  background: #9aa9a1;
+  box-shadow: 0 0 0 4px rgba(154, 169, 161, 0.12);
+}
+
 .sc-sensor-settings-list small {
   color: var(--sc-muted);
 }
@@ -2538,6 +2568,39 @@ button:disabled {
   background: #f4faf7;
   border-color: #d5e9df;
   color: var(--sc-green);
+}
+
+.sc-sensor-health .light-level small {
+  color: currentColor;
+  font-size: 0.78em;
+  font-weight: 700;
+  opacity: 0.68;
+}
+
+.sc-sensor-health .light-level.dark,
+.sc-sensor-health .light-level.very-dim {
+  background: #f3f5f4;
+  border-color: #dce3df;
+  color: #53665d;
+}
+
+.sc-sensor-health .light-level.dim {
+  background: #f5f8ef;
+  border-color: #e0e9ce;
+  color: #64764d;
+}
+
+.sc-sensor-health .light-level.normal {
+  background: #f4faf7;
+  border-color: #d5e9df;
+  color: var(--sc-green);
+}
+
+.sc-sensor-health .light-level.bright,
+.sc-sensor-health .light-level.very-bright {
+  background: #fff9e9;
+  border-color: #f1e0ad;
+  color: #8b6c20;
 }
 
 .sc-sensor-health .battery.medium {

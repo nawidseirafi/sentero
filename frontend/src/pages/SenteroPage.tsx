@@ -1089,7 +1089,14 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                       <div key={sensor.role}>
                         <div className="sc-sensor-settings-main">
                           <div className="sc-sensor-settings-head">
-                            <strong>{sensor.label || sensor.role}</strong>
+                            <div className="sc-sensor-title-line">
+                              <span
+                                className={`sc-sensor-connection-dot ${sensorConnectionTone(sensor)}`}
+                                title={sensorConnectionLabel(sensor)}
+                                aria-label={sensorConnectionLabel(sensor)}
+                              />
+                              <strong>{sensor.label || sensor.role}</strong>
+                            </div>
                             <small>{sensorType(sensor)} · zuletzt {formatDateTime(sensor.last_changed || sensor.last_updated || sensor.updated_at)}</small>
                           </div>
                           <div className="sc-sensor-health">
@@ -1099,10 +1106,6 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                             {isSmartMeterSensor(sensor) && <span className="battery"><Plug size={17} /> {formatMeterValue(sensor)}</span>}
                             {isEcoTrackerSensor(sensor) && ecoTrackerMeterReadingLabel(ecoTrackerReading) && <span className="battery"><Plug size={17} /> {ecoTrackerMeterReadingLabel(ecoTrackerReading)}</span>}
                             <SensorEnvironment sensor={sensor} />
-                            <span className={sensor.reachable === false ? 'offline' : sensor.reachable == null ? 'unknown' : 'online'}>
-                              {sensor.reachable === false ? <WifiOff size={17} /> : <CheckCircle2 size={17} />}
-                              {sensor.reachable === false ? 'Nicht erreichbar' : sensor.reachable == null ? 'vorhanden' : 'Erreichbar'}
-                            </span>
                             {sensorPowerLabel(sensor) === 'USB-Strom' ? (
                               <span className="battery"><Plug size={17} /> USB-Strom</span>
                             ) : (
@@ -2221,15 +2224,44 @@ function MotionStatus({ sensor }: { sensor: SenteroSensorRole }) {
 
 function SensorEnvironment({ sensor }: { sensor: SenteroSensorRole }) {
   const temperature = formatMetric(sensor.temperature, '°C', 1);
-  const illuminance = formatMetric(sensor.illuminance, 'lx', 0);
+  const light = lightLevel(sensor.illuminance);
   const humidity = formatMetric(sensor.humidity, '%', 0);
   return (
     <>
       {temperature && <span className="battery"><Thermometer size={17} /> {temperature}</span>}
-      {illuminance && <span className="battery"><Lightbulb size={17} /> {illuminance}</span>}
+      {light && (
+        <span className={`battery light-level ${light.tone}`} title={`Helligkeit: ${light.lux} lx`}>
+          <Lightbulb size={17} />
+          {light.label} <small>· {light.lux} lx</small>
+        </span>
+      )}
       {humidity && <span className="battery"><Droplets size={17} /> {humidity}</span>}
     </>
   );
+}
+
+function lightLevel(value: unknown): { label: string; lux: number; tone: string } | null {
+  const lux = Number(value);
+  if (!Number.isFinite(lux)) return null;
+  const rounded = Math.max(0, Math.round(lux));
+  if (rounded <= 10) return { label: 'Dunkel', lux: rounded, tone: 'dark' };
+  if (rounded <= 50) return { label: 'Sehr gedämpft', lux: rounded, tone: 'very-dim' };
+  if (rounded <= 150) return { label: 'Gedämpft', lux: rounded, tone: 'dim' };
+  if (rounded <= 300) return { label: 'Normal hell', lux: rounded, tone: 'normal' };
+  if (rounded <= 700) return { label: 'Hell', lux: rounded, tone: 'bright' };
+  return { label: 'Sehr hell', lux: rounded, tone: 'very-bright' };
+}
+
+function sensorConnectionTone(sensor: SenteroSensorRole) {
+  if (sensor.reachable === false) return 'offline';
+  if (sensor.reachable == null) return 'unknown';
+  return 'online';
+}
+
+function sensorConnectionLabel(sensor: SenteroSensorRole) {
+  if (sensor.reachable === false) return 'Sensor nicht erreichbar';
+  if (sensor.reachable == null) return 'Verbindungsstatus unbekannt';
+  return 'Sensor verbunden';
 }
 
 function sensorType(sensor: SenteroSensorRole) {

@@ -114,7 +114,16 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     if (setupChannel !== 'email') return;
     const email = normalizeEmail(channelForms.email.smtp_user);
     lastDiscoveredEmail.current = '';
-    setMailVerification({ busy: false, ok: false, message: '' });
+    const savedEmailChannel = channels.find((item) => item.channel === 'email');
+    const savedEmail = normalizeEmail(String(savedEmailChannel?.config?.smtp_user || ''));
+    const usingSavedConfiguration = Boolean(
+      savedEmailChannel?.configured && savedEmail && savedEmail === email
+    );
+    setMailVerification({
+      busy: false,
+      ok: usingSavedConfiguration,
+      message: usingSavedConfiguration ? 'Gespeicherte Zugangsdaten vorhanden.' : '',
+    });
     if (!isValidEmail(email)) {
       setMailDiscovery({ status: 'idle', message: '' });
       return;
@@ -127,7 +136,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       void discoverEmailSettings(email);
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [setupChannel, channelForms.email.smtp_user]);
+  }, [setupChannel, channelForms.email.smtp_user, channels]);
 
   useEffect(() => {
     if (activeTab !== 'sensors') return;
@@ -723,6 +732,10 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
           smtp_login: String(byChannel.email?.smtp_login || current.email.smtp_login || byChannel.email?.smtp_user || ''),
           smtp_port: String(byChannel.email?.smtp_port || current.email.smtp_port),
           imap_port: String(byChannel.email?.imap_port || current.email.imap_port),
+          // The API returns secrets masked. A mask such as "••••••" is not a
+          // password and must never be sent back to IMAP/SMTP.
+          smtp_password: '',
+          imap_password: '',
         },
         telegram: { ...current.telegram, ...stringConfig(byChannel.telegram) },
         whatsapp: { ...current.whatsapp, ...stringConfig(byChannel.whatsapp) },
@@ -763,7 +776,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
   async function verifyEmailSettings(values?: { email?: string; password?: string }) {
     const email = normalizeEmail(values?.email || channelForms.email.smtp_user);
-    const password = values?.password ?? channelForms.email.smtp_password ?? channelForms.email.imap_password;
+    const enteredPassword = values?.password ?? channelForms.email.smtp_password ?? channelForms.email.imap_password;
+    const password = looksMaskedSecret(enteredPassword) ? '' : enteredPassword;
     const effectiveForm = {
       ...channelForms.email,
       smtp_user: email,
@@ -777,7 +791,12 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       setMailVerification({ busy: false, ok: false, message: 'Bitte geben Sie eine gültige E-Mail-Adresse ein.' });
       return;
     }
-    if (!password) {
+    const savedEmailChannel = channels.find((item) => item.channel === 'email');
+    const canUseSavedPassword = Boolean(
+      savedEmailChannel?.configured
+      && normalizeEmail(String(savedEmailChannel?.config?.smtp_user || '')) === email
+    );
+    if (!password && !canUseSavedPassword) {
       setMailVerification({ busy: false, ok: false, message: 'Bitte geben Sie das Passwort oder App-Passwort ein.' });
       return;
     }
@@ -812,10 +831,6 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
   async function testChannel(channel: 'email' | 'telegram' | 'whatsapp') {
     try {
-      if (channel === 'email' && !mailVerification.ok) {
-        setMailVerification({ busy: false, ok: false, message: 'Bitte prüfen Sie zuerst die Verbindung.' });
-        return;
-      }
       const config = channel === 'email' ? emailChannelConfig(channelForms.email) : channelForms[channel];
       await api.saveSenteroNotificationChannel(channel, { enabled: false, config });
       const result = await api.testSenteroNotificationChannel(channel);
@@ -1074,7 +1089,14 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                       <div key={sensor.role}>
                         <div className="sc-sensor-settings-main">
                           <div className="sc-sensor-settings-head">
-                            <strong>{sensor.label || sensor.role}</strong>
+                            <div className="sc-sensor-title-line">
+                              <span
+                                className={`sc-sensor-connection-dot ${sensorConnectionTone(sensor)}`}
+                                title={sensorConnectionLabel(sensor)}
+                                aria-label={sensorConnectionLabel(sensor)}
+                              />
+                              <strong>{sensor.label || sensor.role}</strong>
+                            </div>
                             <small>{sensorType(sensor)} · zuletzt {formatDateTime(sensor.last_changed || sensor.last_updated || sensor.updated_at)}</small>
                           </div>
                           <div className="sc-sensor-health">
@@ -1084,10 +1106,6 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                             {isSmartMeterSensor(sensor) && <span className="battery"><Plug size={17} /> {formatMeterValue(sensor)}</span>}
                             {isEcoTrackerSensor(sensor) && ecoTrackerMeterReadingLabel(ecoTrackerReading) && <span className="battery"><Plug size={17} /> {ecoTrackerMeterReadingLabel(ecoTrackerReading)}</span>}
                             <SensorEnvironment sensor={sensor} />
-                            <span className={sensor.reachable === false ? 'offline' : sensor.reachable == null ? 'unknown' : 'online'}>
-                              {sensor.reachable === false ? <WifiOff size={17} /> : <CheckCircle2 size={17} />}
-                              {sensor.reachable === false ? 'Nicht erreichbar' : sensor.reachable == null ? 'Verbunden' : 'Verbunden'}
-                            </span>
                             {sensorPowerLabel(sensor) === 'USB-Strom' ? (
                               <span className="battery"><Plug size={17} /> USB-Strom</span>
                             ) : (
@@ -1907,6 +1925,7 @@ function ChannelSetupModal({
                 onInput={(event) => onFormChange({ ...form, smtp_password: event.currentTarget.value, imap_password: event.currentTarget.value })}
                 onChange={(event) => onFormChange({ ...form, smtp_password: event.target.value, imap_password: event.target.value })}
                 autoComplete="current-password"
+                placeholder="Leer lassen, um das gespeicherte Passwort zu verwenden"
               />
             </label>
             {appPasswordHelpUrl && (
@@ -2205,15 +2224,44 @@ function MotionStatus({ sensor }: { sensor: SenteroSensorRole }) {
 
 function SensorEnvironment({ sensor }: { sensor: SenteroSensorRole }) {
   const temperature = formatMetric(sensor.temperature, '°C', 1);
-  const illuminance = formatMetric(sensor.illuminance, 'lx', 0);
+  const light = lightLevel(sensor.illuminance);
   const humidity = formatMetric(sensor.humidity, '%', 0);
   return (
     <>
       {temperature && <span className="battery"><Thermometer size={17} /> {temperature}</span>}
-      {illuminance && <span className="battery"><Lightbulb size={17} /> {illuminance}</span>}
+      {light && (
+        <span className={`battery light-level ${light.tone}`} title={`Helligkeit: ${light.lux} lx`}>
+          <Lightbulb size={17} />
+          {light.label} <small>· {light.lux} lx</small>
+        </span>
+      )}
       {humidity && <span className="battery"><Droplets size={17} /> {humidity}</span>}
     </>
   );
+}
+
+function lightLevel(value: unknown): { label: string; lux: number; tone: string } | null {
+  const lux = Number(value);
+  if (!Number.isFinite(lux)) return null;
+  const rounded = Math.max(0, Math.round(lux));
+  if (rounded <= 10) return { label: 'Dunkel', lux: rounded, tone: 'dark' };
+  if (rounded <= 50) return { label: 'Sehr gedämpft', lux: rounded, tone: 'very-dim' };
+  if (rounded <= 150) return { label: 'Gedämpft', lux: rounded, tone: 'dim' };
+  if (rounded <= 300) return { label: 'Normal hell', lux: rounded, tone: 'normal' };
+  if (rounded <= 700) return { label: 'Hell', lux: rounded, tone: 'bright' };
+  return { label: 'Sehr hell', lux: rounded, tone: 'very-bright' };
+}
+
+function sensorConnectionTone(sensor: SenteroSensorRole) {
+  if (sensor.reachable === false) return 'offline';
+  if (sensor.reachable == null) return 'unknown';
+  return 'online';
+}
+
+function sensorConnectionLabel(sensor: SenteroSensorRole) {
+  if (sensor.reachable === false) return 'Sensor nicht erreichbar';
+  if (sensor.reachable == null) return 'Verbindungsstatus unbekannt';
+  return 'Sensor verbunden';
 }
 
 function sensorType(sensor: SenteroSensorRole) {
@@ -2290,66 +2338,28 @@ function presenceMotionStatus(sensor: SenteroSensorRole) {
   if (sensor.fall_detected) {
     return { tone: 'alert', label: 'Sturz', icon: <WarningAmberIcon fontSize="small" /> };
   }
-
-  // ZG-204ZH reports motion_state as: large | small | static | none.
-  // Prefer the raw motion_state over the normalized motion field so the UI can
-  // reliably distinguish movement, still presence and absence.
-  const motionState = String(sensor.motion_state || sensor.motion || '')
-    .trim()
-    .toLowerCase()
-    .replace(/-/g, '_');
-
-  const movingStates = new Set([
-    'large',
-    'small',
-    'active',
-    'move',
-    'moving',
-    'movement',
-    'motion',
-    'detected',
-    'moving_target',
-  ]);
-  const stillStates = new Set([
-    'static',
-    'static_target',
-    'still',
-    'stationary',
-    'standstill',
-  ]);
-  const absentStates = new Set([
-    'none',
-    'clear',
-    'off',
-    'false',
-    '0',
-    'no_motion',
-  ]);
-
-  // Positive radar evidence wins over a contradictory presence=false bit.
-  // large/small = person is moving; static/still = person is present but quiet.
-  if (movingStates.has(motionState)) {
-    return { tone: 'motion', label: 'Bewegung', icon: <DirectionsRunIcon fontSize="small" /> };
-  }
-  if (stillStates.has(motionState)) {
-    return { tone: 'still', label: 'Still', icon: <AccessibilityNewIcon fontSize="small" /> };
-  }
-
-  // presence=true with motion_state=none means the person is still present,
-  // there is simply no current movement.
-  if (sensor.presence === true) {
-    return { tone: 'still', label: 'Still', icon: <AccessibilityNewIcon fontSize="small" /> };
-  }
-
-  // Only declare absence when there is no positive motion/static evidence and
-  // presence is explicitly false (or the motion state itself says none/clear).
-  if (sensor.presence === false || absentStates.has(motionState)) {
+  const motion = String(sensor.motion || '').toLowerCase();
+  if (sensor.presence === false) {
     return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
   }
-
-  const value = String(sensor.state || '').trim().toLowerCase();
-  if (['on', 'true', '1', 'active', 'occupied', 'detected', 'present'].includes(value)) {
-    return { tone: 'still', label: 'Still', icon: <PersonIcon fontSize="small" /> };
+  if (sensor.presence === true) {
+    if (['active', 'move', 'moving'].includes(motion)) {
+      return { tone: 'motion', label: 'Bewegung', icon: <DirectionsRunIcon fontSize="small" /> };
+    }
+    if (['still', 'static', 'stationary', 'none'].includes(motion)) {
+      return { tone: 'still', label: 'Still', icon: <AccessibilityNewIcon fontSize="small" /> };
+    }
+    return { tone: 'motion', label: 'Bewegung', icon: <PersonIcon fontSize="small" /> };
+  }
+  if (['none', 'clear', 'off', 'false', '0', 'no_motion'].includes(motion)) {
+    return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
+  }
+  if (['active', 'move', 'moving', 'motion', 'detected'].includes(motion)) {
+    return { tone: 'motion', label: 'Bewegung', icon: <DirectionsRunIcon fontSize="small" /> };
+  }
+  const value = String(sensor.state || '').toLowerCase();
+  if (['on', 'true', '1', 'active', 'occupied', 'detected'].includes(value)) {
+    return { tone: 'motion', label: 'Bewegung', icon: <PersonIcon fontSize="small" /> };
   }
   if (['off', 'false', '0', 'clear', 'none'].includes(value)) {
     return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
@@ -2551,21 +2561,31 @@ function hasEmailServerSettings(form: Record<string, string>) {
 
 function emailChannelConfig(form: Record<string, string>) {
   const email = normalizeEmail(form.smtp_user);
-  const password = form.smtp_password || form.imap_password || '';
+  const rawPassword = form.smtp_password || form.imap_password || '';
+  const password = looksMaskedSecret(rawPassword) ? '' : rawPassword;
   const smtpEncryption = normalizedEncryption(form.smtp_encryption, form.smtp_port, form.smtp_starttls, form.smtp_ssl);
-  return {
-    ...form,
+  const { smtp_password: _smtpPassword, imap_password: _imapPassword, ...publicForm } = form;
+  const config: Record<string, string> = {
+    ...publicForm,
     mail_from: form.mail_from || 'Sentero',
     smtp_user: email,
     smtp_login: form.smtp_login || email,
-    smtp_password: password,
     smtp_encryption: smtpEncryption,
     smtp_starttls: smtpEncryption === 'STARTTLS' ? 'true' : 'false',
     smtp_ssl: smtpEncryption === 'SSL' ? 'true' : 'false',
     imap_user: form.imap_user || email,
-    imap_password: form.imap_password || password,
     imap_encryption: normalizedEncryption(form.imap_encryption, form.imap_port),
   };
+  if (password) {
+    config.smtp_password = password;
+    config.imap_password = password;
+  }
+  return config;
+}
+
+function looksMaskedSecret(value: unknown) {
+  const text = String(value || '');
+  return text.includes('•') || text.startsWith('***');
 }
 
 function mailConfigFromForm(form: Record<string, string>): MailConfig {
@@ -2714,7 +2734,7 @@ function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp'): ChannelSe
   }
   return {
     title: 'E-Mail einrichten',
-    text: 'Sentero verwendet diese Mailbox, um Hinweise zu senden und Anfragen von Vertrauenspersonen zu beantworten. Für eine neue Anfrage muss der E-Mail-Betreff mit „Sentero:“ beginnen. Die Frage schreiben Sie in den Nachrichtentext.',
+    text: 'Sentero verwendet diese Mailbox, um Hinweise zu senden und Antworten von Vertrauenspersonen zu empfangen.',
     fields: [
       { key: 'smtp_host', label: 'SMTP-Server' },
       { key: 'smtp_port', label: 'SMTP-Port' },
