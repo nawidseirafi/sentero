@@ -243,7 +243,7 @@ class MailDiscoverPayload(BaseModel):
 
 class MailVerifyPayload(BaseModel):
     email: str
-    password: str
+    password: str = ""
     config: MailConfig
     imap_username: str | None = None
     smtp_username: str | None = None
@@ -273,15 +273,31 @@ async def discover_mail(payload: MailDiscoverPayload):
 
 @mail_router.post("/verify", tags=[TAG_SETUP])
 async def verify_mail(payload: MailVerifyPayload):
+    password = str(payload.password or "")
+    if not password or _looks_masked_secret(password):
+        stored = get_services().notification.stored_channel_config("email")
+        password = str(stored.get("smtp_password") or stored.get("imap_password") or "")
+
+    if not password:
+        return {
+            "ok": False,
+            "message": "Kein gespeichertes Passwort vorhanden. Bitte geben Sie das Passwort oder App-Passwort erneut ein.",
+        }
+
     ok, message = await asyncio.to_thread(
         verify_mail_credentials,
         payload.config,
         payload.email,
-        payload.password,
+        password,
         payload.imap_username,
         payload.smtp_username,
     )
     return {"ok": ok, "message": message or "Senden und Empfangen funktioniert."}
+
+
+def _looks_masked_secret(value: Any) -> bool:
+    text = str(value or "")
+    return "•" in text or text.startswith("***")
 
 
 @box_setup_router.get("/box-network/status", tags=[TAG_SETUP])

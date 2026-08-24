@@ -113,7 +113,7 @@ class TelegramNotificationProvider(NotificationProvider):
             raise ValueError("telegram_not_configured")
         response = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": f"{text}"},
+            json={"chat_id": chat_id, "text": f"{title}\n\n{text}"},
             timeout=10,
         )
         response.raise_for_status()
@@ -140,7 +140,7 @@ class WhatsAppNotificationProvider(NotificationProvider):
                 "messaging_product": "whatsapp",
                 "to": recipient,
                 "type": "text",
-                "text": {"preview_url": False, "body": f"{text}"},
+                "text": {"preview_url": False, "body": f"{title}\n\n{text}"},
             },
             timeout=10,
         )
@@ -293,6 +293,14 @@ class NotificationService:
             )
             con.commit()
         return self.channels()
+
+    def stored_channel_config(self, channel: str) -> dict[str, Any]:
+        """Return raw stored channel config for internal backend use only.
+
+        Public API output remains masked by _public_channel()/mask_config().
+        """
+        self._validate_channel(channel)
+        return dict(self._setting(channel).get("config") or {})
 
     def test(self, channel: str, dev: bool = False) -> dict[str, Any]:
         self._validate_channel(channel)

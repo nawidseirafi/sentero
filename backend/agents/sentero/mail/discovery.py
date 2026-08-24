@@ -105,6 +105,8 @@ def verify_mail_credentials(
     try:
         _verify_imap_login(config, imap_login, password)
         _verify_smtp_login(config, smtp_login, password)
+    except UnicodeEncodeError:
+        return False, "Das gespeicherte Passwort konnte nicht verwendet werden. Bitte geben Sie das Passwort oder App-Passwort erneut ein."
     except imaplib.IMAP4.error:
         return False, "Die Anmeldung am Posteingangsserver ist fehlgeschlagen. Bitte prüfen Sie E-Mail-Adresse und Passwort."
     except smtplib.SMTPAuthenticationError:
