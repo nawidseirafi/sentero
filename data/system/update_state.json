@@ -1,10 +1,10 @@
 {
   "product": "Sentero",
-  "current_version": "0.1.1",
+  "current_version": "0.1.0",
   "latest_version": "0.1.1",
   "status": "check_failed",
   "state": "check_failed",
-  "last_checked": "2026-07-05T12:04:59+00:00",
+  "last_checked": "2026-08-24T13:42:00+00:00",
   "release_notes": [
     "Sentero 0.1.1 deployment build."
   ],
@@ -12,15 +12,15 @@
   "message": "Update-Pruefung fehlgeschlagen.",
   "version": {
     "edition": "sentero",
-    "app_version": "0.1.1",
-    "version": "0.1.1",
-    "build": "2026.06.25",
-    "commit": "standalone",
+    "app_version": "0.1.0",
+    "version": "0.1.0",
+    "build": "appliance-v2",
+    "commit": "local",
     "channel": "stable",
-    "updated_at": "2026-06-25T00:00:00+00:00"
+    "updated_at": null
   },
   "channel": "stable",
-  "execution_mode": "zip",
+  "execution_mode": "appliance",
   "update_server_url": "https://seirafi.de/robotersteve/sentero/stable/latest.json",
   "latest": {
     "latest_version": "0.1.1",

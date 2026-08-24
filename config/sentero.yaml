@@ -68,7 +68,7 @@ zigbee:
 
 updates:
   channel: stable
-  mode: zip
+  mode: appliance
   base_url: https://seirafi.de/robotersteve/sentero
   manifest_path: update-manifest.json
   manifest_url: ""
@@ -77,7 +77,7 @@ llm:
   # rule_based keeps Sentero fully local and is the safe default.
   # Set provider to openai, gemini, claude or llama/ollama when wanted.
   # rule_based/openai/emini/claude/llama:
-  provider: gemini
+  provider: ollama
   timeout_seconds: 30
   openai:
     api_key: OPENAI_API_KEY
@@ -90,4 +90,7 @@ llm:
     model: claude-3-5-sonnet-latest
   llama:
     base_url: http://localhost:11434
+    model: qwen2.5:3b
+  ollama:
+    base_url: http://ollama:11434
     model: qwen2.5:3b

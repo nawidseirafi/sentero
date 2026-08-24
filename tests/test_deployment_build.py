@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deployment_build import deployment_manifest, file_sha256, latest_manifest
+from deployment_build_old import deployment_manifest, file_sha256, latest_manifest
 
 
 class DeploymentBuildTests(unittest.TestCase):

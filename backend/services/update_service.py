@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import tempfile
 import urllib.parse
 import urllib.request
@@ -172,13 +173,27 @@ class SenteroUpdateService:
         if not latest or not status.get("update_available"):
             return {**status, "message": "Kein Update verfuegbar."}
 
+        if self.execution_mode() == "appliance":
+            return self._install_appliance(status, latest, username=username, layer=layer)
+
         steps = [
             {"key": "prepare", "label": "Vorbereitung", "status": "pending"},
             {"key": "backup", "label": "Sicherung", "status": "pending"},
             {"key": "install", "label": "Installation", "status": "pending"},
             {"key": "done", "label": "Fertig", "status": "pending"},
         ]
-        state = {**status, "status": "running", "state": "running", "steps": steps, "install": {"status": "running", "layer": layer, "steps": steps, "started_at": utc_now()}}
+        state = {
+            **status,
+            "status": "running",
+            "state": "running",
+            "steps": steps,
+            "install": {
+                "status": "running",
+                "layer": layer,
+                "steps": steps,
+                "started_at": utc_now(),
+            },
+        }
         self._write_json(STATE_FILE, state)
         try:
             self._step(steps, "prepare", "running")
@@ -211,8 +226,18 @@ class SenteroUpdateService:
                 "update_available": False,
                 "message": "Update erfolgreich vorbereitet." if self.execution_mode() == "dry_run" else "Update erfolgreich installiert.",
                 "backup": backup,
-                "install": {"status": "success", "layer": layer, "target_version": latest.get("latest_version"), "steps": steps, "finished_at": utc_now()},
-                "rollback": {"status": "idle", "available": bool(backup), "previous_version": status.get("current_version")},
+                "install": {
+                    "status": "success",
+                    "layer": layer,
+                    "target_version": latest.get("latest_version"),
+                    "steps": steps,
+                    "finished_at": utc_now(),
+                },
+                "rollback": {
+                    "status": "idle",
+                    "available": bool(backup),
+                    "previous_version": status.get("current_version"),
+                },
             }
             self._write_json(STATE_FILE, final)
             return final
@@ -225,17 +250,120 @@ class SenteroUpdateService:
                 "steps": steps,
                 "last_error": str(exc),
                 "message": "Update fehlgeschlagen.",
-                "install": {"status": "failed", "layer": layer, "steps": steps, "finished_at": utc_now()},
+                "install": {
+                    "status": "failed",
+                    "layer": layer,
+                    "steps": steps,
+                    "finished_at": utc_now(),
+                },
             }
             self._write_json(STATE_FILE, failed)
             return failed
+
+    def _install_appliance(
+        self,
+        status: dict[str, Any],
+        latest: dict[str, Any],
+        *,
+        username: str,
+        layer: str,
+    ) -> dict[str, Any]:
+        appliance = latest.get("appliance") if isinstance(latest.get("appliance"), dict) else {}
+        if not appliance:
+            raise RuntimeError(
+                "Dieses Update enthaelt kein Appliance-Paket. "
+                "Der Update-Server muss fuer die Sentero Box ein 'appliance'-Objekt bereitstellen."
+            )
+
+        steps = [
+            {"key": "prepare", "label": "Vorbereitung", "status": "success"},
+            {"key": "backup", "label": "Sicherung", "status": "pending"},
+            {"key": "install", "label": "Installation", "status": "pending"},
+            {"key": "restart", "label": "Neustart", "status": "pending"},
+            {"key": "done", "label": "Fertig", "status": "pending"},
+        ]
+        state = {
+            **status,
+            "status": "running",
+            "state": "running",
+            "steps": steps,
+            "message": "Update wird auf der Sentero Box installiert. Sentero startet dabei automatisch neu.",
+            "install": {
+                "status": "running",
+                "layer": layer,
+                "target_version": latest.get("latest_version"),
+                "steps": steps,
+                "started_at": utc_now(),
+                "requested_by": username,
+                "mode": "appliance",
+            },
+        }
+        self._write_json(STATE_FILE, state)
+
+        try:
+            response = self._request_appliance_updater(
+                {
+                    "action": "install",
+                    "channel": str(latest.get("channel") or self.channel()),
+                    "target_version": str(latest.get("latest_version") or ""),
+                }
+            )
+            if not response.get("ok"):
+                raise RuntimeError(str(response.get("error") or "Appliance-Updater hat die Anfrage abgelehnt."))
+        except Exception as exc:
+            failed = {
+                **state,
+                "status": "failed",
+                "state": "failed",
+                "last_error": str(exc),
+                "message": "Update konnte nicht an den Box-Updater uebergeben werden.",
+                "install": {
+                    **state["install"],
+                    "status": "failed",
+                    "finished_at": utc_now(),
+                },
+            }
+            self._write_json(STATE_FILE, failed)
+            return failed
+
+        return {
+            **state,
+            "updater": response,
+            "accepted": True,
+        }
+
+    def _request_appliance_updater(self, payload: dict[str, Any]) -> dict[str, Any]:
+        socket_path = str(
+            os.getenv("SENTERO_UPDATER_SOCKET")
+            or self._update_config().get("updater_socket")
+            or "/run/sentero-updater/updater.sock"
+        )
+        request = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(10)
+        try:
+            client.connect(socket_path)
+            client.sendall(request)
+            chunks: list[bytes] = []
+            while True:
+                chunk = client.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                if b"\n" in chunk:
+                    break
+        finally:
+            client.close()
+        raw = b"".join(chunks).split(b"\n", 1)[0].decode("utf-8", errors="replace")
+        data = json.loads(raw or "{}")
+        return data if isinstance(data, dict) else {"ok": False, "error": "Ungueltige Updater-Antwort."}
 
     def channel(self) -> str:
         return self._valid_channel(str(self._update_config().get("channel") or os.getenv("SENTERO_UPDATE_CHANNEL") or DEFAULT_CHANNEL))
 
     def execution_mode(self) -> str:
         mode = str(self._update_config().get("mode") or os.getenv("SENTERO_UPDATE_MODE") or "dry_run").strip().lower()
-        return mode if mode in {"dry_run", "zip"} else "dry_run"
+        return mode if mode in {"dry_run", "zip", "appliance"} else "dry_run"
 
     def manifest_url(self) -> str:
         config = self._update_config()
@@ -278,6 +406,7 @@ class SenteroUpdateService:
         version = latest.get("latest_version") or latest.get("version")
         if not version:
             raise ValueError("Update manifest has no latest_version")
+        appliance = latest.get("appliance") if isinstance(latest.get("appliance"), dict) else {}
         return {
             "latest_version": str(version),
             "download_url": str(latest.get("download_url") or ""),
@@ -287,6 +416,7 @@ class SenteroUpdateService:
             "release_notes": latest.get("release_notes") or [],
             "channel": channel,
             "layers": latest.get("layers") or ["application"],
+            "appliance": appliance,
         }
 
     def _install_zip(self, latest: dict[str, Any]) -> None:
