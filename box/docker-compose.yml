@@ -1,0 +1,84 @@
+services:
+  sentero:
+    image: ${SENTERO_IMAGE:-sentero/app}:${SENTERO_VERSION:-dev}
+    container_name: sentero
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: ${SENTERO_TIMEZONE:-Europe/Berlin}
+    ports:
+      - "${SENTERO_HTTP_BIND:-0.0.0.0}:${SENTERO_HTTP_PORT:-8080}:8080"
+    volumes:
+      - ./data/sentero:/app/data
+      - ./config:/app/config:ro
+      - /run/sentero-updater:/run/sentero-updater:ro
+    depends_on:
+      mosquitto:
+        condition: service_started
+      ollama:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 25s
+      retries: 5
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: sentero-mosquitto
+    restart: unless-stopped
+    ports:
+      - "${MQTT_BIND_ADDRESS:-0.0.0.0}:${MQTT_PORT:-1883}:1883"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config:ro
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+
+  zigbee2mqtt:
+    image: koenkk/zigbee2mqtt:latest
+    container_name: sentero-zigbee2mqtt
+    restart: unless-stopped
+    environment:
+      TZ: ${SENTERO_TIMEZONE:-Europe/Berlin}
+    devices:
+      - "${ZIGBEE_ADAPTER_HOST}:${ZIGBEE_ADAPTER_CONTAINER:-/dev/ttyACM0}"
+    volumes:
+      - ./zigbee2mqtt/data:/app/data
+      - /run/udev:/run/udev:ro
+    depends_on:
+      mosquitto:
+        condition: service_started
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sentero-ollama
+    restart: unless-stopped
+    volumes:
+      - ./ollama:/root/.ollama
+
+  caddy:
+    image: caddy:2
+    container_name: sentero-caddy
+    restart: unless-stopped
+    profiles:
+      - aal-edge
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      sentero:
+        condition: service_started
+
+volumes:
+  caddy_data:
+  caddy_config:

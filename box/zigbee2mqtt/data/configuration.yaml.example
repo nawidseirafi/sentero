@@ -1,0 +1,15 @@
+homeassistant: false
+permit_join: false
+mqtt:
+  base_topic: ${ZIGBEE2MQTT_TOPIC_PREFIX}
+  server: mqtt://mosquitto:1883
+  user: ${SENTERO_MQTT_USERNAME}
+  password: ${SENTERO_MQTT_PASSWORD}
+serial:
+  port: ${ZIGBEE_ADAPTER_CONTAINER}
+  adapter: ${ZIGBEE_ADAPTER_TYPE}
+advanced:
+  network_key: GENERATE
+frontend:
+  enabled: true
+  port: 8080

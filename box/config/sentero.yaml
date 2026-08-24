@@ -1,0 +1,84 @@
+sentero:
+  enabled: true
+  behavior:
+    learning_days: 14
+    min_usable_days: 7
+  environment:
+    temperature_min_celsius: 16
+    temperature_max_celsius: 28
+    humidity_max_percent: 70
+
+notifications:
+  incident_recovery:
+    healthy_checks_required: 3
+
+app:
+  dev_mode: false
+
+box_setup:
+  mode: SENTERO_BOX_SETUP_MODE
+  hostname: sentero
+
+network:
+  failover:
+    enabled: true
+    failure_threshold: 3
+    recovery_threshold: 3
+    check_interval_seconds: 30
+    switch_cooldown_seconds: 120
+  mail_probe_host: sentero.de
+  mail_probe_port: 443
+
+logging:
+  level: INFO
+
+# Sensor data is read directly from MQTT.
+# Zigbee devices arrive through Zigbee2MQTT; ESP32/generic MQTT topics are
+# normalized by the same MQTT sensor pipeline.
+
+mqtt:
+  host: 192.168.178.159
+  port: 1883
+  username: SENTERO_MQTT_USERNAME
+  password: SENTERO_MQTT_PASSWORD
+  topic_prefix: zigbee2mqtt
+  snapshot_timeout: 0.5
+  bootstrap_events: ""
+
+esp32:
+  topic_prefix: sentero
+  discovery_port: 37020
+  discovery_wait_timeout: 6
+  discovery_store_interval: 15
+  provisioning_timeout: 10
+  mqtt_wait_timeout: 30
+  token: SENTERO_ESP32_DEVICE_TOKEN
+
+zigbee:
+  provider: auto
+
+updates:
+  channel: stable
+  mode: zip
+  base_url: https://seirafi.de/robotersteve/sentero
+  manifest_path: update-manifest.json
+  manifest_url: ""
+
+llm:
+  # rule_based keeps Sentero fully local and is the safe default.
+  # Set provider to openai, gemini, claude or llama/ollama when wanted.
+  # rule_based/openai/emini/claude/llama:
+  provider: gemini
+  timeout_seconds: 30
+  openai:
+    api_key: OPENAI_API_KEY
+    model: gpt-4.1-mini
+  gemini:
+    api_key: GEMINI_API_KEY
+    model: gemini-2.5-flash
+  claude:
+    api_key: CLAUDE_API_KEY
+    model: claude-3-5-sonnet-latest
+  llama:
+    base_url: http://localhost:11434
+    model: qwen2.5:3b

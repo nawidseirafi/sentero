@@ -55,7 +55,7 @@ Oeffnen: `http://localhost:5173`.
 
 ## Docker
 
-Das Repository enthaelt Dockerfiles sowie Mosquitto- und Caddy-Konfiguration. Ein vollstaendiger Kunden-Appliance-Stack braucht zusaetzlich eine Deployment-Schicht mit Compose/systemd-Dateien, persistenten Volumes und Host-Updater-Anbindung. Wenn der Deployment-Baum `box/` vorhanden ist, gelten dessen Installationsanweisungen. In diesem Repository-Stand wird das Applikations-Image direkt gebaut:
+Das Repository enthaelt Dockerfiles sowie eine `box/`-Deployment-Schicht mit Compose/systemd-Dateien, persistenten Volumes und Host-Updater-Anbindung. Fuer reine App-Tests kann das Applikations-Image direkt gebaut werden:
 
 ```bash
 docker build -f docker/Dockerfile.appliance -t sentero/app:dev .
@@ -79,7 +79,7 @@ python3 deployment_build.py \
 
 `deployment_build.py` ersetzt den alten dateibasierten Update-ZIP-Build fuer Appliance v2. Das Skript erwartet `docker/Dockerfile.appliance`, baut das Frontend im Docker-Multi-Stage-Build, schreibt `version.json` vor dem Docker-Build auf die angegebene Version und erzeugt ein Appliance-Bundle mit `release.json` plus `sentero-image.tar`.
 
-Wenn ein `box/`-Deployment-Baum existiert, bereitet der Build auch das initiale Kunden-Deployment vor. Wenn `box/` fehlt, wird dieser Teil uebersprungen.
+Der Build bereitet zusaetzlich das initiale Kunden-Deployment aus `box/` vor.
 
 Ausgaben:
 

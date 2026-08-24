@@ -35,10 +35,6 @@ Im `appliance`-Modus bleibt die bestehende Update-GUI erhalten, aber:
 
 ## Installation
 
-Hinweis: Dieses Repository enthaelt aktuell die Anwendung, Dockerfiles und Build-Logik. Ein vollstaendiges Kunden-Deployment braucht zusaetzlich ein `box/`-Verzeichnis mit Compose-Dateien, systemd-Units, Installationsskripten, Volumes und Host-Updater. Wenn dieses Verzeichnis nicht vorhanden ist, kann `deployment_build.py` nur das Appliance-Update-Bundle erzeugen und ueberspringt den initialen Box-Installationsbaum.
-
-Wenn `box/` vorhanden ist:
-
 ```bash
 cd box
 cp .env.example .env
@@ -47,6 +43,13 @@ sudo ./scripts/install-docker-debian.sh
 ls -l /dev/serial/by-id/
 # ZIGBEE_ADAPTER_HOST und MQTT_PASSWORD in .env setzen
 ./scripts/first-install.sh
+```
+
+Optional koennen die systemd-Dienste installiert werden:
+
+```bash
+sudo ./scripts/install-systemd-services.sh
+sudo systemctl start sentero-box.service
 ```
 
 ## Sonoff
