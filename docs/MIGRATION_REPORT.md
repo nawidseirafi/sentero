@@ -20,12 +20,12 @@
 - `sentero/config/sentero.yaml`
 - `sentero/docker/Dockerfile`
 - `sentero/docker/mosquitto.conf`
-- `sentero/docker-compose.yml`
 - `sentero/requirements.txt`
 - `sentero/.env.example`
 - `sentero/deployment_build.py`
 - `sentero/README.md`
-- `sentero/docs/SENSOR_ARCHITECTURE.md`
+- `sentero/docs/*`
+- `sentero/etc/esp32/*`
 
 ## Removed Dependencies
 
@@ -45,17 +45,17 @@
 
 - Added `SENTERO_SENSOR_SOURCE=homeassistant|mqtt|mixed`.
 - Added Home Assistant adapter for development.
-- Added Zigbee2MQTT/MQTT-oriented production adapter scaffold.
+- Added Zigbee2MQTT/MQTT-oriented production adapter with persistent MQTT listener/cache.
 - Added mixed adapter for transitional deployments.
-- Docker Compose now includes Mosquitto and optional Zigbee2MQTT profile.
+- Dockerfiles and Mosquitto/Caddy config exist in this repo; the full Compose/systemd box deployment layer is external or supplied via an optional `box/` tree.
 
 ## Open TODOs
 
-- Implement persistent MQTT subscription/event ingestion instead of the current bootstrap scaffold in `backend/sensor_sources/zigbee2mqtt.py`.
 - Add production authentication/TLS configuration for Mosquitto.
 - Add tests for standalone auth, setup, behavior assessment and sensor-source selection.
 - Replace the rule-based local LLM fallback with configurable provider clients if AI assessment is required in production.
 - Add signed manifests before using ZIP updates for unattended production deployments.
+- Add/version the full `box/` deployment tree if initial customer appliance packages should be built from this repository.
 
 ## Remaining RoboterSteve Couplings
 
@@ -66,7 +66,4 @@
 
 ## Verification
 
-- `PYTHONPYCACHEPREFIX=/tmp/sentero-pycache python3 -m compileall sentero/backend` passed.
-- `PYTHONPATH=/Users/nawid/Projects/roboterSteve/sentero /Users/nawid/Projects/roboterSteve/venv/bin/python -c "import backend.main"` passed.
-- `SenteroUpdateService().check_for_updates()` passed against the local standalone manifest.
-- `cd sentero/frontend && npm install && npm run build` passed.
+- `.venv/bin/python -W default::ResourceWarning -m unittest discover -s tests -v` passed with 201 tests and no unclosed SQLite ResourceWarnings.

@@ -93,8 +93,8 @@ Ziel fuer Sentero V1:
 - Der Standardtransport ist `zigbee`.
 - Zigbee-Pairing wird nur temporaer waehrend eines aktiven Onboarding- oder Admin-Flows geoeffnet und bei Erfolg, Timeout oder Abbruch wieder geschlossen.
 - Default-Timeout fuer die Suche: 120 Sekunden, konfigurierbar.
-- Mehrere Home-Assistant-Entities eines physischen Geraets werden als ein Sentero-Sensor gespeichert.
-- Sentero speichert eine eigene Raumzuordnung und ist nicht darauf angewiesen, die Home-Assistant-Area zu veraendern.
+- Mehrere MQTT-/Zigbee2MQTT-Entities eines physischen Geraets werden als ein Sentero-Sensor gespeichert.
+- Sentero speichert eine eigene Raumzuordnung und ist nicht darauf angewiesen, externe Area-/Raum-Metadaten zu veraendern.
 - ESP32/WLAN bleibt als `wifi_esphome` vorbereitet, ist aber im normalen V1-Wizard standardmaessig ausgeblendet.
 - Der Praesenzsensor-Transport kann fuer Installation/Entwicklung per `.env` umgestellt werden: `SENTERO_PRESENCE_SENSOR_TRANSPORT=zigbee` oder `SENTERO_PRESENCE_SENSOR_TRANSPORT=wifi_esphome`.
 

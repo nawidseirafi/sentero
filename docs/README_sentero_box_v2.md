@@ -35,6 +35,10 @@ Im `appliance`-Modus bleibt die bestehende Update-GUI erhalten, aber:
 
 ## Installation
 
+Hinweis: Dieses Repository enthaelt aktuell die Anwendung, Dockerfiles und Build-Logik. Ein vollstaendiges Kunden-Deployment braucht zusaetzlich ein `box/`-Verzeichnis mit Compose-Dateien, systemd-Units, Installationsskripten, Volumes und Host-Updater. Wenn dieses Verzeichnis nicht vorhanden ist, kann `deployment_build.py` nur das Appliance-Update-Bundle erzeugen und ueberspringt den initialen Box-Installationsbaum.
+
+Wenn `box/` vorhanden ist:
+
 ```bash
 cd box
 cp .env.example .env
@@ -102,8 +106,10 @@ sentero-image.tar
 Erzeugen:
 
 ```bash
-cd box
-./scripts/build-release-bundle.sh 0.2.0
+python3 deployment_build.py \
+  --version 0.2.0 \
+  --base-url https://seirafi.de/robotersteve/sentero \
+  --release-note "Sentero Box Update 0.2.0"
 ```
 
 Danach `sentero-box-0.2.0.zip` und das passende `latest.json` auf den bestehenden

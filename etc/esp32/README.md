@@ -33,7 +33,7 @@ Die `device_id` ist eine UUID, die beim ersten Start erzeugt und im NVS als `dev
 Beispiele:
 
 ```bash
-cd esp32/C1001
+cd etc/esp32/C1001
 esphome compile c1001-mmwave.yaml
 
 cd ../MR60BDA2

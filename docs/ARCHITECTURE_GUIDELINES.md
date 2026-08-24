@@ -78,13 +78,14 @@ Admin-/Support-Diagnose darf diese Details anzeigen.
 
 ## Sensoren
 
-Sensor-Onboarding muss ueber `SensorManager` bzw. die bestehende Geraeteabstraktion laufen. Neue Flows duerfen keine zweite Zigbee-, MQTT- oder Home-Assistant-Infrastruktur neben den vorhandenen Services aufbauen.
+Sensor-Onboarding muss ueber `SensorManager` bzw. die bestehende Geraeteabstraktion laufen. Neue Flows duerfen keine zweite Zigbee-, MQTT-, ESP32- oder Home-Assistant-Infrastruktur neben den vorhandenen Services aufbauen.
 
 Erlaubt:
 
 - Transport als persistente Metadaten speichern (`zigbee`, `wifi_esphome`).
 - Zigbee-Pairing fuer aktive Onboarding-/Admin-Flows temporaer oeffnen.
 - Mehrere Entities eines physischen Geraets zu einer Sentero-Zuordnung zusammenfassen.
+- Den persistenten MQTT-Cache/Listener als Quelle fuer zuletzt bekannte Zustaende verwenden.
 - ESP32/WLAN-Code kompatibel halten und per Feature-Flag fuer spaetere Varianten vorbereiten.
 
 Nicht erlaubt:
@@ -93,3 +94,4 @@ Nicht erlaubt:
 - Pairing dauerhaft offen lassen.
 - Normale Nutzer zwischen Funktechniken waehlen lassen, solange V1 nur Zigbee anbietet.
 - Praesenzsensoren im V1-Wizard ueber QR-Code, Setup-Hotspot oder Captive Portal einrichten.
+- Beliebige im Broker sichtbare MQTT-Geraete fuer Benachrichtigungen verwenden, bevor sie in Sentero registriert wurden.

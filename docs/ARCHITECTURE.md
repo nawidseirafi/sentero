@@ -23,14 +23,14 @@ Sentero Wizard
       ↓
 SensorManager / Sensor-Onboarding
       ↓
-Home Assistant bzw. bestehende Sensorquellen
+Direkte Sentero-Sensorquellen
       ↓
-Zigbee2MQTT / ZHA
+Mosquitto / Zigbee2MQTT / ESP32-MQTT / EcoTracker
       ↓
 Sensor
 ```
 
-Home Assistant bleibt, wo vorhanden, die zentrale Geraeteabstraktion. Sentero-Fachlogik darf nicht direkt von Transportdetails abhaengen. Persistierte Sensorzuordnungen speichern den Transport, z.B. `zigbee` oder `wifi_esphome`, aber Auswertung und Dashboard konsumieren normalisierte Zustaende wie `room.presence = true` oder `door.open = false`.
+Produktion nutzt direkte MQTT-Sensorquellen ohne Home Assistant. Home Assistant bleibt als Development-/Migrationsadapter verfuegbar, ist aber nicht die produktive Geraeteabstraktion. Sentero-Fachlogik darf nicht direkt von Transportdetails abhaengen. Persistierte Sensorzuordnungen speichern den Transport, z.B. `zigbee`, `mqtt` oder `wifi_esphome`, aber Auswertung und Dashboard konsumieren normalisierte Zustaende wie `presence = true`, `door.open = false` oder `power_usage = 340`.
 
 ESP32/WLAN-Sensoren bleiben technisch vorbereitet und kompatibel (`wifi_esphome`), werden im V1-Wizard aber standardmaessig nicht angeboten. Die Transportwahl darf erst ueber ein explizites Feature-Flag sichtbar werden.
 
@@ -99,6 +99,6 @@ Autorisierung erfolgt pro Vertrauensperson ueber:
 - `email_queries_enabled`
 - kontaktbezogene Leseberechtigungen: `STATUS`, `ACTIVITY`, `ROOM`, `ENVIRONMENT`, `NIGHT`, `HISTORY`, `TECHNICAL_HEALTH`
 
-Unbekannte oder nicht freigeschaltete Absender erhalten nur eine neutrale Antwort ohne private Informationen. `sentero_mail_queries` persistiert Message-ID, Kontakt, Intent, Hash der Frage, Antwortstatus und Fehlercodes; vollstaendige Mailinhalte werden nicht dauerhaft gespeichert.
+Unbekannte, deaktivierte oder nicht freigeschaltete Absender werden still ignoriert. Das vermeidet Backscatter, Mail-Loops und Antworten an Spam-Absender. Aktivierte Konversationen brauchen den konfigurierten Betreff-Marker, standardmaessig `Sentero:`, oder einen gueltigen Reply-Kontext auf eine von Sentero erzeugte Nachricht. `sentero_mail_queries` persistiert Message-ID, Kontakt, Intent, Hash der Frage, Antwortstatus und Fehlercodes; vollstaendige Mailinhalte werden nicht dauerhaft gespeichert.
 
 LLMs duerfen fuer diese Funktion nur erlaubte Intents klassifizieren oder strukturierte Fakten sprachlich formulieren. Sie duerfen keine SQL-Abfragen erzeugen, Daten frei durchsuchen, Entity-IDs auswaehlen, Fakten erfinden oder Aktionen ausloesen. Bei Unsicherheit wird `UNKNOWN` verwendet.

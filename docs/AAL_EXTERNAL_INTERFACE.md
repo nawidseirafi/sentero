@@ -10,7 +10,7 @@ Fuer Smart-Living-AAL wird nur eine schmale Partnerschnittstelle nach aussen fre
 
 Diese Endpunkte akzeptieren ausschliesslich Export-Bearer-Tokens. Alle anderen Sentero-Pfade bleiben nur im lokalen Netz oder ueber einen privaten Admin-Zugang erreichbar.
 
-Docker-Betrieb auf Debian Mini-PC: `docs/MINI_PC_DOCKER_DEPLOYMENT.md`.
+Docker-Betrieb auf Debian Mini-PC: `README.md`, Abschnitt `Debian Mini-PC Deployment`.
 Schnittstellenvertrag fuer Partner: `docs/AAL_EXCHANGE_PROFILE_V1.md`.
 
 Lokales Swagger fuer Administratoren: `http://<MINI-PC-LAN-IP>:8080/docs`. Dieses Swagger darf nicht extern veroeffentlicht werden.
