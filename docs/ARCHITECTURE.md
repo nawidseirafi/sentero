@@ -30,9 +30,9 @@ Mosquitto / Zigbee2MQTT / ESP32-MQTT / EcoTracker
 Sensor
 ```
 
-Produktion nutzt direkte MQTT-Sensorquellen ohne Home Assistant. Home Assistant bleibt als Development-/Migrationsadapter verfuegbar, ist aber nicht die produktive Geraeteabstraktion. Sentero-Fachlogik darf nicht direkt von Transportdetails abhaengen. Persistierte Sensorzuordnungen speichern den Transport, z.B. `zigbee`, `mqtt` oder `wifi_esphome`, aber Auswertung und Dashboard konsumieren normalisierte Zustaende wie `presence = true`, `door.open = false` oder `power_usage = 340`.
+Sentero nutzt eine einheitliche MQTT-Sensorpipeline. Zigbee-Geraete gelangen ueber Zigbee2MQTT zum Broker; ESP32- und andere MQTT-Geraete verwenden denselben Broker. Home Assistant sowie der fruehere `wifi_esphome`-Sonderweg sind entfernt.
 
-ESP32/WLAN-Sensoren bleiben technisch vorbereitet und kompatibel (`wifi_esphome`), werden im V1-Wizard aber standardmaessig nicht angeboten. Die Transportwahl darf erst ueber ein explizites Feature-Flag sichtbar werden.
+Sentero-Fachlogik darf nicht direkt von Transportdetails abhaengen. Persistierte Sensorzuordnungen speichern technische Herkunft nur als Metadaten; Auswertung und Dashboard konsumieren normalisierte Zustaende wie `presence = true`, `door.open = false` oder `power_usage = 340`.
 
 ## Netzwerk
 
@@ -91,7 +91,7 @@ SMTP
 
 Der Dienst startet, sobald der E-Mail-Kanal im Sentero-Wizard eingerichtet und erfolgreich getestet wurde. Versand- und Antwortdaten werden ueber die normale E-Mail-Konfiguration gepflegt. Das konfigurierte Kundenpostfach, z.B. `test@kunde.de`, ist Versandadresse und IMAP-Inbox zugleich. Angehoerige antworten auf Sentero-Mails oder schreiben direkt an diese normale Adresse; sie bekommen keine technische Sonderadresse. Secrets werden in API-Antworten und Logs maskiert.
 
-Der Assistant ist strikt read-only. E-Mails duerfen keine Home-Assistant-Aktionen, Sensor-/Kontakt-/Benutzer-/Konfigurationsaenderungen, Shell-Aktionen oder Sicherheitsfunktionen ausloesen. Der QueryService liest nur bestehende Sentero-Daten wie Behavior Assessments, Sensorereignisse und Sensorstatus.
+Der Assistant ist strikt read-only. E-Mails duerfen keine Sensor-/Kontakt-/Benutzer-/Konfigurationsaenderungen, Shell-Aktionen oder Sicherheitsfunktionen ausloesen. Der QueryService liest nur bestehende Sentero-Daten wie Behavior Assessments, Sensorereignisse und Sensorstatus.
 
 Autorisierung erfolgt pro Vertrauensperson ueber:
 

@@ -1,5 +1,7 @@
 # Sentero Migration Report
 
+> Historisches Migrationsdokument. Angaben zur damaligen Home-Assistant-/Mixed-Source-Architektur beschreiben den Zwischenstand der Extraktion und nicht den aktuellen Laufzeitstand.
+
 ## Copied Files
 
 - `agent-api/backend/agents/sentero/*` -> `sentero/backend/`
@@ -12,7 +14,7 @@
 - `sentero/backend/main.py`
 - `sentero/backend/paths.py`
 - `sentero/backend/config.py`
-- `sentero/backend/services/homeassistant_service.py`
+- `sentero/backend/services/homeassistant_service.py` (historisch; inzwischen entfernt)
 - `sentero/backend/services/messaging.py`
 - `sentero/backend/services/llm/factory.py`
 - `sentero/backend/sensor_sources/*`
@@ -43,11 +45,14 @@
 
 ## Sensor Architecture
 
-- Added `SENTERO_SENSOR_SOURCE=homeassistant|mqtt|mixed`.
-- Added Home Assistant adapter for development.
-- Added Zigbee2MQTT/MQTT-oriented production adapter with persistent MQTT listener/cache.
-- Added mixed adapter for transitional deployments.
-- Dockerfiles and Mosquitto/Caddy config exist in this repo; the full Compose/systemd box deployment layer is external or supplied via an optional `box/` tree.
+Historischer Zwischenstand:
+- Bei der ersten Extraktion wurden `homeassistant|mqtt|mixed` sowie ein Home-Assistant-Adapter eingefuehrt.
+
+Aktueller Stand:
+- Home Assistant und Mixed-Source-Auswahl sind entfernt.
+- Zigbee laeuft ueber Zigbee2MQTT; ESP32/generische Sensoren laufen direkt ueber denselben MQTT-Broker.
+- Der persistente MQTT-Listener/-Cache bleibt Bestandteil der Sensorpipeline.
+- Die Box-v2-Deployment-Schicht verwendet Docker Compose plus hostseitigen Updater.
 
 ## Open TODOs
 
@@ -61,9 +66,9 @@
 
 - None in runtime imports of the standalone Sentero backend.
 - The standalone frontend has its own local API client and no longer imports RoboterSteve shared code.
-- Development mode may still use Home Assistant by design; this is not required for production.
+- Development und Produktion verwenden die gleiche MQTT-/Zigbee2MQTT-Sensorarchitektur; Home Assistant ist nicht mehr Bestandteil der Laufzeit.
 - Historical Sentero references remain in RoboterSteve documentation/update tooling and in unused shared frontend API type/method definitions. They are not part of the active Sentero runtime after extraction, but should be cleaned in a follow-up documentation/build-tools pass if RoboterSteve must contain zero textual Sentero references.
 
 ## Verification
 
-- `.venv/bin/python -W default::ResourceWarning -m unittest discover -s tests -v` passed with 201 tests and no unclosed SQLite ResourceWarnings.
+- Die Testsuite wird mit `python -W default::ResourceWarning -m unittest discover -s tests -p "test_*.py" -v` ausgefuehrt. Die konkrete Testanzahl ist versionsabhaengig.

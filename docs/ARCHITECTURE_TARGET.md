@@ -59,7 +59,7 @@ Nach drei fehlgeschlagenen Checks auf Ethernet/WLAN darf LTE aktiviert werden. N
 
 ## Sicherheit
 
-Setup-AP-Clients duerfen nur Setup-Funktionen erreichen. Nicht erreichbar sind Sensordaten, Historie, Kontakte, Verhaltensanalyse, Admin-APIs, Logs, Shell, Home Assistant und lokale RoboterSteve-Dienste.
+Setup-AP-Clients duerfen nur Setup-Funktionen erreichen. Nicht erreichbar sind Sensordaten, Historie, Kontakte, Verhaltensanalyse, Admin-APIs, Logs oder Shell-Dienste.
 
 Credentials werden getrennt von Statusdaten verwaltet:
 
@@ -95,8 +95,8 @@ Ziel fuer Sentero V1:
 - Default-Timeout fuer die Suche: 120 Sekunden, konfigurierbar.
 - Mehrere MQTT-/Zigbee2MQTT-Entities eines physischen Geraets werden als ein Sentero-Sensor gespeichert.
 - Sentero speichert eine eigene Raumzuordnung und ist nicht darauf angewiesen, externe Area-/Raum-Metadaten zu veraendern.
-- ESP32/WLAN bleibt als `wifi_esphome` vorbereitet, ist aber im normalen V1-Wizard standardmaessig ausgeblendet.
-- Der Praesenzsensor-Transport kann fuer Installation/Entwicklung per `.env` umgestellt werden: `SENTERO_PRESENCE_SENSOR_TRANSPORT=zigbee` oder `SENTERO_PRESENCE_SENSOR_TRANSPORT=wifi_esphome`.
+- ESP32-Sensoren werden nicht ueber einen separaten Provisioning-Transport behandelt. Wenn sie eingesetzt werden, publizieren sie wie andere MQTT-Geraete auf denselben Mosquitto-Broker.
+- Im normalen Sensor-Wizard wird keine Funktechnik ausgewaehlt; Sentero ordnet gefundene und registrierte Sensoren ueber die bestehende SensorManager-/MQTT-Pipeline zu.
 
 Persistente Zuordnung:
 

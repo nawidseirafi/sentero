@@ -27,7 +27,7 @@ Bereits erledigt:
 - Persistenter MQTT-Listener und SQLite-Cache fuer zuletzt bekannte MQTT-Zustaende sind vorhanden.
 - Zigbee Permit-Join laeuft im MQTT-Modus direkt ueber Mosquitto.
 - V1-Sensorwizard verwendet fuer Praesenz- und Tuersensoren einen einheitlichen Such-Flow mit Zigbee als Standardtransport.
-- ESP32/WLAN-Sensoren bleiben als `wifi_esphome` technisch kompatibel, sind aber im normalen V1-Wizard standardmaessig ausgeblendet.
+- ESP32-Sensoren werden ueber denselben MQTT-Broker wie andere MQTT-Geraete angebunden; es gibt keinen separaten ESPHome-Provisioningpfad.
 - EcoTracker kann lokal als Strom-/Leistungsquelle angebunden werden.
 - Update-Manifeste werden aus `UPDATE_BASE_URL` generiert.
 - Release-Manifeste enthalten keine lokalen `/Users/...` Download-Pfade mehr.
@@ -176,7 +176,7 @@ Offen:
 
 - API-Tests fuer Auth, Setup, Sensor-Wizard, Notifications und Updates.
 - Integrationstest fuer MQTT-Sensorquelle.
-- Test fuer Docker-Default: `.env` mit Home Assistant darf den Container nicht versehentlich auf HA umstellen.
+- Test fuer Docker-Default: Sentero muss im Container ausschliesslich die konfigurierte MQTT-Pipeline verwenden und darf keine alternative Sensorquelle aktivieren.
 - Fehlerfalltests fuer Update-Install, kaputtes ZIP, fehlende Manifestfelder und Rollback.
 - Testlauf mit `-W default::ResourceWarning` beibehalten, damit offene SQLite-Verbindungen auffallen.
 
@@ -243,12 +243,14 @@ Abnahmekriterium:
 
 ## Kann Nachgelagert Werden
 
-### 15. Matter/ZHA Pfade Aufraeumen
+### 15. Sensorquellen-Cleanup
 
-Offen:
+Status: umgesetzt.
 
-- Wenn Produktion wirklich nur MQTT/Zigbee2MQTT nutzt, koennen Matter/ZHA/HA-Pfade klar als Development/Optional markiert werden.
-- UI sollte in Produktion keine HA-spezifischen Begriffe zeigen.
+- Home Assistant, Mixed-Source-Auswahl und der separate ESPHome-Provisioningpfad wurden aus der aktiven Sensorarchitektur entfernt.
+- Produktion und Entwicklung verwenden dieselbe MQTT-/Zigbee2MQTT-Pipeline.
+- Normale UI-Texte zeigen keine Home-Assistant- oder ESPHome-spezifischen Begriffe.
+
 
 ### 16. LLM/Verhaltensanalyse Produktivstrategie
 

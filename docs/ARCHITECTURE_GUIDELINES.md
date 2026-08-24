@@ -43,8 +43,8 @@ Nicht erlaubt:
 - eingehende Ports, Webhooks oder oeffentliche Callback-Endpunkte fuer Statusabfragen oeffnen.
 - zweite parallele SMTP-Infrastruktur bauen.
 - Mailpasswoerter, Tokens oder vollstaendige private Mailinhalte loggen.
-- Home Assistant, Tueren, Geraete, Alarmregeln, Kontakte, Benutzer, Konfiguration, Sensoren oder Shell/System per E-Mail veraendern.
-- LLMs direkt SQL, Home Assistant oder Entity-Auswahl ueberlassen.
+- Tueren, Geraete, Alarmregeln, Kontakte, Benutzer, Konfiguration, Sensoren oder Shell/System per E-Mail veraendern.
+- LLMs direkt SQL, Transportdetails oder Entity-Auswahl ueberlassen.
 - alte Sensorwerte als aktuellen Zustand ausgeben.
 
 LLM-Regel:
@@ -71,22 +71,22 @@ Nicht in der normalen Kundensicht anzeigen:
 - IP-Adressen
 - Default Routes
 - ModemManager-/NetworkManager-Begriffe
-- Zigbee-, Permit-Join-, MQTT-, ESPHome- oder Captive-Portal-Begriffe im Sensor-Onboarding
+- Zigbee-, Permit-Join-, MQTT- oder technische Broker-Begriffe im normalen Sensor-Onboarding
 - QR-/Hotspot-Anleitungen fuer Praesenzsensoren im V1-Sensorwizard
 
 Admin-/Support-Diagnose darf diese Details anzeigen.
 
 ## Sensoren
 
-Sensor-Onboarding muss ueber `SensorManager` bzw. die bestehende Geraeteabstraktion laufen. Neue Flows duerfen keine zweite Zigbee-, MQTT-, ESP32- oder Home-Assistant-Infrastruktur neben den vorhandenen Services aufbauen.
+Sensor-Onboarding muss ueber `SensorManager` bzw. die bestehende Geraeteabstraktion laufen. Neue Flows duerfen keine zweite Zigbee-, MQTT- oder ESP32-Infrastruktur neben der vorhandenen MQTT-Sensorpipeline aufbauen.
 
 Erlaubt:
 
-- Transport als persistente Metadaten speichern (`zigbee`, `wifi_esphome`).
+- Technische Herkunft als persistente Metadaten speichern, ohne Fachlogik daran zu koppeln.
 - Zigbee-Pairing fuer aktive Onboarding-/Admin-Flows temporaer oeffnen.
 - Mehrere Entities eines physischen Geraets zu einer Sentero-Zuordnung zusammenfassen.
 - Den persistenten MQTT-Cache/Listener als Quelle fuer zuletzt bekannte Zustaende verwenden.
-- ESP32/WLAN-Code kompatibel halten und per Feature-Flag fuer spaetere Varianten vorbereiten.
+- ESP32-Sensoren als normale MQTT-Quellen ueber denselben Broker behandeln.
 
 Nicht erlaubt:
 

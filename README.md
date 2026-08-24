@@ -15,15 +15,23 @@ Sentero verwendet keine RoboterSteve-Editionen, keine Agent-Registry, keinen Orc
 
 ## Sensorquellen
 
-Die Quelle wird so konfiguriert:
+Sentero verwendet eine einheitliche MQTT-Sensorpipeline.
 
-```bash
-SENTERO_SENSOR_SOURCE=homeassistant|mqtt|mixed
+```text
+Zigbee-Sensor -> Zigbee2MQTT --\
+                               -> Mosquitto/MQTT -> Sentero
+ESP32/generischer MQTT-Sensor -/
+EcoTracker lokal ------------> Sentero
 ```
 
-In Produktion nutzt Sentero standardmaessig direktes MQTT: Mosquitto, Zigbee2MQTT, retained MQTT state, ESP32/WLAN-Sensoren und lokale EcoTracker-Werte. Home Assistant bleibt nur als Entwicklungs- oder Migrationsadapter verfuegbar.
+Home Assistant ist keine Sensorquelle mehr. Der alte Auswahlmechanismus
+`SENTERO_SENSOR_SOURCE=homeassistant|mqtt|mixed` wurde entfernt.
 
-Die Docker-Laufzeit erzwingt `SENTERO_SENSOR_SOURCE=mqtt`, sofern `SENTERO_DOCKER_SENSOR_SOURCE` nicht explizit gesetzt ist. Dadurch koennen lokale Home-Assistant-Entwicklungseinstellungen nicht in Appliance-Builds durchrutschen.
+Sentero verarbeitet nur Sensoren, die ueber den eigenen Onboarding-/Mapping-Flow
+registriert wurden. Beliebige MQTT-Geraete, die lediglich am Broker sichtbar
+sind, duerfen nicht automatisch in Verhaltensanalyse oder Benachrichtigungen
+einfliessen.
+
 
 ## Lokale Entwicklung
 
@@ -96,18 +104,10 @@ python3 deployment_build.py \
 
 Sentero hat eine eigenstaendige Update-API unter `/api/sentero/system/update/*`.
 
-Der Standardmodus ist `dry_run`, damit Update-Pruefungen und der UI-Flow funktionieren, ohne Dateien zu veraendern.
+Fuer lokale Entwicklung kann `dry_run` verwendet werden. Auf der Sentero Box v2 wird `appliance` verwendet; die GUI delegiert die Installation an den hostseitigen Sentero-Updater.
 
-Der alte `zip`-Update-Modus aktualisiert Applikationsdateien direkt im Dateisystem und ist fuer Installationen ohne Container nuetzlich:
+Der historische `zip`-Update-Modus ist nur fuer nicht-containerisierte Altinstallationen gedacht und gehoert nicht zum normalen Box-v2-Betrieb.
 
-```bash
-SENTERO_UPDATE_MODE=zip
-UPDATE_BASE_URL=https://example.com/sentero
-```
-
-Die Laufzeit leitet daraus `https://example.com/sentero/stable/latest.json` ab; der Build erzeugt ZIP-Download-URLs wie `https://example.com/sentero/stable/releases/sentero-<version>.zip`.
-
-Der ZIP-Installer aktualisiert nur Applikationsdateien und ueberschreibt niemals `.env`, `data/`, `backups/`, virtuelle Umgebungen oder `node_modules`.
 
 Fuer Sentero Box v2 werden Appliance-Bundles aus `deployment_build.py` verwendet; Details stehen in `docs/README_sentero_box_v2.md`. Diese Bundles enthalten `release.json` plus `sentero-image.tar`; die Installation wird an einen hostseitigen Updater delegiert, statt Dateien in einem laufenden Container zu ersetzen.
 
@@ -135,7 +135,7 @@ newgrp docker
 
 Firewall-Grundregel: kein Router-Portforwarding auf `8080` oder `1883`.
 
-Waehrend des Setup-WLANs sollen Clients nur die Setup-Oberflaeche erreichen. Kein Routing vom Setup-WLAN zu Sensordaten, Historie, Logs, Home Assistant, MQTT oder Admin-/Shell-Diensten freigeben.
+Waehrend des Setup-WLANs sollen Clients nur die Setup-Oberflaeche erreichen. Kein Routing vom Setup-WLAN zu Sensordaten, Historie, Logs, MQTT oder Admin-/Shell-Diensten freigeben.
 
 UFW-Beispiel fuer Heimnetz `192.168.178.0/24`:
 
@@ -155,12 +155,7 @@ Die optionale externe AAL-Exchange-Freigabe haelt Sentero-GUI, Login, Setup, Sen
 - `/api/sentero/exchange/v1/event-summary`
 - `/api/sentero/exchange/v1/system-status`
 
-Wenn das Box-/Compose-Deployment ein AAL-Profil bereitstellt:
-
-```bash
-SENTERO_AAL_SITE=aal.example.org
-docker compose --profile external-aal up -d
-```
+Die externe AAL-Freigabe wird ueber den jeweiligen Edge-Proxy/Deployment-Layer konfiguriert. Die frueheren `SENTERO_AAL_*`-Environment-Variablen sind kein Bestandteil der aktuellen Sentero-Konfiguration.
 
 Ohne diese Compose-Schicht muss der Edge-Proxy separat mit `docker/caddy/Caddyfile`, Nginx oder Caddy bereitgestellt werden.
 
