@@ -24,9 +24,6 @@ ESP32/generischer MQTT-Sensor -/
 EcoTracker lokal ------------> Sentero
 ```
 
-Home Assistant ist keine Sensorquelle mehr. Der alte Auswahlmechanismus
-`SENTERO_SENSOR_SOURCE=homeassistant|mqtt|mixed` wurde entfernt.
-
 Sentero verarbeitet nur Sensoren, die ueber den eigenen Onboarding-/Mapping-Flow
 registriert wurden. Beliebige MQTT-Geraete, die lediglich am Broker sichtbar
 sind, duerfen nicht automatisch in Verhaltensanalyse oder Benachrichtigungen

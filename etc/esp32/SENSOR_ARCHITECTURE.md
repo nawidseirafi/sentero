@@ -1,6 +1,6 @@
 # Sentero Sensor Architecture
 
-Sentero ist quellenagnostisch. Home Assistant ist nur ein Entwicklungsadapter und fuer die Produktivnutzung nicht erforderlich.
+Sentero nutzt eine einheitliche MQTT-Sensorpipeline fuer Zigbee2MQTT, ESP32/WLAN-Sensoren und weitere MQTT-Geraete.
 
 ## V1-Onboarding
 
@@ -27,7 +27,6 @@ esp32_specific_presence
 
 - MQTT Generic Adapter: produktiver Pfad fuer ESP32/WLAN-Sensoren wie C1001 und MR60BDA2.
 - Zigbee2MQTT Adapter: produktiver Pfad fuer Zigbee-Sensoren ueber Mosquitto.
-- Home Assistant Adapter: Entwicklungsmodus fuer bestehende HA-Entities.
 
 Produktiver Zielpfad:
 
@@ -38,7 +37,7 @@ Sensor -> MQTT -> Sentero Sensor Manager -> Device/Event Model -> Behavior Engin
 Onboarding-Zielpfad im V1-Wizard:
 
 ```text
-Sentero Wizard -> SensorManager -> Home Assistant / Sensorquelle -> Zigbee2MQTT oder ZHA -> Sensor
+Sentero Wizard -> SensorManager -> Zigbee2MQTT -> Sensor
 ```
 
 ## ESP32/WLAN-Sensoren
@@ -57,13 +56,7 @@ Modellspezifische Unterschiede werden ueber `model`, `writable_settings` und opt
 
 ## Konfiguration
 
-Set `SENTERO_SENSOR_SOURCE` to one of:
-
-- `homeassistant`
-- `mqtt`
-- `mixed`
-
-Produktive Deployments sollten `mqtt` oder `mixed` mit Mosquitto/Zigbee2MQTT verwenden.
+Die aktive Sensorquelle ist die MQTT-Pipeline mit Mosquitto und Zigbee2MQTT. Eine Auswahl ueber `SENTERO_SENSOR_SOURCE` gibt es nicht mehr.
 
 ## Doku-Aufteilung
 

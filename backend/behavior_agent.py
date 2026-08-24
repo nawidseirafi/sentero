@@ -158,11 +158,10 @@ class SenteroBehaviorAgent:
         sensor_snapshot = self.mapping.roles(dev=True, include_state=True)
         # Analysis is scoped to sensors explicitly configured in Sentero. The raw
         # MQTT snapshot can contain unrelated household devices and must not feed
-        # behavior/AI context. Keep the historical variable name for compatibility
-        # with existing helper signatures.
-        ha_snapshot = list(sensor_snapshot)
+        # behavior/AI context.
+        source_snapshot = list(sensor_snapshot)
         if not dry_run:
-            self._record_snapshot(sensor_snapshot, ha_snapshot)
+            self._record_snapshot(sensor_snapshot, source_snapshot)
             self._notify_system_warnings(sensor_snapshot)
             self._cleanup_old_data()
         history = self._history(days=30)
@@ -172,7 +171,7 @@ class SenteroBehaviorAgent:
         daily_summary["anomaly_score"] = int(deviations.get("anomaly_score") or 0)
         if not dry_run:
             self._store_daily_anomaly_score(str(daily_summary.get("date") or ""), int(daily_summary["anomaly_score"]))
-        payload = self._analysis_payload(profile, contacts, sensor_snapshot, history, ha_snapshot, daily_summary, behavior_profile, deviations)
+        payload = self._analysis_payload(profile, contacts, sensor_snapshot, history, source_snapshot, daily_summary, behavior_profile, deviations)
         assessment = self._assess(payload)
         assessment = self._apply_learning_policy(assessment, payload)
         stored = assessment if dry_run else self._store_assessment(assessment)
@@ -226,8 +225,8 @@ class SenteroBehaviorAgent:
 
     def record_current_snapshot(self) -> int:
         sensor_snapshot = self.mapping.roles(dev=True, include_state=True)
-        ha_snapshot = list(sensor_snapshot)
-        written = self._record_snapshot(sensor_snapshot, ha_snapshot)
+        source_snapshot = list(sensor_snapshot)
+        written = self._record_snapshot(sensor_snapshot, source_snapshot)
         self._notify_system_warnings(sensor_snapshot)
         return written
 
@@ -382,9 +381,9 @@ class SenteroBehaviorAgent:
             rows = con.execute("select * from trusted_contacts where active = 1 order by id").fetchall()
         return [dict(row) for row in rows]
 
-    def _record_snapshot(self, roles: list[dict[str, Any]], ha_snapshot: list[dict[str, Any]] | None = None) -> int:
+    def _record_snapshot(self, roles: list[dict[str, Any]], source_snapshot: list[dict[str, Any]] | None = None) -> int:
         timestamp = now()
-        snapshot_rows = ha_snapshot or []
+        snapshot_rows = source_snapshot or []
         extra_events = [
             *self._smart_meter_snapshot_events(snapshot_rows, timestamp),
         ]
@@ -545,7 +544,7 @@ class SenteroBehaviorAgent:
         contacts: list[dict[str, Any]],
         sensor_snapshot: list[dict[str, Any]],
         history: list[dict[str, Any]],
-        ha_snapshot: list[dict[str, Any]],
+        source_snapshot: list[dict[str, Any]],
         daily_summary: dict[str, Any],
         behavior_profile: dict[str, Any],
         deviations: dict[str, Any],
@@ -1267,14 +1266,14 @@ class SenteroBehaviorAgent:
     def _fp300_analysis(
         self,
         roles: list[dict[str, Any]],
-        ha_snapshot: list[dict[str, Any]],
+        source_snapshot: list[dict[str, Any]],
         history: list[dict[str, Any]],
     ) -> dict[str, Any]:
         devices = []
         for role in roles:
             if not self._is_presence_role(role):
                 continue
-            related = self._related_presence_entities(role, ha_snapshot)
+            related = self._related_presence_entities(role, source_snapshot)
             presence = related.get("presence")
             motion = related.get("motion")
             devices.append({
@@ -1319,13 +1318,13 @@ class SenteroBehaviorAgent:
             "devices": devices,
         }
 
-    def _related_presence_entities(self, role: dict[str, Any], ha_snapshot: list[dict[str, Any]]) -> dict[str, dict[str, Any] | None]:
+    def _related_presence_entities(self, role: dict[str, Any], source_snapshot: list[dict[str, Any]]) -> dict[str, dict[str, Any] | None]:
         role_entity = str(role.get("entity_id") or "")
         device_id = str(role.get("device_id") or "").strip()
-        same_device = [item for item in ha_snapshot if device_id and str(item.get("device_id") or "") == device_id]
+        same_device = [item for item in source_snapshot if device_id and str(item.get("device_id") or "") == device_id]
         if not same_device:
             prefix = role_entity.rsplit("_", 1)[0] if "_" in role_entity else role_entity.rsplit(".", 1)[-1]
-            same_device = [item for item in ha_snapshot if prefix and str(item.get("entity_id") or "").startswith(prefix)]
+            same_device = [item for item in source_snapshot if prefix and str(item.get("entity_id") or "").startswith(prefix)]
         return {
             "presence": self._best_entity(same_device, self._is_presence_entity) or (role if self._is_presence_entity(role) else None),
             "motion": self._best_entity(same_device, self._is_motion_entity),

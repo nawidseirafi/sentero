@@ -5,7 +5,7 @@ Diese Liste beschreibt, was noch fehlt, bevor Sentero produktiv bei echten Nutze
 Zielbild fuer Produktion:
 
 - Sentero laeuft als Docker-Stack.
-- Sensorik laeuft ohne Home Assistant ueber Mosquitto, Zigbee2MQTT und MQTT.
+- Sensorik laeuft ueber Mosquitto, Zigbee2MQTT und MQTT.
 - Updates kommen ueber `UPDATE_BASE_URL=https://seirafi.de/robotersteve/sentero`.
 - Runtime-Daten bleiben in `data/` und werden durch Updates nicht ueberschrieben.
 - Vertrauenspersonen erhalten relevante Warnungen zu Verhalten, Sensor-Batterie und Sensor-Erreichbarkeit.
@@ -49,7 +49,7 @@ Offen:
 
 Abnahmekriterium:
 
-- Ein realer Sensor kann ohne Home Assistant registriert, gespeichert, gelesen und nach Neustart weiter verwendet werden.
+- Ein realer Sensor kann registriert, gespeichert, gelesen und nach Neustart weiter verwendet werden.
 
 ### 2. MQTT-Ereignisverarbeitung im echten Betrieb pruefen
 
@@ -247,9 +247,9 @@ Abnahmekriterium:
 
 Status: umgesetzt.
 
-- Home Assistant, Mixed-Source-Auswahl und der separate ESPHome-Provisioningpfad wurden aus der aktiven Sensorarchitektur entfernt.
+- Die aktive Sensorarchitektur verwendet eine einheitliche MQTT-/Zigbee2MQTT-Pipeline.
 - Produktion und Entwicklung verwenden dieselbe MQTT-/Zigbee2MQTT-Pipeline.
-- Normale UI-Texte zeigen keine Home-Assistant- oder ESPHome-spezifischen Begriffe.
+- Normale UI-Texte zeigen keine transportinternen Spezialbegriffe.
 
 
 ### 16. LLM/Verhaltensanalyse Produktivstrategie

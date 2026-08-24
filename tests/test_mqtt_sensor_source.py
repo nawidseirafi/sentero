@@ -787,7 +787,7 @@ class MqttSensorSourceTests(unittest.TestCase):
     def test_mqtt_home_status_does_not_load_sensor_snapshot(self) -> None:
 
         class FailingSnapshotSource:
-            name = 'mixed'
+            name = 'zigbee2mqtt'
 
             def configured(self) -> bool:
                 return True

@@ -1,6 +1,6 @@
 # Sentero Migration Report
 
-> Historisches Migrationsdokument. Angaben zur damaligen Home-Assistant-/Mixed-Source-Architektur beschreiben den Zwischenstand der Extraktion und nicht den aktuellen Laufzeitstand.
+> Historisches Migrationsdokument. Angaben zu frueheren Sensorquellen beschreiben den Zwischenstand der Extraktion und nicht den aktuellen Laufzeitstand.
 
 ## Copied Files
 
@@ -14,7 +14,6 @@
 - `sentero/backend/main.py`
 - `sentero/backend/paths.py`
 - `sentero/backend/config.py`
-- `sentero/backend/services/homeassistant_service.py` (historisch; inzwischen entfernt)
 - `sentero/backend/services/messaging.py`
 - `sentero/backend/services/llm/factory.py`
 - `sentero/backend/sensor_sources/*`
@@ -45,11 +44,7 @@
 
 ## Sensor Architecture
 
-Historischer Zwischenstand:
-- Bei der ersten Extraktion wurden `homeassistant|mqtt|mixed` sowie ein Home-Assistant-Adapter eingefuehrt.
-
 Aktueller Stand:
-- Home Assistant und Mixed-Source-Auswahl sind entfernt.
 - Zigbee laeuft ueber Zigbee2MQTT; ESP32/generische Sensoren laufen direkt ueber denselben MQTT-Broker.
 - Der persistente MQTT-Listener/-Cache bleibt Bestandteil der Sensorpipeline.
 - Die Box-v2-Deployment-Schicht verwendet Docker Compose plus hostseitigen Updater.
@@ -66,7 +61,7 @@ Aktueller Stand:
 
 - None in runtime imports of the standalone Sentero backend.
 - The standalone frontend has its own local API client and no longer imports RoboterSteve shared code.
-- Development und Produktion verwenden die gleiche MQTT-/Zigbee2MQTT-Sensorarchitektur; Home Assistant ist nicht mehr Bestandteil der Laufzeit.
+- Development und Produktion verwenden die gleiche MQTT-/Zigbee2MQTT-Sensorarchitektur.
 - Historical Sentero references remain in RoboterSteve documentation/update tooling and in unused shared frontend API type/method definitions. They are not part of the active Sentero runtime after extraction, but should be cleaned in a follow-up documentation/build-tools pass if RoboterSteve must contain zero textual Sentero references.
 
 ## Verification

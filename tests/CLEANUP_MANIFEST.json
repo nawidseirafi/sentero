@@ -9,9 +9,6 @@
     "test_delete_esp32_presence_sensor_publish_error_keeps_local_mapping",
     "test_delete_esp32_presence_sensor_sends_factory_reset_before_local_delete",
     "test_delete_esp32_presence_sensor_timeout_keeps_local_mapping",
-    "test_delete_zigbee2mqtt_sensor_uses_ieee_when_homeassistant_name_differs",
-    "test_homeassistant_zigbee_pairing_does_not_offer_existing_unassigned_sensor",
-    "test_mixed_mode_resolves_homeassistant_entity_with_ieee_suffix_for_mqtt_mapping",
     "test_presence_sensor_discovery_is_blocked_for_esp32_provisioning"
   ],
   "removed_onboarding_test_methods": [

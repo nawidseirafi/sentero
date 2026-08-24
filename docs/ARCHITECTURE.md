@@ -30,7 +30,7 @@ Mosquitto / Zigbee2MQTT / ESP32-MQTT / EcoTracker
 Sensor
 ```
 
-Sentero nutzt eine einheitliche MQTT-Sensorpipeline. Zigbee-Geraete gelangen ueber Zigbee2MQTT zum Broker; ESP32- und andere MQTT-Geraete verwenden denselben Broker. Home Assistant sowie der fruehere `wifi_esphome`-Sonderweg sind entfernt.
+Sentero nutzt eine einheitliche MQTT-Sensorpipeline. Zigbee-Geraete gelangen ueber Zigbee2MQTT zum Broker; ESP32- und andere MQTT-Geraete verwenden denselben Broker.
 
 Sentero-Fachlogik darf nicht direkt von Transportdetails abhaengen. Persistierte Sensorzuordnungen speichern technische Herkunft nur als Metadaten; Auswertung und Dashboard konsumieren normalisierte Zustaende wie `presence = true`, `door.open = false` oder `power_usage = 340`.
 
