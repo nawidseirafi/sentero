@@ -14,6 +14,7 @@ from backend.services.data_classification import aggregation_for_data_class, cla
 from backend.services.device_mapping_service import DeviceMappingService, now
 from backend.logging_config import get_logger
 from backend.services.notification_service import NotificationService
+from backend.services.human_activity_service import HumanActivityScorer, reasons_json
 
 logger = get_logger(__name__)
 
@@ -49,6 +50,7 @@ class SenteroBehaviorAgent:
         self.mapping = mapping or DeviceMappingService()
         self.messaging = messaging or MessagingService()
         self.notifications = NotificationService(self.mapping, self.messaging)
+        self.human_activity = HumanActivityScorer()
         self.ensure_schema()
 
     def ensure_schema(self) -> None:
@@ -79,6 +81,10 @@ class SenteroBehaviorAgent:
             )
             self._ensure_column(con, "sentero_sensor_events", "data_class", "text not null default 'technical'")
             self._ensure_column(con, "sentero_sensor_events", "aggregation_level", "text not null default 'raw'")
+            self._ensure_column(con, "sentero_sensor_events", "human_activity_score", "integer")
+            self._ensure_column(con, "sentero_sensor_events", "human_activity_confidence", "real")
+            self._ensure_column(con, "sentero_sensor_events", "human_activity_classification", "text")
+            self._ensure_column(con, "sentero_sensor_events", "human_activity_reasons", "text not null default '[]'")
             self._ensure_column(con, "behavior_events", "data_class", "text not null default 'technical'")
             self._ensure_column(con, "behavior_events", "aggregation_level", "text not null default 'raw'")
             con.execute(
@@ -306,6 +312,7 @@ class SenteroBehaviorAgent:
                 "device_class": "presence",
                 "source": source,
                 "event_type": "presence",
+                "motion_state": motion_raw,
                 # Presence is a state. Repeated telemetry with unchanged presence
                 # must not look like repeated human activity.
                 "transition_only": True,
@@ -321,6 +328,7 @@ class SenteroBehaviorAgent:
                 "device_class": "motion",
                 "source": source,
                 "event_type": "motion",
+                "motion_state": motion_raw,
                 # Every explicit moving message is useful as a fresh last-movement
                 # timestamp. Repeated inactive messages are only state transitions.
                 "transition_only": not motion,
@@ -424,10 +432,25 @@ class SenteroBehaviorAgent:
                     continue
                 event_type = str(event.get("event_type") or self._event_type(event))
                 data_class = classify_sensor_event(event_type, event.get("device_class"), role_name)
+
+                # Shadow-mode only: store an estimate of how human-like the event
+                # looks, but do not suppress or change any existing behavior logic.
+                scoring_event = {
+                    **event,
+                    "event_time": event_time,
+                    "event_type": event_type,
+                    "state": state,
+                }
+                human = self.human_activity.assess(con, scoring_event)
+
                 con.execute(
                     """insert into sentero_sensor_events
-                       (event_time, role, room, entity_id, state, device_class, source, data_class, aggregation_level, created_at)
-                       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (event_time, role, room, entity_id, state, device_class, source,
+                        data_class, aggregation_level,
+                        human_activity_score, human_activity_confidence,
+                        human_activity_classification, human_activity_reasons,
+                        created_at)
+                       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         event_time,
                         role_name,
@@ -438,6 +461,10 @@ class SenteroBehaviorAgent:
                         event.get("source") or "snapshot",
                         data_class,
                         "raw",
+                        human.score if human else None,
+                        human.confidence if human else None,
+                        human.classification if human else None,
+                        reasons_json(human),
                         created_at,
                     ),
                 )
@@ -455,11 +482,27 @@ class SenteroBehaviorAgent:
                             "role": role_name,
                             "state": state,
                             "source": event.get("source") or "snapshot",
+                            "motion_state": event.get("motion_state"),
+                            "human_activity": human.as_dict() if human else None,
+                            "human_activity_shadow_mode": True,
                         }, ensure_ascii=False),
                         data_class,
                         "raw",
                     ),
                 )
+                if human is not None:
+                    logger.debug(
+                        "Human activity score recorded",
+                        extra={
+                            "component": "behavior",
+                            "room": event.get("room"),
+                            "event_type": event_type,
+                            "human_activity_score": human.score,
+                            "human_activity_confidence": human.confidence,
+                            "human_activity_classification": human.classification,
+                            "human_activity_shadow_mode": True,
+                        },
+                    )
                 written += 1
             con.commit()
         return written
