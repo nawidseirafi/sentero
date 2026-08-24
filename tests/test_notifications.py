@@ -339,8 +339,9 @@ class NotificationSystemWarningTests(unittest.TestCase):
             service = NotificationService(mapping)
             service.save_channel("telegram", False, {"bot_token": "telegram-secret"})
 
-            with patch("backend.services.notification_service.requests.get") as get:
+            with patch("backend.services.notification_service.requests.get") as get, patch("backend.services.notification_service.requests.post") as post:
                 get.return_value = FakeJsonResponse({"ok": True, "result": {"id": 99, "username": "sentero_test_bot"}})
+                post.return_value = FakeJsonResponse({"ok": True, "result": True})
                 result = service.test("telegram")
 
             self.assertTrue(result["ok"])
@@ -348,6 +349,32 @@ class NotificationSystemWarningTests(unittest.TestCase):
             channel = next(item for item in service.channels()["channels"] if item["channel"] == "telegram")
             self.assertTrue(channel["enabled"])
             self.assertTrue(channel["configured"])
+
+    def test_telegram_branding_rate_limit_does_not_fail_bot_only_test(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
+            service = NotificationService(mapping)
+            service.save_channel("telegram", False, {"bot_token": "telegram-secret"})
+
+            rate_limit = FakeJsonResponse(
+                {
+                    "ok": False,
+                    "description": "Too Many Requests: retry after 42",
+                    "parameters": {"retry_after": 42},
+                },
+                status_code=429,
+            )
+            with patch("backend.services.notification_service.requests.get") as get, patch("backend.services.notification_service.requests.post") as post:
+                get.return_value = FakeJsonResponse({"ok": True, "result": {"id": 99, "username": "sentero_test_bot"}})
+                post.return_value = rate_limit
+                result = service.test("telegram")
+
+            self.assertTrue(result["ok"])
+            self.assertIn("limitiert", result["message"])
+            self.assertIn("42", result["message"])
+            channel = next(item for item in service.channels()["channels"] if item["channel"] == "telegram")
+            self.assertTrue(channel["enabled"])
 
     def test_contact_update_preserves_query_settings_when_not_in_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

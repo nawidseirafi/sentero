@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, time
 from email.message import EmailMessage
 from email.utils import parseaddr
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -39,6 +40,34 @@ DEFAULT_TEMPERATURE_MAX_CELSIUS = 28.0
 DEFAULT_HUMIDITY_MAX_PERCENT = 70.0
 DEFAULT_INCIDENT_RECOVERY_HEALTHY_CHECKS = 3
 SEVERITY_RANK = {"green": 0, "yellow": 1, "orange": 2, "red": 3}
+
+TELEGRAM_BRAND_NAME = "Sentero"
+TELEGRAM_BRAND_DESCRIPTION = (
+    "Sentero informiert Sie über wichtige Hinweise und beantwortet "
+    "freigegebene Statusfragen."
+)
+TELEGRAM_BRAND_SHORT_DESCRIPTION = (
+    "Sentero – Hinweise und Statusfragen sicher per Telegram."
+)
+TELEGRAM_PROFILE_PHOTO = Path(__file__).resolve().parents[1] / "assets" / "sentero_telegram_profile.png"
+
+
+class TelegramApiError(ValueError):
+    def __init__(self, method: str, status_code: int, description: str = "", retry_after: int | None = None) -> None:
+        self.method = method
+        self.status_code = status_code
+        self.description = description
+        self.retry_after = retry_after
+        message = f"telegram_api_error:{method}:{status_code}"
+        if description:
+            message = f"{message}:{description}"
+        if retry_after is not None:
+            message = f"{message}:retry_after={retry_after}"
+        super().__init__(message)
+
+
+class TelegramRateLimitError(TelegramApiError):
+    pass
 
 
 class NotificationProvider(ABC):
@@ -95,28 +124,127 @@ class TelegramNotificationProvider(NotificationProvider):
     channel = "telegram"
 
     def get_me(self, config: dict[str, Any]) -> dict[str, Any]:
-        token = str(config.get("bot_token") or "").strip()
-        if not token:
-            raise ValueError("telegram_not_configured")
-        response = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
-        response.raise_for_status()
+        token = self._token(config)
+        response = requests.get(self._url(token, "getMe"), timeout=10)
+        self._raise_for_status(response, "getMe")
         data = response.json()
         result = data.get("result") if isinstance(data, dict) else None
         if not isinstance(result, dict) or not result.get("username"):
             raise ValueError("telegram_bot_not_found")
         return result
 
-    def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> dict[str, Any] | None:
+    def apply_branding(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Apply the Sentero identity to the configured Telegram bot.
+
+        This changes the bot profile, not a user's private chat. The operation is
+        idempotent from Sentero's point of view and is intentionally safe to run
+        again from the Telegram "Test" action.
+        """
+        token = self._token(config)
+        bot = self.get_me(config)
+
+        self._post_json(token, "setMyName", {"name": TELEGRAM_BRAND_NAME})
+        self._post_json(
+            token,
+            "setMyDescription",
+            {"description": TELEGRAM_BRAND_DESCRIPTION},
+        )
+        self._post_json(
+            token,
+            "setMyShortDescription",
+            {"short_description": TELEGRAM_BRAND_SHORT_DESCRIPTION},
+        )
+        self._set_profile_photo(token)
+
+        return {
+            "bot_id": bot.get("id"),
+            "username": bot.get("username"),
+            "name": TELEGRAM_BRAND_NAME,
+            "profile_photo": TELEGRAM_PROFILE_PHOTO.name,
+        }
+
+    def _set_profile_photo(self, token: str) -> None:
+        if not TELEGRAM_PROFILE_PHOTO.is_file():
+            raise FileNotFoundError(f"Telegram profile photo missing: {TELEGRAM_PROFILE_PHOTO}")
+
+        # Telegram requires InputProfilePhotoStatic.photo to reference a newly
+        # uploaded multipart part via attach://<name>.
+        photo_spec = json.dumps(
+            {"type": "static", "photo": "attach://profile_photo"},
+            ensure_ascii=False,
+        )
+        with TELEGRAM_PROFILE_PHOTO.open("rb") as image:
+            response = requests.post(
+                self._url(token, "setMyProfilePhoto"),
+                data={"photo": photo_spec},
+                files={
+                    "profile_photo": (
+                        TELEGRAM_PROFILE_PHOTO.name,
+                        image,
+                        "image/png",
+                    )
+                },
+                timeout=(5, 20),
+            )
+        self._raise_for_status(response, "setMyProfilePhoto")
+        self._require_ok(response)
+
+    def _post_json(self, token: str, method: str, payload: dict[str, Any]) -> Any:
+        response = requests.post(
+            self._url(token, method),
+            json=payload,
+            timeout=(5, 15),
+        )
+        self._raise_for_status(response, method)
+        return self._require_ok(response)
+
+    @staticmethod
+    def _raise_for_status(response: requests.Response, method: str) -> None:
+        if response.status_code < 400:
+            return
+        description = ""
+        retry_after: int | None = None
+        try:
+            data = response.json()
+            if isinstance(data, dict):
+                description = str(data.get("description") or "").strip()
+                parameters = data.get("parameters")
+                if isinstance(parameters, dict) and parameters.get("retry_after") is not None:
+                    retry_after = int(parameters["retry_after"])
+        except Exception:
+            description = response.reason or ""
+        error_cls = TelegramRateLimitError if response.status_code == 429 else TelegramApiError
+        raise error_cls(method, response.status_code, description, retry_after)
+
+    @staticmethod
+    def _require_ok(response: requests.Response) -> Any:
+        data = response.json()
+        if not isinstance(data, dict) or not bool(data.get("ok")):
+            raise ValueError("telegram_api_rejected_request")
+        return data.get("result")
+
+    @staticmethod
+    def _url(token: str, method: str) -> str:
+        return f"https://api.telegram.org/bot{token}/{method}"
+
+    @staticmethod
+    def _token(config: dict[str, Any]) -> str:
         token = str(config.get("bot_token") or "").strip()
+        if not token:
+            raise ValueError("telegram_not_configured")
+        return token
+
+    def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> dict[str, Any] | None:
+        token = self._token(config)
         chat_id = str(contact.get("telegram_chat_id") or config.get("default_chat_id") or "").strip()
-        if not token or not chat_id:
+        if not chat_id:
             raise ValueError("telegram_not_configured")
         response = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
+            self._url(token, "sendMessage"),
             json={"chat_id": chat_id, "text": f"{text}"},
             timeout=10,
         )
-        response.raise_for_status()
+        self._raise_for_status(response, "sendMessage")
         data = response.json()
         message = data.get("result") if isinstance(data, dict) else None
         message_id = message.get("message_id") if isinstance(message, dict) else None
@@ -292,6 +420,29 @@ class NotificationService:
                 (channel, int(enabled_after_save), json.dumps(clean_config, ensure_ascii=False, sort_keys=True), timestamp, timestamp),
             )
             con.commit()
+
+        if (
+            channel == "telegram"
+            and enabled_after_save
+            and str(clean_config.get("bot_token") or "").strip()
+            and clean_config.get("bot_token") != existing.get("bot_token")
+        ):
+            provider = self.providers.get("telegram")
+            if isinstance(provider, TelegramNotificationProvider):
+                try:
+                    provider.apply_branding(clean_config)
+                except Exception as exc:
+                    # Saving a valid channel must not fail just because Telegram
+                    # branding is temporarily unavailable. The Test action retries
+                    # branding explicitly.
+                    logger.warning(
+                        "Telegram bot saved, but automatic branding could not be applied",
+                        extra={
+                            "component": "notification",
+                            "channel": "telegram",
+                            "error_type": exc.__class__.__name__,
+                        },
+                    )
         return self.channels()
 
     def stored_channel_config(self, channel: str) -> dict[str, Any]:
@@ -313,17 +464,47 @@ class NotificationService:
             "whatsapp": "Sentero Testnachricht: WhatsApp ist verbunden.",
         }[channel]
         try:
+            telegram_branding: dict[str, Any] | None = None
             if channel == "telegram" and not contact.get("telegram_chat_id"):
                 provider = self.providers[channel]
                 if not isinstance(provider, TelegramNotificationProvider):
                     raise ValueError("telegram_not_configured")
-                bot = provider.get_me(setting.get("config") or {})
-                result = {"message_id": f"telegram:bot:{bot.get('id')}"}
+                try:
+                    telegram_branding = provider.apply_branding(setting.get("config") or {})
+                except TelegramRateLimitError as exc:
+                    bot = provider.get_me(setting.get("config") or {})
+                    telegram_branding = {
+                        "bot_id": bot.get("id"),
+                        "username": bot.get("username"),
+                        "name": TELEGRAM_BRAND_NAME,
+                        "profile_photo": TELEGRAM_PROFILE_PHOTO.name,
+                        "rate_limited": True,
+                        "retry_after": exc.retry_after,
+                    }
+                    logger.warning(
+                        "Telegram branding skipped because Telegram rate-limited the bot",
+                        extra={
+                            "component": "notification",
+                            "channel": "telegram",
+                            "method": exc.method,
+                            "retry_after": exc.retry_after,
+                        },
+                    )
+
+            if channel == "telegram" and not contact.get("telegram_chat_id"):
+                result = {"message_id": f"telegram:bot:{telegram_branding.get('bot_id') if telegram_branding else ''}"}
             else:
                 result = self.providers[channel].send(contact, title, text, setting.get("config") or {})
             self._mark_channel_enabled(channel, True)
             self._log(contact.get("id"), channel, "yellow", "sent", title, None, outgoing_message_id=_provider_message_id(result))
-            message = "Telegram Bot verbunden. Einladungslinks sind verfügbar." if channel == "telegram" and not contact.get("telegram_chat_id") else "Testnachricht gesendet."
+            if channel == "telegram" and telegram_branding and telegram_branding.get("rate_limited"):
+                retry_after = telegram_branding.get("retry_after")
+                suffix = f" Bitte nach {retry_after} Sekunden erneut testen." if retry_after else " Bitte später erneut testen."
+                message = f"Telegram Bot verbunden. Telegram limitiert gerade die Branding-Aktualisierung.{suffix}"
+            elif channel == "telegram" and not contact.get("telegram_chat_id"):
+                message = "Telegram Bot verbunden und mit Sentero-Logo eingerichtet. Einladungslinks sind verfügbar."
+            else:
+                message = "Testnachricht gesendet."
             return {"ok": True, "message": message}
         except Exception as exc:
             logger.exception("Notification test failed", extra={"component": "notification", "channel": channel})
@@ -488,7 +669,7 @@ class NotificationService:
         # arbitrary MQTT devices visible on the broker for customer notifications.
         sensor_rows = sensors if sensors is not None else self.mapping.roles(dev=True, include_state=True)
         sensor_rows = [row for row in sensor_rows if row.get("active", True) and row.get("enabled", True)]
-        environmental_rows = environmental_sensors if environmental_sensors is not None else self._environmental_snapshot_rows(sensor_rows)
+        environmental_rows = self._environmental_snapshot_rows(sensor_rows)
         active_warnings = self._system_warnings(sensor_rows, battery_threshold=battery_threshold, environmental_sensors=environmental_rows)
         logger.debug(
             "System warnings evaluated",
@@ -1249,6 +1430,12 @@ class NotificationService:
         return isinstance(value, str) and ("•" in value or value.startswith("***"))
 
     def _safe_error(self, exc: Exception) -> str:
+        if isinstance(exc, TelegramRateLimitError):
+            suffix = f" Bitte nach {exc.retry_after} Sekunden erneut versuchen." if exc.retry_after else " Bitte später erneut versuchen."
+            return f"Telegram limitiert aktuell die Anfrage.{suffix}"
+        if isinstance(exc, TelegramApiError):
+            suffix = f": {exc.description}" if exc.description else ""
+            return f"Telegram API Fehler bei {exc.method} ({exc.status_code}){suffix}"
         if isinstance(exc, ValueError):
             detail = str(exc)
             if detail == "email_not_configured":

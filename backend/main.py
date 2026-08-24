@@ -100,6 +100,17 @@ async def mail_assistant_loop() -> None:
             await asyncio.sleep(assistant.config.poll_interval_seconds)
         except asyncio.CancelledError:
             raise
+        except (OSError, TimeoutError) as exc:
+            logger.warning(
+                "Mail assistant polling unavailable",
+                extra={
+                    "component": "mail_assistant",
+                    "error_type": exc.__class__.__name__,
+                    "error": str(exc),
+                },
+            )
+            await asyncio.sleep(min(300, 5 * backoff))
+            backoff = min(backoff * 2, 60)
         except Exception:
             logger.exception("Mail assistant polling failed", extra={"component": "mail_assistant"})
             await asyncio.sleep(min(300, 5 * backoff))
