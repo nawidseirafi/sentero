@@ -65,6 +65,13 @@ class MailAssistantStore:
                 )"""
             )
             con.execute("create index if not exists idx_sentero_mail_queries_contact_received on sentero_mail_queries(contact_id, received_at)")
+            con.execute(
+                """create table if not exists sentero_mail_reviewed_messages (
+                    message_id text primary key,
+                    review_status text not null,
+                    reviewed_at text not null
+                )"""
+            )
             con.commit()
 
     def already_processed(self, message_id: str) -> bool:
@@ -73,6 +80,43 @@ class MailAssistantStore:
         with self.mapping.connect() as con:
             row = con.execute("select id from sentero_mail_queries where message_id = ?", (message_id,)).fetchone()
         return row is not None
+
+    def response_was_sent(self, message_id: str) -> bool:
+        if not message_id:
+            return False
+        with self.mapping.connect() as con:
+            row = con.execute(
+                """select response_sent_at, response_status
+                   from sentero_mail_queries
+                   where message_id = ?
+                   limit 1""",
+                (message_id,),
+            ).fetchone()
+        if not row:
+            return False
+        return bool(row["response_sent_at"]) or str(row["response_status"] or "") in {"sent", "rate_limited"}
+
+    def already_reviewed(self, message_id: str) -> bool:
+        if not message_id:
+            return False
+        with self.mapping.connect() as con:
+            row = con.execute(
+                "select 1 from sentero_mail_reviewed_messages where message_id = ?",
+                (message_id,),
+            ).fetchone()
+        return row is not None
+
+    def record_reviewed(self, message_id: str, status: str) -> None:
+        if not message_id:
+            return
+        with self.mapping.connect() as con:
+            con.execute(
+                """insert or ignore into sentero_mail_reviewed_messages
+                   (message_id, review_status, reviewed_at)
+                   values (?, ?, ?)""",
+                (message_id, str(status or "reviewed"), now()),
+            )
+            con.commit()
 
     def find_authorized_contact(self, sender_email: str, recipient_addresses: list[str]) -> tuple[AuthorizedContact | None, str | None]:
         sender = normalize_email(sender_email)

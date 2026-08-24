@@ -74,9 +74,18 @@ class SenteroMailAssistant:
         if not self.enabled():
             return {"processed": 0, "skipped": "disabled"}
         messages = self.imap.fetch_unseen()
-        processed = 0
+        evaluated = 0
+        marked_read = 0
+        skipped_reviewed = 0
         results: dict[str, int] = {}
+
         for message in messages:
+            # Ignored/unrelated mail deliberately stays unread. Remember that the
+            # assistant already reviewed it so it is not reevaluated every poll.
+            if self.store.already_reviewed(message.message_id):
+                skipped_reviewed += 1
+                continue
+
             try:
                 outcome = self.process_message(message)
             except Exception:
@@ -85,15 +94,37 @@ class SenteroMailAssistant:
                     extra={"component": "mail_assistant", "uid": message.uid},
                 )
                 results["failed"] = results.get("failed", 0) + 1
+                # Failed processing is intentionally not remembered and not marked
+                # read, so Sentero can retry it on a later poll.
                 continue
-            try:
-                self.imap.mark_processed(message.uid)
-            except Exception:
-                logger.exception("Mail processed but IMAP mark failed", extra={"component": "mail_assistant"})
-            processed += 1
+
+            evaluated += 1
             status = str(outcome.get("status") or "unknown")
             results[status] = results.get(status, 0) + 1
-        return {"processed": processed, "results": results}
+
+            response_sent = bool(outcome.get("response_sent"))
+            if response_sent:
+                try:
+                    self.imap.mark_processed(message.uid)
+                    marked_read += 1
+                except Exception:
+                    logger.exception(
+                        "Mail response sent but IMAP mark-read failed",
+                        extra={"component": "mail_assistant", "uid": message.uid},
+                    )
+                self.store.record_reviewed(message.message_id, status)
+            elif status in {"ignored", "duplicate"}:
+                # Keep the mail unread for the user, but do not reconsider it on
+                # every polling cycle.
+                self.store.record_reviewed(message.message_id, status)
+
+        return {
+            "processed": evaluated,
+            "evaluated": evaluated,
+            "marked_read": marked_read,
+            "skipped_reviewed": skipped_reviewed,
+            "results": results,
+        }
 
     def process_message(self, message: InboundMail) -> dict[str, Any]:
         started = time.perf_counter()
@@ -121,7 +152,10 @@ class SenteroMailAssistant:
             return self._ignore_silently(message, "automatic_message")
 
         if self.store.already_processed(message.message_id):
-            return {"status": "duplicate"}
+            return {
+                "status": "duplicate",
+                "response_sent": self.store.response_was_sent(message.message_id),
+            }
 
         # Guard 3: only explicitly enabled trusted contacts may ask questions.
         # Unknown or disabled senders are deliberately ignored without sending a
@@ -143,7 +177,7 @@ class SenteroMailAssistant:
             body = "Guten Tag,\n\ndas Anfrage-Limit für E-Mail-Statusabfragen ist erreicht. Bitte versuchen Sie es später erneut.\n\nViele Grüße\nSentero"
             self._send_response(message, contact.email, body, contact_id=contact.id)
             self.store.record_query(received_at=message.received_at, message_id=message.message_id, contact_id=contact.id, sender_email=message.sender_email, intent=None, confidence=None, question="", response_status="rate_limited", error_code="rate_limit", processing_ms=_elapsed_ms(started), response_sent_at=now())
-            return {"status": "rate_limited"}
+            return {"status": "rate_limited", "response_sent": True}
 
         context = self.store.find_thread_context(reply_context_message_id(message))
         if context and context.contact_id not in {None, contact.id}:
@@ -164,7 +198,12 @@ class SenteroMailAssistant:
         except Exception as exc:
             self.store.record_query(received_at=message.received_at, message_id=message.message_id, contact_id=contact.id, sender_email=message.sender_email, intent=intent_name, confidence=confidence, question=question, response_status="failed", error_code=exc.__class__.__name__, processing_ms=_elapsed_ms(started))
             logger.exception("Mail query response failed", extra={"component": "mail_assistant", "contact_id": contact.id, "intent": intent_name})
-            return {"status": "failed", "intent": intent_name, "error": exc.__class__.__name__}
+            return {
+                "status": "failed",
+                "intent": intent_name,
+                "error": exc.__class__.__name__,
+                "response_sent": False,
+            }
         self.store.record_query(received_at=message.received_at, message_id=message.message_id, contact_id=contact.id, sender_email=message.sender_email, intent=intent_name, confidence=confidence, question=question, response_status="sent", processing_ms=_elapsed_ms(started), response_sent_at=now())
         logger.info(
             "Mail query answered",
@@ -176,7 +215,13 @@ class SenteroMailAssistant:
                 "response_status": "sent",
             },
         )
-        return {"status": "sent", "intent": intent_name, "intent_source": routed.source, "thread_context": bool(context)}
+        return {
+            "status": "sent",
+            "intent": intent_name,
+            "intent_source": routed.source,
+            "thread_context": bool(context),
+            "response_sent": True,
+        }
 
     def _send_response(self, message: InboundMail, recipient: str, body: str, contact_id: int | None = None) -> None:
         incoming_subject = sanitize_header_value(message.subject)
@@ -209,8 +254,8 @@ class SenteroMailAssistant:
     def _ignore_silently(self, message: InboundMail, reason: str) -> dict[str, Any]:
         # Intentionally do not write sentero_mail_queries here. Unknown spam,
         # mailing lists and unrelated inbox mail must not pollute the user-facing
-        # transparency/activity timeline. poll_once() still marks the IMAP message
-        # as processed so it is not examined repeatedly.
+        # transparency/activity timeline. poll_once() keeps the IMAP message unread
+        # but remembers the review separately so it is not examined repeatedly.
         logger.info(
             "Mail silently ignored",
             extra={
@@ -219,7 +264,7 @@ class SenteroMailAssistant:
                 "sender": normalize_log_email(message.sender_email),
             },
         )
-        return {"status": "ignored", "error": reason}
+        return {"status": "ignored", "error": reason, "response_sent": False}
 
     def _is_addressed_to_sentero(self, message: InboundMail) -> bool:
         return bool(self._recipient_match_details(message)["matched"])

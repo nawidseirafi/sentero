@@ -90,6 +90,9 @@ async def mail_assistant_loop() -> None:
                     extra={
                         "component": "mail_assistant",
                         "processed": result.get("processed"),
+                        "evaluated": result.get("evaluated"),
+                        "marked_read": result.get("marked_read"),
+                        "skipped_reviewed": result.get("skipped_reviewed"),
                         "results": result.get("results") or {},
                     },
                 )
