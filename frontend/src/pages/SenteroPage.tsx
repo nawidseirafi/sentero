@@ -2734,7 +2734,7 @@ function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp'): ChannelSe
   }
   return {
     title: 'E-Mail einrichten',
-    text: 'Sentero verwendet diese Mailbox, um Hinweise zu senden und Antworten von Vertrauenspersonen zu empfangen.',
+    text: 'Sentero verwendet diese Mailbox, um Hinweise zu senden und Anfragen von Vertrauenspersonen zu beantworten. Für eine neue Anfrage muss der E-Mail-Betreff mit „Sentero:“ beginnen. Die Frage schreiben Sie in den Nachrichtentext.',
     fields: [
       { key: 'smtp_host', label: 'SMTP-Server' },
       { key: 'smtp_port', label: 'SMTP-Port' },

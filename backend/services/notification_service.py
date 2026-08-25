@@ -51,7 +51,22 @@ TELEGRAM_BRAND_SHORT_DESCRIPTION = (
 )
 TELEGRAM_PROFILE_PHOTO = Path(__file__).resolve().parents[1] / "assets" / "sentero_telegram_profile.png"
 
-
+EMAIL_WELCOME_TEXT = (
+    "Sentero Testnachricht: Die E-Mail-Verbindung funktioniert.\n\n"
+    "Sentero verwendet diese Mailbox, um Hinweise zu senden und Anfragen "
+    "von Vertrauenspersonen zu beantworten. Für eine neue Anfrage muss der "
+    "E-Mail-Betreff mit „Sentero:“ beginnen. Die Frage schreiben Sie in den "
+    "Nachrichtentext.\n\n"
+    "Sie können Sentero zum Beispiel fragen:\n"
+    "• Ist alles in Ordnung?\n"
+    "• Wann wurde zuletzt Aktivität erkannt?\n"
+    "• Wo wurde zuletzt Aktivität erkannt?\n"
+    "• Gab es heute Auffälligkeiten?\n"
+    "• Wie ist die Temperatur in der Wohnung?\n"
+    "• Wie hoch ist der Stromverbrauch?\n"
+    "• Sind alle Türen und Fenster zu?\n"
+    "• Wie war die vergangene Nacht?"
+)
 class TelegramApiError(ValueError):
     def __init__(self, method: str, status_code: int, description: str = "", retry_after: int | None = None) -> None:
         self.method = method
@@ -68,6 +83,14 @@ class TelegramApiError(ValueError):
 
 class TelegramRateLimitError(TelegramApiError):
     pass
+
+
+class EmailConnectionError(ValueError):
+    def __init__(self, host: str, port: int, reason: str) -> None:
+        self.host = host
+        self.port = port
+        self.reason = reason
+        super().__init__(f"email_connection_error:{host}:{port}:{reason}")
 
 
 class NotificationProvider(ABC):
@@ -111,12 +134,17 @@ class EmailNotificationProvider(NotificationProvider):
         use_ssl = smtp_encryption == "SSL" or as_bool(config.get("smtp_ssl", False))
         use_starttls = smtp_encryption == "STARTTLS" or (not use_ssl and as_bool(config.get("smtp_starttls", True)))
         smtp_cls = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
-        with smtp_cls(str(config["smtp_host"]), int(config.get("smtp_port") or 587), timeout=10) as smtp:
-            if use_starttls:
-                smtp.starttls()
-            if smtp_user:
-                smtp.login(smtp_user, str(config.get("smtp_password") or ""))
-            smtp.send_message(message, from_addr=str(config.get("smtp_user") or parseaddr(from_header)[1] or EMAIL_FROM), to_addrs=[to_email])
+        smtp_host = str(config["smtp_host"])
+        smtp_port = int(config.get("smtp_port") or 587)
+        try:
+            with smtp_cls(smtp_host, smtp_port, timeout=10) as smtp:
+                if use_starttls:
+                    smtp.starttls()
+                if smtp_user:
+                    smtp.login(smtp_user, str(config.get("smtp_password") or ""))
+                smtp.send_message(message, from_addr=str(config.get("smtp_user") or parseaddr(from_header)[1] or EMAIL_FROM), to_addrs=[to_email])
+        except (OSError, TimeoutError) as exc:
+            raise EmailConnectionError(smtp_host, smtp_port, exc.__class__.__name__) from exc
         return {"message_id": message_id}
 
 
@@ -459,7 +487,7 @@ class NotificationService:
         contact = self._test_contact(channel, setting.get("config") or {})
         title = "Sentero Hinweis"
         text = {
-            "email": "Sentero Testnachricht: E-Mail ist verbunden.",
+            "email": EMAIL_WELCOME_TEXT,
             "telegram": "Sentero Testnachricht: Telegram ist verbunden.",
             "whatsapp": "Sentero Testnachricht: WhatsApp ist verbunden.",
         }[channel]
@@ -1436,6 +1464,8 @@ class NotificationService:
         if isinstance(exc, TelegramApiError):
             suffix = f": {exc.description}" if exc.description else ""
             return f"Telegram API Fehler bei {exc.method} ({exc.status_code}){suffix}"
+        if isinstance(exc, EmailConnectionError):
+            return f"SMTP Verbindung zu {exc.host}:{exc.port} fehlgeschlagen ({exc.reason}). Bitte Server, Port, Verschlüsselung und Firewall prüfen."
         if isinstance(exc, ValueError):
             detail = str(exc)
             if detail == "email_not_configured":

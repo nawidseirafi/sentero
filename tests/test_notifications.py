@@ -183,6 +183,31 @@ class NotificationSystemWarningTests(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(row["outgoing_message_id"], message_id)
 
+    def test_email_connection_refused_reports_smtp_host_and_port(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
+            service = NotificationService(mapping)
+            service.save_channel(
+                "email",
+                False,
+                {
+                    "smtp_host": "smtp.example.test",
+                    "smtp_port": "587",
+                    "smtp_user": "status@example.test",
+                    "smtp_login": "status@example.test",
+                    "smtp_password": "secret",
+                    "test_recipient": "test@example.test",
+                },
+            )
+
+            with patch("backend.services.notification_service.smtplib.SMTP", side_effect=ConnectionRefusedError()):
+                result = service.test("email")
+
+            self.assertFalse(result["ok"])
+            self.assertIn("smtp.example.test:587", result["message"])
+            self.assertIn("ConnectionRefusedError", result["message"])
+
     def test_email_from_uses_sentero_mailbox_when_display_name_only_is_configured(self) -> None:
         self.assertEqual(
             sentero_mail_from({"mail_from": "Sentero", "smtp_user": "nawid@seirafi.de"}),
