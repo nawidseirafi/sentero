@@ -975,16 +975,29 @@ class DeviceMappingService:
             stale = mqtt_state_is_health_stale(dict(row), telemetry_state)
             stale_seconds = sensor_state_age_seconds(telemetry_state) if stale else None
             stale_unreachable = mqtt_state_is_health_unreachable(dict(row), telemetry_state)
-            if stale_unreachable:
+            # An explicit Zigbee2MQTT `availability` signal is authoritative and
+            # must not be overridden by the timestamp-based staleness fallback.
+            # The fallback exists only for devices/setups without a working
+            # availability topic; without this guard, a presence sensor that is
+            # confirmed "online" but simply had no motion to report would still
+            # be flagged unreachable after just 15 minutes of inactivity.
+            if stale_unreachable and availability is None:
                 reachable = False
             direct_battery_level = battery_level_from_state(telemetry_state)
             battery_entity = find_battery_entity(dict(row), states) if direct_battery_level is None else None
             battery_level = direct_battery_level if direct_battery_level is not None else parse_battery(battery_entity.get('state')) if battery_entity else None
             power_source = power_source_from_state(telemetry_state)
             environmental = environmental_metrics_from_state({**dict(row), **(telemetry_state or {})}, states)
-            live_telemetry_state = None if stale else telemetry_state
+            # Same reasoning as the reachable/availability guard above: the
+            # presence-specific 5-minute staleness TTL exists only as a fallback
+            # for devices without a working availability topic. A confirmed
+            # `online` device that simply has nothing new to report (no motion
+            # change) must keep showing its last known presence/motion value
+            # instead of being blanked to "unknown" every few minutes.
+            confirmed_online = availability is True
+            live_telemetry_state = None if (stale and not confirmed_online) else telemetry_state
             c1001_telemetry = c1001_telemetry_from_state(live_telemetry_state)
-            generic_presence = generic_presence_telemetry_from_state(dict(row), live_telemetry_state, states if not stale else [])
+            generic_presence = generic_presence_telemetry_from_state(dict(row), live_telemetry_state, states if (not stale or confirmed_online) else [])
             motion = c1001_telemetry.get('motion') if c1001_telemetry.get('motion') is not None else generic_presence.get('motion')
             motion_state = motion_state_from_state(live_telemetry_state)
             explicit_presence = c1001_telemetry.get('presence')
