@@ -554,6 +554,7 @@ class SenteroBehaviorAgent:
         previous_events = [event for event in history if self._parse_time(event.get("event_time")).date() != today]
         learning = behavior_profile.get("learning") or {}
         utility_usage = self._utility_usage_summary(history)
+        data_quality = self._sensor_data_quality(sensor_snapshot)
         return {
             "learning_completed": bool(learning.get("completed")),
             "learning": learning,
@@ -585,11 +586,13 @@ class SenteroBehaviorAgent:
                 "configured_sensors": len(sensor_snapshot),
                 "rooms": sorted({str(item.get("room")) for item in sensor_snapshot if item.get("room")}),
             },
+            "data_quality": data_quality,
             "deviations": {**self._deviations(today_events, previous_events, sensor_snapshot), "low_utility_usage_today": utility_usage.get("low_usage_today"), **deviations},
             "safety_rules": {
                 "no_medical_diagnosis": True,
                 "no_emergency_calls": True,
                 "only_behavioral_anomaly_detection": True,
+                "data_quality_required": "Bei eingeschränkter Sensor-Datenlage keine beruhigende oder eskalierende Aussage ohne Hinweis auf die eingeschränkte Verlässlichkeit treffen.",
                 "presence_sensor_limits": [
                     "Aqara FP300 erkennt Anwesenheit und Bewegung, aber keine Atmung.",
                     "Aqara FP300 unterscheidet Sitzen und Liegen nicht zuverlässig.",
@@ -625,6 +628,7 @@ class SenteroBehaviorAgent:
 
     def _heuristic_assessment(self, payload: dict[str, Any]) -> dict[str, Any]:
         deviations = payload.get("deviations") or {}
+        data_quality = payload.get("data_quality") or {}
         score = int(payload.get("anomaly_score") or deviations.get("anomaly_score") or 0)
         findings = []
         status = self._status_from_score(score)
@@ -636,6 +640,19 @@ class SenteroBehaviorAgent:
                 "summary": "Es liegen noch nicht genug Sensordaten für eine verlässliche Tagesbewertung vor.",
                 "findings": ["Sentero sammelt zunächst Sensorhistorie, um Routinen zu lernen."],
                 "recommendation": "Keine Aktion erforderlich.",
+                "anomaly_score": score,
+                "email_subject": "",
+                "email_body": "",
+                "llm_response": "",
+            }
+        if data_quality.get("monitoring_reliable") is False:
+            return {
+                "assessment_time": now(),
+                "status": "yellow",
+                "confidence": 0.45,
+                "summary": "Keine verlässliche Tagesbewertung möglich, weil wichtige Aktivitätssensoren keine frischen Daten liefern.",
+                "findings": self._data_quality_findings(data_quality),
+                "recommendation": "Bitte Sensorstatus, Stromversorgung, Batterie und Funkverbindung prüfen.",
                 "anomaly_score": score,
                 "email_subject": "",
                 "email_body": "",
@@ -664,6 +681,11 @@ class SenteroBehaviorAgent:
             "red": "Es liegt eine deutliche Auffälligkeit vor. Bitte prüfen Sie die Situation.",
         }
         recommendation = "Keine Aktion erforderlich." if status == "green" else "Bitte kurz nachfragen, ob alles in Ordnung ist."
+        if status == "green" and data_quality.get("observation_limited"):
+            status = "yellow"
+            findings.extend(self._data_quality_findings(data_quality))
+            summary_by_status["yellow"] = "Es sind keine Auffälligkeiten erkennbar, die Datenlage ist aber eingeschränkt."
+            recommendation = "Bitte Sensorstatus im Blick behalten."
         return {
             "assessment_time": now(),
             "status": status,
@@ -931,12 +953,62 @@ class SenteroBehaviorAgent:
             "learning_completed": bool(learning.get("completed")),
             "learning_day": int(learning.get("day") or 1),
             "learning_days": int(learning.get("days") or self._learning_days()),
+            "data_quality": self._sensor_data_quality(roles),
         }
+
+    def _sensor_data_quality(self, roles: list[dict[str, Any]]) -> dict[str, Any]:
+        configured = [role for role in roles if role.get("configured", role.get("active", True))]
+        unavailable = [role for role in configured if role.get("reachable") is False]
+        stale = [role for role in configured if role.get("stale") is True]
+        activity = [role for role in configured if self._is_presence_role(role) or self._is_motion_entity(role)]
+        activity_limited = [role for role in activity if role.get("reachable") is False or role.get("stale") is True]
+        monitoring_reliable = bool(activity) and len(activity_limited) < len(activity)
+        return {
+            "configured_sensors": len(configured),
+            "activity_sensors": len(activity),
+            "stale_sensors": len(stale),
+            "unreachable_sensors": len(unavailable),
+            "observation_limited": bool(stale or unavailable or not monitoring_reliable),
+            "monitoring_reliable": monitoring_reliable,
+            "stale": self._compact_roles(stale),
+            "unreachable": self._compact_roles(unavailable),
+            "activity_limited": self._compact_roles(activity_limited),
+        }
+
+    def _data_quality_findings(self, data_quality: dict[str, Any]) -> list[str]:
+        findings: list[str] = []
+        if data_quality.get("activity_sensors") == 0:
+            findings.append("Es ist kein Aktivitätssensor eingerichtet.")
+        elif data_quality.get("monitoring_reliable") is False:
+            findings.append("Alle Aktivitätssensoren liefern derzeit keine frischen verwertbaren Daten.")
+        elif data_quality.get("stale_sensors"):
+            findings.append("Einige Sensorwerte sind nicht frisch und nur als letzter bekannter Zustand zu verstehen.")
+        if data_quality.get("unreachable_sensors"):
+            findings.append("Mindestens ein Sensor ist als nicht erreichbar markiert.")
+        return findings or ["Die Sensor-Datenlage ist eingeschränkt."]
 
     def _apply_learning_policy(self, assessment: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         learning = payload.get("learning") or {}
+        data_quality = payload.get("data_quality") or {}
         score = int(payload.get("anomaly_score") or assessment.get("anomaly_score") or 0)
         status = str(assessment.get("status") or self._status_from_score(score))
+        findings = self._list(assessment.get("findings"))
+        if data_quality.get("monitoring_reliable") is False:
+            status = "yellow"
+            assessment["summary"] = "Keine verlässliche Tagesbewertung möglich, weil wichtige Aktivitätssensoren keine frischen Daten liefern."
+            assessment["recommendation"] = "Bitte Sensorstatus, Stromversorgung, Batterie und Funkverbindung prüfen."
+            assessment["email_subject"] = ""
+            assessment["email_body"] = ""
+            findings.extend(item for item in self._data_quality_findings(data_quality) if item not in findings)
+            assessment["confidence"] = min(float(assessment.get("confidence") or 0), 0.55)
+        elif status == "green" and data_quality.get("observation_limited"):
+            status = "yellow"
+            assessment["summary"] = "Es sind keine Auffälligkeiten erkennbar, die Datenlage ist aber eingeschränkt."
+            assessment["recommendation"] = "Bitte Sensorstatus im Blick behalten."
+            assessment["email_subject"] = ""
+            assessment["email_body"] = ""
+            findings.extend(item for item in self._data_quality_findings(data_quality) if item not in findings)
+            assessment["confidence"] = min(float(assessment.get("confidence") or 0), 0.6)
         if not learning.get("completed") and status in {"orange", "red"}:
             status = "yellow"
             assessment["summary"] = "Sentero lernt aktuell den gewohnten Tagesablauf kennen. Es gibt erste Hinweise, aber noch keine abschließende Bewertung."
@@ -944,6 +1016,7 @@ class SenteroBehaviorAgent:
             assessment["email_subject"] = ""
             assessment["email_body"] = ""
         assessment["status"] = status
+        assessment["findings"] = findings
         assessment["anomaly_score"] = score
         assessment["learning_completed"] = bool(learning.get("completed"))
         assessment["learning_day"] = int(learning.get("day") or 1)
@@ -1470,6 +1543,8 @@ class SenteroBehaviorAgent:
                 "label": role.get("label") or role.get("friendly_name"),
                 "state": role.get("state"),
                 "reachable": role.get("reachable"),
+                "stale": role.get("stale"),
+                "stale_seconds": role.get("stale_seconds"),
                 "last_changed": role.get("last_changed"),
                 "last_updated": role.get("last_updated"),
                 "device_class": role.get("device_class"),

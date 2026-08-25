@@ -2269,12 +2269,14 @@ function lightLevel(value: unknown): { label: string; lux: number; tone: string 
 
 function sensorConnectionTone(sensor: SenteroSensorRole) {
   if (sensor.reachable === false) return 'offline';
+  if (sensor.stale === true) return 'stale';
   if (sensor.reachable == null) return 'unknown';
   return 'online';
 }
 
 function sensorConnectionLabel(sensor: SenteroSensorRole) {
   if (sensor.reachable === false) return 'Sensor nicht erreichbar';
+  if (sensor.stale === true) return 'Keine frischen Sensordaten';
   if (sensor.reachable == null) return 'Verbindungsstatus unbekannt';
   return 'Sensor verbunden';
 }

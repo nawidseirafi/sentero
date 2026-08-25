@@ -2431,6 +2431,11 @@ button:disabled {
   box-shadow: 0 0 0 4px rgba(223, 90, 90, 0.12);
 }
 
+.sc-sensor-connection-dot.stale {
+  background: #d89b28;
+  box-shadow: 0 0 0 4px rgba(216, 155, 40, 0.14);
+}
+
 .sc-sensor-connection-dot.unknown {
   background: #9aa9a1;
   box-shadow: 0 0 0 4px rgba(154, 169, 161, 0.12);

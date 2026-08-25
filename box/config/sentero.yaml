@@ -45,6 +45,12 @@ mqtt:
   snapshot_timeout: 0.5
   bootstrap_events: ""
 
+sensors:
+  presence_live_state_ttl_seconds: 300
+  presence_unreachable_grace_seconds: 900
+  health_stale_seconds: 172800
+  unreachable_grace_seconds: 604800
+
 esp32:
   topic_prefix: sentero
   discovery_port: 37020

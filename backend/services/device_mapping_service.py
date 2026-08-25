@@ -25,6 +25,9 @@ PRESENCE_CLASSES = {'occupancy', 'motion', 'presence', 'moving_target', 'static_
 CONTACT_CLASSES = {'door', 'window', 'opening', 'contact'}
 SMART_METER_CLASSES = {'energy', 'power', 'water', 'gas'}
 DEFAULT_PRESENCE_LIVE_STATE_TTL_SECONDS = 300
+DEFAULT_PRESENCE_UNREACHABLE_GRACE_SECONDS = 900
+DEFAULT_SENSOR_HEALTH_STALE_SECONDS = 172800
+DEFAULT_SENSOR_UNREACHABLE_GRACE_SECONDS = 604800
 SMART_METER_KEYS = {
     'energy',
     'energy_consumption',
@@ -844,9 +847,10 @@ class DeviceMappingService:
             device_entities.append(resolved_state)
         usable_entities = [item for item in device_entities if testable_state_entity(item)]
         stale_entities = [item for item in device_entities if presence_live_state_is_stale(mapped, item)]
+        unreachable_stale_entities = [item for item in device_entities if presence_live_state_is_unreachable(mapped, item)]
         reachable = [
             item for item in usable_entities
-            if not presence_live_state_is_stale(mapped, item)
+            if not presence_live_state_is_unreachable(mapped, item)
             and (state_is_reachable(item.get('state')) or sensor_reachable_status(item) is True)
         ]
         if not reachable:
@@ -861,7 +865,7 @@ class DeviceMappingService:
             return {
                 'ok': False,
                 'mode': 'state_check',
-                'message': 'Sensor meldet seit längerer Zeit keine neuen Daten.' if stale_entities else 'Sensor ist aktuell nicht erreichbar.',
+                'message': 'Sensor meldet seit längerer Zeit keine neuen Daten.' if unreachable_stale_entities else 'Sensor ist aktuell nicht erreichbar.',
                 'entity_id': entity_id,
                 'entity_count': len(device_entities),
                 'stale': bool(stale_entities),
@@ -882,6 +886,7 @@ class DeviceMappingService:
             'entity_id': primary.get('entity_id'),
             'state': primary.get('state'),
             'entity_count': len(device_entities),
+            'stale': presence_live_state_is_stale(mapped, primary),
         }
 
     def _remove_zigbee_device(self, mapped: dict[str, Any]) -> dict[str, Any]:
@@ -967,9 +972,10 @@ class DeviceMappingService:
             telemetry_state = combined_mqtt_telemetry_state(dict(row), state, states)
             if reachable is None and mqtt_item_has_telemetry(telemetry_state):
                 reachable = True
-            stale = presence_live_state_is_stale(dict(row), telemetry_state)
+            stale = mqtt_state_is_health_stale(dict(row), telemetry_state)
             stale_seconds = sensor_state_age_seconds(telemetry_state) if stale else None
-            if stale:
+            stale_unreachable = mqtt_state_is_health_unreachable(dict(row), telemetry_state)
+            if stale_unreachable:
                 reachable = False
             direct_battery_level = battery_level_from_state(telemetry_state)
             battery_entity = find_battery_entity(dict(row), states) if direct_battery_level is None else None
@@ -1778,6 +1784,7 @@ def role_candidate_matches(role: str, item: dict[str, Any], allow_missing_device
         return (
             (domain == 'binary_sensor' and (allow_device_class_mismatch or class_matches(role, device_class) or (allow_missing_device_class and not has_device_class)))
             or (domain == 'sensor' and contact_sensor_candidate_matches(item, include_model=allow_device_class_mismatch))
+            or (domain == 'mqtt' and source in {'zigbee2mqtt', 'mqtt'} and (class_matches(role, device_class) or has_contact_telemetry(item)))
             or (domain in {'lock', 'switch'} and role_keyword_matches(role, item, include_model=True))
         )
     return domain == 'binary_sensor'
@@ -2087,12 +2094,16 @@ def latest_seen_for_entities(states: list[dict[str, Any]], entity_ids: list[str]
 def testable_state_entity(item: dict[str, Any]) -> bool:
     entity_id = str(item.get('entity_id') or '')
     domain = str(item.get('domain') or entity_id.split('.', 1)[0] if '.' in entity_id else '')
+    source = str(item.get('source') or item.get('platform') or '').strip().lower()
+    payload_key = str(item.get('payload_key') or '').strip().lower()
     if domain in {'button', 'update'}:
         return False
     haystack = normalize(f"{entity_id} {item.get('friendly_name') or ''} {item.get('original_name') or ''}")
     if any(term in haystack for term in ['identifizieren', 'identify', 'firmware']):
         return False
-    return domain in {'binary_sensor', 'sensor', 'lock', 'switch'}
+    if payload_key == 'state' and source in {'zigbee2mqtt', 'mqtt'} and (item.get('topic') or item.get('source_ref')):
+        return True
+    return domain in {'binary_sensor', 'sensor', 'lock', 'switch', 'mqtt'}
 
 
 def sensor_reachable_status(state: dict[str, Any] | None) -> bool | None:
@@ -2117,6 +2128,33 @@ def presence_live_state_ttl_seconds() -> int:
     return max(value, 30)
 
 
+def presence_unreachable_grace_seconds() -> int:
+    raw = os.getenv('SENTERO_PRESENCE_UNREACHABLE_GRACE_SECONDS')
+    try:
+        value = int(raw) if raw is not None else config_int('sensors.presence_unreachable_grace_seconds', DEFAULT_PRESENCE_UNREACHABLE_GRACE_SECONDS)
+    except (TypeError, ValueError):
+        value = DEFAULT_PRESENCE_UNREACHABLE_GRACE_SECONDS
+    return max(value, presence_live_state_ttl_seconds())
+
+
+def sensor_health_stale_seconds() -> int:
+    raw = os.getenv('SENTERO_SENSOR_HEALTH_STALE_SECONDS')
+    try:
+        value = int(raw) if raw is not None else config_int('sensors.health_stale_seconds', DEFAULT_SENSOR_HEALTH_STALE_SECONDS)
+    except (TypeError, ValueError):
+        value = DEFAULT_SENSOR_HEALTH_STALE_SECONDS
+    return max(value, presence_live_state_ttl_seconds())
+
+
+def sensor_unreachable_grace_seconds() -> int:
+    raw = os.getenv('SENTERO_SENSOR_UNREACHABLE_GRACE_SECONDS')
+    try:
+        value = int(raw) if raw is not None else config_int('sensors.unreachable_grace_seconds', DEFAULT_SENSOR_UNREACHABLE_GRACE_SECONDS)
+    except (TypeError, ValueError):
+        value = DEFAULT_SENSOR_UNREACHABLE_GRACE_SECONDS
+    return max(value, sensor_health_stale_seconds())
+
+
 def sensor_state_age_seconds(state: dict[str, Any] | None) -> int | None:
     if not state:
         return None
@@ -2134,6 +2172,36 @@ def presence_live_state_is_stale(role: dict[str, Any], state: dict[str, Any] | N
         return False
     age = sensor_state_age_seconds(state)
     return age is not None and age > presence_live_state_ttl_seconds()
+
+
+def presence_live_state_is_unreachable(role: dict[str, Any], state: dict[str, Any] | None) -> bool:
+    if not presence_live_state_is_stale(role, state):
+        return False
+    age = sensor_state_age_seconds(state)
+    return age is not None and age > presence_unreachable_grace_seconds()
+
+
+def mqtt_state_is_health_stale(role: dict[str, Any], state: dict[str, Any] | None) -> bool:
+    if not state:
+        return False
+    if role_is_presence(str(role.get('role') or '')):
+        return presence_live_state_is_stale(role, state)
+    source = str(state.get('source') or state.get('platform') or role.get('source') or '').strip().lower()
+    if source not in {'zigbee2mqtt', 'mqtt'} and not (state.get('topic') or state.get('source_ref') or role.get('entity_id')):
+        return False
+    age = sensor_state_age_seconds(state)
+    return age is not None and age > sensor_health_stale_seconds()
+
+
+def mqtt_state_is_health_unreachable(role: dict[str, Any], state: dict[str, Any] | None) -> bool:
+    if not state:
+        return False
+    if role_is_presence(str(role.get('role') or '')):
+        return presence_live_state_is_unreachable(role, state)
+    if not mqtt_state_is_health_stale(role, state):
+        return False
+    age = sensor_state_age_seconds(state)
+    return age is not None and age > sensor_unreachable_grace_seconds()
 
 
 def state_is_reachable(value: Any) -> bool:
@@ -2230,6 +2298,19 @@ def has_presence_telemetry(item: dict[str, Any] | None) -> bool:
             'moving_target',
             'static_target',
         )
+    )
+
+
+def has_contact_telemetry(item: dict[str, Any] | None) -> bool:
+    if not item or item.get('metadata_only') is True:
+        return False
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    if attrs.get('metadata_only') is True:
+        return False
+    return any(
+        (key in item and mqtt_telemetry_value_is_valid(item.get(key)))
+        or (key in attrs and mqtt_telemetry_value_is_valid(attrs.get(key)))
+        for key in ('contact', 'open')
     )
 
 
