@@ -126,7 +126,7 @@ def answer_prompt(result: QueryResult) -> str:
 def llm_response_allowed(result: QueryResult) -> bool:
     if result.permission_denied or not result.data_available:
         return False
-    return result.intent not in {MailIntent.HELP, MailIntent.UNKNOWN}
+    return result.intent not in {MailIntent.HELP, MailIntent.UNKNOWN, MailIntent.SENSOR_HEALTH}
 
 
 def parse_json_object(value: str) -> dict[str, Any]:

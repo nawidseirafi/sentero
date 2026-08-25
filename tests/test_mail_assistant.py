@@ -116,6 +116,35 @@ class MailAssistantTest(unittest.TestCase):
         self.assertIn("Schwache Batterie: Schlafzimmer Präsenz (Schlafzimmer) 18 %", text)
         self.assertIn("Batteriestand: Wohnzimmer Präsenz (Wohnzimmer) 82 %", text)
 
+    def test_sensor_health_uses_configured_timezone_not_utc_label(self) -> None:
+        roles = [
+            {
+                "role": "living_room_presence",
+                "room": "living_room",
+                "friendly_name": "Wohnzimmer Presence",
+                "active": 1,
+                "reachable": True,
+                "battery_level": 100,
+                "updated_at": "2026-08-25T11:50:00+00:00",
+            },
+            {
+                "role": "bedroom_presence",
+                "room": "bedroom",
+                "friendly_name": "Schlafzimmer Präsenz",
+                "active": 1,
+                "reachable": True,
+                "battery_level": 90,
+                "updated_at": "2026-08-25T11:49:00+00:00",
+            },
+        ]
+
+        with patch.dict("os.environ", {"SENTERO_TIMEZONE": "Europe/Berlin"}, clear=False), patch.object(self.mapping, "roles", return_value=roles):
+            self.assistant.process_message(self._mail("Funktionieren die Sensoren?"))
+
+        text = self.notification.sent[-1]["text"]
+        self.assertIn("13:50 Uhr (Berlin)", text)
+        self.assertNotIn("UTC", text)
+
     def test_allowed_contact_can_write_to_customer_mailbox(self) -> None:
         result = self.assistant.process_message(self._mail("Ist alles in Ordnung?", recipient="status@example.test"))
         self.assertEqual(result["status"], "sent")

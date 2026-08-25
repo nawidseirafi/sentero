@@ -211,6 +211,9 @@ class MailResponseService:
             lines.append(f"{len(facts['low_battery'])} Sensoren melden eine schwache Batterie.")
         if not facts.get("unreachable") and not facts.get("low_battery"):
             lines.append("Es liegen aktuell keine technischen Sensorwarnungen vor.")
+        latest = _sensor_update_sentence(facts)
+        if latest:
+            lines.append(latest)
         lines.extend(["", "Viele Grüße", "Sentero"])
         return "\n".join(lines)
 
@@ -321,6 +324,25 @@ def _sensor_label(item: dict[str, Any], include_battery: bool = False) -> str:
     if include_battery and isinstance(battery, (int, float)):
         text += f" {int(battery)} %"
     return text
+
+
+def _sensor_update_sentence(facts: dict[str, Any]) -> str:
+    label = str(facts.get("latest_sensor_update_label") or "").strip()
+    relative = str(facts.get("latest_sensor_update_relative") or "").strip()
+    timezone_name = str(facts.get("timezone") or "").strip()
+    if not label and not relative:
+        return ""
+    timezone_suffix = _timezone_suffix(timezone_name)
+    if relative:
+        return f"Die letzte Aktualisierung der Sensordaten erfolgte {relative}, um {label} Uhr{timezone_suffix}." if label else f"Die letzte Aktualisierung der Sensordaten erfolgte {relative}."
+    return f"Die letzte Aktualisierung der Sensordaten erfolgte um {label} Uhr{timezone_suffix}."
+
+
+def _timezone_suffix(timezone_name: str) -> str:
+    if not timezone_name:
+        return ""
+    city = timezone_name.rsplit("/", 1)[-1].replace("_", " ")
+    return f" ({city})" if city else ""
 
 
 def _illuminance_line(env: dict[str, Any]) -> str:

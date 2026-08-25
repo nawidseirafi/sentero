@@ -217,7 +217,16 @@ class MailQueryService:
         unreachable = [role for role in roles if role.get("reachable") is False]
         low_battery = [role for role in roles if isinstance(role.get("battery_level"), (int, float)) and role.get("battery_level") < 30]
         latest = max((self._parse_time(role.get("last_changed") or role.get("last_updated") or role.get("updated_at")) for role in roles if role.get("last_changed") or role.get("last_updated") or role.get("updated_at")), default=None)
-        return QueryResult(intent=MailIntent.SENSOR_HEALTH, status="ok", facts={"sensor_count": len(roles), "unreachable": unreachable, "low_battery": low_battery, "latest_sensor_update": latest.isoformat(timespec="seconds") if latest else None})
+        return QueryResult(intent=MailIntent.SENSOR_HEALTH, status="ok", facts={
+            "sensor_count": len(roles),
+            "unreachable": unreachable,
+            "low_battery": low_battery,
+            "latest_sensor_update": latest.isoformat(timespec="seconds") if latest else None,
+            "latest_sensor_update_local": self._local_timestamp(latest),
+            "latest_sensor_update_label": self._local_time_label(latest),
+            "latest_sensor_update_relative": self._relative_time_label(latest),
+            "timezone": self._sentero_timezone().key,
+        })
 
     def _dashboard_summary(self, assessment: dict[str, Any] | None, activity: dict[str, Any] | None, contact: AuthorizedContact) -> dict[str, Any]:
         configured_roles = self._configured_roles(include_state=True)
