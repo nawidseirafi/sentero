@@ -21,7 +21,7 @@ from backend.services.device_mapping_service import DeviceMappingService, ensure
 from backend.services.aal_roles import can_access_data_classes
 from backend.services.consent_service import ConsentService
 from backend.behavior_agent import SenteroBehaviorAgent
-from backend.services.notification_service import NotificationService, mail_assistant_reply_to, sentero_mail_from
+from backend.services.notification_service import NotificationService, mail_assistant_reply_to, sentero_mail_from, sentero_mail_subject
 from backend.services.network.models import NetworkStatusCode
 from backend.services.setup_service import SenteroSetupService
 from backend.agents.sentero.mail.store import MailAssistantStore
@@ -299,6 +299,29 @@ class NotificationSystemWarningTests(unittest.TestCase):
                 config,
             )
         )
+
+    def test_mail_assistant_enabled_email_subjects_are_activated(self) -> None:
+        config = {
+            "smtp_host": "smtp.example.test",
+            "smtp_user": "status@example.test",
+            "smtp_password": "secret",
+            "imap_host": "imap.example.test",
+            "imap_user": "status@example.test",
+            "imap_password": "secret",
+        }
+        self.assertEqual(
+            sentero_mail_subject("Sentero Sensor nicht erreichbar", config),
+            "Sentero: Sentero Sensor nicht erreichbar",
+        )
+        self.assertEqual(
+            sentero_mail_subject("Re: Sentero: Tagesstatus", config),
+            "Re: Sentero: Tagesstatus",
+        )
+        self.assertEqual(
+            sentero_mail_subject("Sensor Warnung", {**config, "activation_subject_prefix": "Status"}),
+            "Status: Sensor Warnung",
+        )
+        self.assertEqual(sentero_mail_subject("Normale Nachricht", {}), "Normale Nachricht")
 
     def test_masked_email_channel_save_keeps_existing_passwords(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -864,6 +887,37 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
             self.assertEqual(second["sent"], 0)
             self.assertEqual(len(provider.sent), 2)
+
+    def test_system_warning_email_subject_has_sentero_activation_prefix_when_replies_are_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
+            contact_id = insert_contact(mapping)
+            config = {
+                "smtp_host": "smtp.example.test",
+                "smtp_user": "status@example.test",
+                "smtp_password": "secret",
+                "imap_host": "imap.example.test",
+                "imap_user": "status@example.test",
+                "imap_password": "secret",
+            }
+            with mapping.connect() as con:
+                con.execute("update trusted_contacts set email_queries_enabled = 1 where id = ?", (contact_id,))
+                con.execute(
+                    "update notification_channel_settings set enabled = 1, config_json = ? where channel = 'email'",
+                    (json.dumps(config),),
+                )
+                con.commit()
+
+            provider = RecordingProvider()
+            service = NotificationService(mapping)
+            service.providers["email"] = provider
+
+            result = service.notify_system_warnings(sensors=[sensor_warning_row(label="Wohnzimmer Presence", reachable=False)])
+
+            self.assertEqual(result["sent"], 1)
+            self.assertEqual(provider.sent[0]["title"], "Sentero: Sentero Sensor nicht erreichbar")
+            self.assertIn("Antworten Sie einfach", provider.sent[0]["text"])
 
     def test_behavior_notifications_require_active_consent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

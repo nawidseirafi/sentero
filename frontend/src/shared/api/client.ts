@@ -65,6 +65,8 @@ export type SenteroSensorRole = {
   fall_detected?: boolean | null;
   motion?: string | null;
   motion_state?: string | null;
+  stale?: boolean | null;
+  stale_seconds?: number | null;
   writable_settings?: string[] | null;
   hp_led?: boolean | null;
   fall_led?: boolean | null;
@@ -692,7 +694,7 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
   testSenteroSensorRole: (role: string) =>
-    request<{ ok: boolean; mode: string; message: string; entity_id?: string; state?: string }>(`/api/sentero/sensor-roles/${encodeURIComponent(role)}/test`, { method: 'POST' }),
+    request<{ ok: boolean; mode: string; message: string; entity_id?: string; state?: string; stale?: boolean }>(`/api/sentero/sensor-roles/${encodeURIComponent(role)}/test`, { method: 'POST' }),
   commandSenteroSensorRole: (role: string, payload: { command: string; enabled?: boolean; value?: unknown; settings?: Record<string, unknown> }) =>
     request<{ ok: boolean; message: string; hp_led?: boolean | null; fall_led?: boolean | null; led_status?: SenteroSensorRole['led_status']; response?: Record<string, unknown> }>(`/api/sentero/sensor-roles/${encodeURIComponent(role)}/command`, {
       method: 'POST',

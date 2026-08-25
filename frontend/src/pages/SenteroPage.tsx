@@ -85,6 +85,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [ledStates, setLedStates] = useState<Record<string, boolean>>({});
   const [ledBusyRole, setLedBusyRole] = useState<string | null>(null);
+  const [sensorTestBusyRole, setSensorTestBusyRole] = useState<string | null>(null);
   const [channels, setChannels] = useState<SenteroNotificationChannel[]>([]);
   const [telegramBot, setTelegramBot] = useState<SenteroTelegramBotInfo | null>(null);
   const [consents, setConsents] = useState<SenteroConsent[]>([]);
@@ -927,11 +928,15 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     }
   }
 
-  async function testSensor(role: string) {
+  async function testSensor(sensor: SenteroSensorRole) {
+    const wasOffline = sensor.reachable === false || sensor.stale === true;
+    setSensorTestBusyRole(sensor.role);
     try {
-      const result = await api.testSenteroSensorRole(role);
+      const result = await api.testSenteroSensorRole(sensor.role);
       if (!result.ok) {
         setError(result.message || 'Sensor ist aktuell nicht erreichbar.');
+      } else if (wasOffline && result.stale !== false) {
+        setError('Sensor erneut geprüft. Sentero wartet auf neue Sensordaten.');
       } else {
         setError('');
         toast(result.message || 'Sensor geprüft');
@@ -939,6 +944,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sensor konnte nicht geprüft werden.');
+    } finally {
+      setSensorTestBusyRole(null);
     }
   }
 
@@ -1130,9 +1137,17 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                               <span aria-hidden="true" />
                             </button>
                           )}
-                          <button type="button" onClick={() => void renameSensor(sensor)}><Pencil size={18} /> </button>
-                          <button type="button" onClick={() => void testSensor(sensor.role)}><Wifi size={18} /> </button>
-                          <button type="button" onClick={() => void deleteSensor(sensor)}><Trash2 size={18} /> </button>
+                          <button type="button" onClick={() => void renameSensor(sensor)} title="Sensor umbenennen" aria-label="Sensor umbenennen"><Pencil size={18} aria-hidden="true" /> </button>
+                          <button
+                            type="button"
+                            onClick={() => void testSensor(sensor)}
+                            disabled={sensorTestBusyRole === sensor.role}
+                            title={sensor.reachable === false ? 'Sensor erneut prüfen' : 'Sensor prüfen'}
+                            aria-label={sensor.reachable === false ? 'Sensor erneut prüfen' : 'Sensor prüfen'}
+                          >
+                            {sensor.reachable === false ? <WifiOff size={18} aria-hidden="true" /> : <Wifi size={18} aria-hidden="true" />}
+                          </button>
+                          <button type="button" onClick={() => void deleteSensor(sensor)} title="Sensor entfernen" aria-label="Sensor entfernen"><Trash2 size={18} aria-hidden="true" /> </button>
                         </div>
                       </div>
                     ))}

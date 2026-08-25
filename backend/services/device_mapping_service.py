@@ -10,7 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from backend.config import config_str
+from backend.config import config_int, config_str
 from backend.paths import DATA_DIR
 from backend.logging_config import get_logger
 from backend.services.ecotracker_service import EcoTrackerClient, ecotracker_snapshot_rows
@@ -24,6 +24,7 @@ DISCOVERY_CONFIDENCE_THRESHOLD = 50
 PRESENCE_CLASSES = {'occupancy', 'motion', 'presence', 'moving_target', 'static_target'}
 CONTACT_CLASSES = {'door', 'window', 'opening', 'contact'}
 SMART_METER_CLASSES = {'energy', 'power', 'water', 'gas'}
+DEFAULT_PRESENCE_LIVE_STATE_TTL_SECONDS = 300
 SMART_METER_KEYS = {
     'energy',
     'energy_consumption',
@@ -842,7 +843,12 @@ class DeviceMappingService:
         if resolved_state and resolved_state not in device_entities:
             device_entities.append(resolved_state)
         usable_entities = [item for item in device_entities if testable_state_entity(item)]
-        reachable = [item for item in usable_entities if state_is_reachable(item.get('state')) or sensor_reachable_status(item) is True]
+        stale_entities = [item for item in device_entities if presence_live_state_is_stale(mapped, item)]
+        reachable = [
+            item for item in usable_entities
+            if not presence_live_state_is_stale(mapped, item)
+            and (state_is_reachable(item.get('state')) or sensor_reachable_status(item) is True)
+        ]
         if not reachable:
             logger.info(
                 "Sentero sensor test unreachable role=%s entity=%s device=%s device_entities=%s usable_entities=%s",
@@ -855,9 +861,10 @@ class DeviceMappingService:
             return {
                 'ok': False,
                 'mode': 'state_check',
-                'message': 'Sensor ist aktuell nicht erreichbar.',
+                'message': 'Sensor meldet seit längerer Zeit keine neuen Daten.' if stale_entities else 'Sensor ist aktuell nicht erreichbar.',
                 'entity_id': entity_id,
                 'entity_count': len(device_entities),
+                'stale': bool(stale_entities),
             }
         primary = next((item for item in reachable if str(item.get('entity_id') or '') == entity_id), reachable[0])
         logger.info(
@@ -960,15 +967,20 @@ class DeviceMappingService:
             telemetry_state = combined_mqtt_telemetry_state(dict(row), state, states)
             if reachable is None and mqtt_item_has_telemetry(telemetry_state):
                 reachable = True
+            stale = presence_live_state_is_stale(dict(row), telemetry_state)
+            stale_seconds = sensor_state_age_seconds(telemetry_state) if stale else None
+            if stale:
+                reachable = False
             direct_battery_level = battery_level_from_state(telemetry_state)
             battery_entity = find_battery_entity(dict(row), states) if direct_battery_level is None else None
             battery_level = direct_battery_level if direct_battery_level is not None else parse_battery(battery_entity.get('state')) if battery_entity else None
             power_source = power_source_from_state(telemetry_state)
             environmental = environmental_metrics_from_state({**dict(row), **(telemetry_state or {})}, states)
-            c1001_telemetry = c1001_telemetry_from_state(telemetry_state)
-            generic_presence = generic_presence_telemetry_from_state(dict(row), telemetry_state, states)
+            live_telemetry_state = None if stale else telemetry_state
+            c1001_telemetry = c1001_telemetry_from_state(live_telemetry_state)
+            generic_presence = generic_presence_telemetry_from_state(dict(row), live_telemetry_state, states if not stale else [])
             motion = c1001_telemetry.get('motion') if c1001_telemetry.get('motion') is not None else generic_presence.get('motion')
-            motion_state = motion_state_from_state(telemetry_state)
+            motion_state = motion_state_from_state(live_telemetry_state)
             explicit_presence = c1001_telemetry.get('presence')
             inferred_presence = generic_presence.get('presence')
             presence = effective_presence_value(explicit_presence, inferred_presence, motion_state, motion)
@@ -991,6 +1003,8 @@ class DeviceMappingService:
                     "fall_detected": c1001_telemetry.get('fall_detected'),
                     "motion": motion,
                     "motion_state": motion_state,
+                    "stale": stale,
+                    "stale_seconds": stale_seconds,
                 },
             )
             result.append({
@@ -1018,6 +1032,8 @@ class DeviceMappingService:
                 'fall_detected': c1001_telemetry.get('fall_detected'),
                 'motion': motion,
                 'motion_state': motion_state,
+                'stale': stale,
+                'stale_seconds': stale_seconds,
                 'hp_led': c1001_telemetry.get('hp_led'),
                 'fall_led': c1001_telemetry.get('fall_led'),
                 'led_status': c1001_telemetry.get('led_status'),
@@ -2092,6 +2108,34 @@ def sensor_reachable_status(state: dict[str, Any] | None) -> bool | None:
     return True
 
 
+def presence_live_state_ttl_seconds() -> int:
+    raw = os.getenv('SENTERO_PRESENCE_LIVE_STATE_TTL_SECONDS')
+    try:
+        value = int(raw) if raw is not None else config_int('sensors.presence_live_state_ttl_seconds', DEFAULT_PRESENCE_LIVE_STATE_TTL_SECONDS)
+    except (TypeError, ValueError):
+        value = DEFAULT_PRESENCE_LIVE_STATE_TTL_SECONDS
+    return max(value, 30)
+
+
+def sensor_state_age_seconds(state: dict[str, Any] | None) -> int | None:
+    if not state:
+        return None
+    timestamp = state.get('last_updated') or state.get('last_changed')
+    if not timestamp:
+        return None
+    return max(0, int((datetime.now(timezone.utc) - parse_time(timestamp)).total_seconds()))
+
+
+def presence_live_state_is_stale(role: dict[str, Any], state: dict[str, Any] | None) -> bool:
+    if not state or not role_is_presence(str(role.get('role') or '')):
+        return False
+    source = str(state.get('source') or state.get('platform') or role.get('source') or '').strip().lower()
+    if source not in {'zigbee2mqtt', 'mqtt'} and not (state.get('topic') or state.get('source_ref') or role.get('entity_id')):
+        return False
+    age = sensor_state_age_seconds(state)
+    return age is not None and age > presence_live_state_ttl_seconds()
+
+
 def state_is_reachable(value: Any) -> bool:
     return str(value or '').strip().lower() not in {'', 'unknown', 'unavailable', 'none'}
 
@@ -3094,6 +3138,8 @@ def public_role(data: dict[str, Any]) -> dict[str, Any]:
         'fall_detected': data.get('fall_detected'),
         'motion': data.get('motion'),
         'motion_state': data.get('motion_state'),
+        'stale': data.get('stale'),
+        'stale_seconds': data.get('stale_seconds'),
         'hp_led': data.get('hp_led'),
         'fall_led': data.get('fall_led'),
         'led_status': data.get('led_status'),

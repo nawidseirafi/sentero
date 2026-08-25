@@ -68,6 +68,7 @@ export function DashboardPage() {
 
   const configuredRoles = roles.filter((role) => role.configured);
   const hasSensors = configuredRoles.length > 0;
+  const hasSensorIssue = configuredRoles.some((role) => role.reachable === false);
   const latestTimeline = useMemo(() => latestActivityEvent(timelineEvents), [timelineEvents]);
   const latestMovement = useMemo(() => latestMovementEvent(timelineEvents), [timelineEvents]);
   // Current location is a live state, not a historical event. A person may sit
@@ -96,6 +97,7 @@ export function DashboardPage() {
   const dashboardState = getDashboardState({
     error,
     hasSensors,
+    hasSensorIssue,
     latest: Boolean(latestTimeline || liveMovement),
     currentPresence: Boolean(currentPresence),
     behavior,
@@ -228,9 +230,10 @@ function MetricCard({ icon, label, value, highlight, muted }: { icon: ReactNode;
   );
 }
 
-function getDashboardState({ error, hasSensors, latest, currentPresence, behavior, learning }: {
+function getDashboardState({ error, hasSensors, hasSensorIssue, latest, currentPresence, behavior, learning }: {
   error: string;
   hasSensors: boolean;
+  hasSensorIssue: boolean;
   latest: boolean;
   currentPresence: boolean;
   behavior: SenteroBehaviorAssessment | null;
@@ -250,6 +253,14 @@ function getDashboardState({ error, hasSensors, latest, currentPresence, behavio
       kicker: 'Einrichtung offen',
       headline: 'Noch keine Sensoren.',
       copy: 'Verbinden Sie zuerst Sensoren, damit Sentero den Tagesablauf zuverlässig bewerten kann.',
+    };
+  }
+  if (hasSensorIssue) {
+    return {
+      tone: 'error',
+      kicker: 'Sensor prüfen',
+      headline: 'Sensor prüfen.',
+      copy: 'Mindestens ein Sensor meldet aktuell keine neuen Daten.',
     };
   }
   if (!latest) {

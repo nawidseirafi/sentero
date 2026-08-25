@@ -57,10 +57,11 @@ class FakeMqtt:
 
 class FakeMessage:
 
-    def __init__(self, topic: str, payload: dict) -> None:
+    def __init__(self, topic: str, payload: dict, received_at: str | None = None) -> None:
         self.topic = topic
         self.payload = payload
         self.raw_payload = '{}'
+        self.received_at = received_at
 
 class SnapshotMqtt(FakeMqtt):
 
@@ -359,6 +360,36 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertEqual(role['motion'], 'Active')
         self.assertEqual(role['battery_level'], 88)
         self.assertTrue(role['reachable'])
+
+    def test_stale_zigbee2mqtt_presence_payload_is_not_live_presence(self) -> None:
+        stale_time = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(timespec='seconds')
+        mqtt = SnapshotMqtt([FakeMessage('zigbee2mqtt/Wohnzimmer Presence', {'battery': 88, 'motion_state': 'large', 'presence': True, 'temperature': 22.1}, received_at=stale_time)])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {'SENTERO_MQTT_BOOTSTRAP_EVENTS': '', 'SENTERO_PRESENCE_LIVE_STATE_TTL_SECONDS': '300'}, clear=False):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / 'sentero.db')
+            mapping.mqtt = mqtt
+            mapping.sensor_source = Zigbee2MqttSensorSource(mqtt=mqtt)
+            mapping.upsert_role({'role': 'living_room_presence', 'room': 'living_room', 'entity_id': 'zigbee2mqtt/Wohnzimmer Presence', 'friendly_name': 'Wohnzimmer Presence', 'device_class': 'presence', 'domain': 'mqtt', 'source': 'zigbee2mqtt', 'confidence': 100})
+            role = mapping.roles(include_state=True)[0]
+        self.assertFalse(role['reachable'])
+        self.assertTrue(role['stale'])
+        self.assertGreaterEqual(role['stale_seconds'], 600)
+        self.assertIsNone(role['presence'])
+        self.assertIsNone(role['motion'])
+        self.assertIsNone(role['motion_state'])
+        self.assertEqual(role['battery_level'], 88)
+
+    def test_sensor_test_rejects_stale_presence_payload(self) -> None:
+        stale_time = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(timespec='seconds')
+        mqtt = SnapshotMqtt([FakeMessage('zigbee2mqtt/Wohnzimmer Presence', {'battery': 88, 'motion_state': 'large', 'presence': True}, received_at=stale_time)])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {'SENTERO_MQTT_BOOTSTRAP_EVENTS': '', 'SENTERO_PRESENCE_LIVE_STATE_TTL_SECONDS': '300'}, clear=False):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / 'sentero.db')
+            mapping.mqtt = mqtt
+            mapping.sensor_source = Zigbee2MqttSensorSource(mqtt=mqtt)
+            mapping.upsert_role({'role': 'living_room_presence', 'room': 'living_room', 'entity_id': 'zigbee2mqtt/Wohnzimmer Presence', 'friendly_name': 'Wohnzimmer Presence', 'device_class': 'presence', 'domain': 'mqtt', 'source': 'zigbee2mqtt', 'confidence': 100})
+            result = mapping.test_role('living_room_presence')
+        self.assertFalse(result['ok'])
+        self.assertTrue(result['stale'])
+        self.assertIn('keine neuen Daten', result['message'])
 
     def test_presence_false_does_not_fall_back_to_none(self) -> None:
         state = {'entity_id': 'zigbee2mqtt/Wohnzimmer Presence', 'domain': 'mqtt', 'state': 'online', 'source': 'zigbee2mqtt', 'source_ref': 'zigbee2mqtt/Wohnzimmer Presence', 'attributes': {'presence': False, 'motion_state': 'none'}}

@@ -117,7 +117,7 @@ class EmailNotificationProvider(NotificationProvider):
         message_id = str(config.get("message_id") or generate_sentero_message_id(config)).strip()
         from_header = sentero_mail_from(config)
         message = EmailMessage()
-        message["Subject"] = title
+        message["Subject"] = sentero_mail_subject(title, config)
         message["From"] = from_header
         message["To"] = to_email
         message["Message-ID"] = message_id
@@ -751,12 +751,13 @@ class NotificationService:
                     "battery_level": int(battery),
                 })
             if sensor.get("reachable") is False:
+                stale = sensor.get("stale") is True
                 warnings.append({
                     "key": f"sensor_unreachable:{subject_id}",
                     "type": "sensor_unreachable",
                     "severity": "red",
                     "title": "Sentero Sensor nicht erreichbar",
-                    "summary": f"{label} ist aktuell nicht erreichbar.",
+                    "summary": f"{label} meldet seit längerer Zeit keine neuen Daten." if stale else f"{label} ist aktuell nicht erreichbar.",
                     "recommendation": "Bitte prüfen Sie Stromversorgung, Funkverbindung oder Gateway, damit Warnungen zuverlässig erkannt werden.",
                     "role": role,
                     "subject_id": subject_id,
@@ -931,6 +932,7 @@ class NotificationService:
         if not setting.get("enabled"):
             return
         if channel == "email":
+            title = sentero_mail_subject(title, setting.get("config") or {})
             text = add_mail_assistant_footer(text, setting.get("config") or {})
         if self._should_queue_offline():
             self._enqueue(contact, channel, severity, title, text, incident_key=incident_key)
@@ -949,8 +951,9 @@ class NotificationService:
             if channel != "email" and fallback:
                 try:
                     email_setting = self._setting("email")
-                    result = self.providers["email"].send(contact, title, email_text_for_fallback(text), email_setting.get("config") or {})
-                    self._log(contact.get("id"), "email", severity, "fallback_sent", title, None, outgoing_message_id=_provider_message_id(result), incident_key=incident_key)
+                    fallback_title = sentero_mail_subject(title, email_setting.get("config") or {})
+                    result = self.providers["email"].send(contact, fallback_title, email_text_for_fallback(text), email_setting.get("config") or {})
+                    self._log(contact.get("id"), "email", severity, "fallback_sent", fallback_title, None, outgoing_message_id=_provider_message_id(result), incident_key=incident_key)
                 except Exception as fallback_exc:
                     logger.exception(
                         "Notification fallback email failed",
@@ -1597,6 +1600,33 @@ def add_mail_assistant_footer(text: str, config: dict[str, Any] | None = None) -
     if footer in text:
         return text
     return f"{text.rstrip()}\n\n---\n{footer}"
+
+
+def sentero_mail_subject(title: Any, config: dict[str, Any] | None = None) -> str:
+    subject = str(title or "Sentero Hinweis").strip() or "Sentero Hinweis"
+    if not mail_assistant_configured(config or {}):
+        return subject
+    prefix = _activation_subject_prefix(config or {})
+    normalized = _strip_mail_reply_prefixes(subject).lower()
+    if normalized.startswith(prefix.lower()):
+        return subject
+    return f"{prefix} {subject}"
+
+
+def _activation_subject_prefix(config: dict[str, Any]) -> str:
+    prefix = str((config or {}).get("activation_subject_prefix") or "Sentero:").strip()
+    if not prefix:
+        return "Sentero:"
+    return prefix if prefix.endswith(":") else f"{prefix}:"
+
+
+def _strip_mail_reply_prefixes(subject: str) -> str:
+    text = subject.strip()
+    previous = None
+    while text and text != previous:
+        previous = text
+        text = re.sub(r"^\s*(?:re|aw|wg|fw|fwd)\s*:\s*", "", text, count=1, flags=re.I).strip()
+    return text
 
 
 def mail_assistant_reply_to(contact: dict[str, Any], config: dict[str, Any]) -> str | None:
