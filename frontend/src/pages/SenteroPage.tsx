@@ -2049,7 +2049,7 @@ function ChannelChecks({
 }) {
   function toggle(channel: string, checked: boolean) {
     if (channel === 'email') return;
-    if (!available[channel as 'email' | 'telegram' | 'whatsapp']) return;
+    if (checked && !available[channel as 'email' | 'telegram' | 'whatsapp']) return;
     const next = checked ? [...value, channel] : value.filter((item) => item !== channel);
     onChange(sanitizeChannels(next, available));
   }
@@ -2063,8 +2063,8 @@ function ChannelChecks({
       <span>Benachrichtigung per</span>
       <div className="sc-channel-choice-row">
         {options.map((option) => {
-          const selected = option.channel === 'email' || (value.includes(option.channel) && available[option.channel]);
-          const disabled = option.channel === 'email' || !available[option.channel];
+          const selected = option.channel === 'email' || value.includes(option.channel);
+          const disabled = option.channel === 'email' || (!available[option.channel] && !selected);
           return (
             <label key={option.channel} className={`sc-channel-choice${selected ? ' selected' : ''}${disabled ? ' disabled' : ''}`}>
               <input type="checkbox" checked={selected} disabled={disabled} onChange={(event) => toggle(option.channel, event.target.checked)} />
@@ -2694,16 +2694,16 @@ function networkLabel(status: BoxNetworkStatus | null) {
   return 'Verbunden';
 }
 
-function sanitizeChannels(channels: string[], available: Record<'email' | 'telegram' | 'whatsapp', boolean>) {
+function sanitizeChannels(channels: string[], _available: Record<'email' | 'telegram' | 'whatsapp', boolean>) {
   const optional = channels.filter((channel): channel is 'telegram' | 'whatsapp' => (
-    (channel === 'telegram' || channel === 'whatsapp') && available[channel]
+    channel === 'telegram' || channel === 'whatsapp'
   ));
   return ['email', ...optional.filter((channel, index) => optional.indexOf(channel) === index)];
 }
 
-function channelSelected(channels: string[], channel: 'email' | 'telegram' | 'whatsapp', available: Record<'email' | 'telegram' | 'whatsapp', boolean>) {
+function channelSelected(channels: string[], channel: 'email' | 'telegram' | 'whatsapp', _available: Record<'email' | 'telegram' | 'whatsapp', boolean>) {
   if (channel === 'email') return true;
-  return available[channel] && channels.includes(channel);
+  return channels.includes(channel);
 }
 
 function telegramInviteUrl(bot: SenteroTelegramBotInfo | null, contact: SenteroTrustedContact) {
