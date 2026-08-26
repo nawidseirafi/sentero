@@ -10,7 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from backend.config import config_int, config_str
+from backend.config import config_float, config_int, config_str
 from backend.paths import DATA_DIR
 from backend.logging_config import get_logger
 from backend.services.ecotracker_service import EcoTrackerClient, ecotracker_snapshot_rows
@@ -998,6 +998,13 @@ class DeviceMappingService:
             live_telemetry_state = None if (stale and not confirmed_online) else telemetry_state
             c1001_telemetry = c1001_telemetry_from_state(live_telemetry_state)
             generic_presence = generic_presence_telemetry_from_state(dict(row), live_telemetry_state, states if (not stale or confirmed_online) else [])
+            data_age_seconds = sensor_state_age_seconds(telemetry_state)
+            soft_warning_threshold_seconds = soft_stale_warning_threshold_seconds(dict(row))
+            stale_warning = (
+                reachable is not False
+                and data_age_seconds is not None
+                and data_age_seconds > soft_warning_threshold_seconds
+            )
             motion = c1001_telemetry.get('motion') if c1001_telemetry.get('motion') is not None else generic_presence.get('motion')
             motion_state = motion_state_from_state(live_telemetry_state)
             explicit_presence = c1001_telemetry.get('presence')
@@ -1053,6 +1060,8 @@ class DeviceMappingService:
                 'motion_state': motion_state,
                 'stale': stale,
                 'stale_seconds': stale_seconds,
+                'data_age_seconds': data_age_seconds,
+                'stale_warning': stale_warning,
                 'hp_led': c1001_telemetry.get('hp_led'),
                 'fall_led': c1001_telemetry.get('fall_led'),
                 'led_status': c1001_telemetry.get('led_status'),
@@ -2981,6 +2990,37 @@ def slug_identity(value: str) -> str:
     return re.sub(r'[^a-z0-9_]+', '_', value.lower()).strip('_')
 
 
+def role_is_smoke_detector(role: str) -> bool:
+    text = normalize(role)
+    return 'smoke' in text or 'rauch' in text
+
+
+# Soft pre-warning thresholds, in hours, per sensor type. These are
+# independent of (and always shorter than) the Zigbee2MQTT `availability`
+# passive timeout that ultimately flips `reachable` to False. The point is to
+# give an early, low-severity heads-up while the sensor is still confirmed
+# online, tuned per sensor type since a smoke detector going quiet deserves
+# earlier attention than a rarely-used window contact.
+DEFAULT_SOFT_WARNING_HOURS_SMOKE = 12
+DEFAULT_SOFT_WARNING_HOURS_CONTACT = 24
+DEFAULT_SOFT_WARNING_HOURS_PRESENCE = 6
+DEFAULT_SOFT_WARNING_HOURS_GENERIC = 24
+
+
+def soft_stale_warning_threshold_seconds(row: dict[str, Any]) -> int:
+    role = str(row.get('role') or '')
+    if role_is_smoke_detector(role):
+        default_hours, key = DEFAULT_SOFT_WARNING_HOURS_SMOKE, 'sensors.soft_warning_hours.smoke_detector'
+    elif role_is_contact(role):
+        default_hours, key = DEFAULT_SOFT_WARNING_HOURS_CONTACT, 'sensors.soft_warning_hours.door_window_contact'
+    elif role_is_presence(role):
+        default_hours, key = DEFAULT_SOFT_WARNING_HOURS_PRESENCE, 'sensors.soft_warning_hours.presence'
+    else:
+        default_hours, key = DEFAULT_SOFT_WARNING_HOURS_GENERIC, 'sensors.soft_warning_hours.generic'
+    hours = config_float(key, float(default_hours))
+    return int(max(hours, 0.1) * 3600)
+
+
 def role_is_presence(role: str) -> bool:
     return str(role or '').endswith(('presence', '_motion'))
 
@@ -3234,6 +3274,8 @@ def public_role(data: dict[str, Any]) -> dict[str, Any]:
         'motion_state': data.get('motion_state'),
         'stale': data.get('stale'),
         'stale_seconds': data.get('stale_seconds'),
+        'data_age_seconds': data.get('data_age_seconds'),
+        'stale_warning': data.get('stale_warning'),
         'hp_led': data.get('hp_led'),
         'fall_led': data.get('fall_led'),
         'led_status': data.get('led_status'),

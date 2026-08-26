@@ -750,6 +750,23 @@ class NotificationService:
                     "room": room,
                     "battery_level": int(battery),
                 })
+            if sensor.get("reachable") is not False and sensor.get("stale_warning") is True:
+                age_seconds = sensor.get("data_age_seconds")
+                age_hours = int(age_seconds // 3600) if isinstance(age_seconds, (int, float)) else None
+                age_text = f"seit über {age_hours} Stunden" if age_hours is not None else "seit längerer Zeit"
+                warnings.append({
+                    "key": f"sensor_stale_warning:{subject_id}",
+                    "type": "sensor_stale_warning",
+                    "severity": "orange",
+                    "title": "Sentero Sensor meldet sich seltener als gewohnt",
+                    "summary": f"{label} hat {age_text} keine neuen Daten gesendet, ist laut Funknetzwerk aber weiterhin erreichbar.",
+                    "recommendation": "Kein akuter Handlungsbedarf. Bitte im Blick behalten, falls sich der Zustand nicht von selbst löst.",
+                    "role": role,
+                    "subject_id": subject_id,
+                    "label": label,
+                    "room": room,
+                    "battery_level": battery if isinstance(battery, (int, float)) else None,
+                })
             if sensor.get("reachable") is False:
                 stale = sensor.get("stale") is True
                 warnings.append({
