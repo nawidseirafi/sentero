@@ -306,11 +306,8 @@ class MqttSensorSourceTests(unittest.TestCase):
             mapping.sensor_source = Zigbee2MqttSensorSource(mqtt=mqtt)
             manager = SensorManager(mapping)
             started = manager.start_discovery('presence', room_id='hallway', role='hallway_presence', duration=60)
-            found = manager.discovered(started['discovery_id'], dev=True)
-            raw = mapping.candidates(started['discovery_id'], dev=True)
-        self.assertEqual(found['status'], 'searching')
-        self.assertIsNone(found['sensor'])
-        self.assertIsNone(raw['candidate'])
+        self.assertEqual(started['status'], 'existing_device_found')
+        self.assertEqual(started['devices'][0]['id'], ieee)
 
     def test_zigbee_discovery_only_scores_physical_devices_added_after_session_start(self) -> None:
         old_ieee = '0x111'
@@ -321,13 +318,13 @@ class MqttSensorSourceTests(unittest.TestCase):
             mapping = DeviceMappingService(database_path=Path(tmpdir) / 'sentero.db')
             mapping.mqtt = mqtt
             mapping.sensor_source = Zigbee2MqttSensorSource(mqtt=mqtt)
-            manager = SensorManager(mapping)
-            started = manager.start_discovery('presence', room_id='hallway', role='hallway_presence', duration=60)
+            started = mapping.start_mqtt_discovery('hallway_presence', 'hallway', duration=60, sensor_type='presence')
             mqtt.messages = [FakeMessage('zigbee2mqtt/bridge/devices', [zigbee_bridge_device(old_ieee, old_name, 'ZG-204ZX'), zigbee_bridge_device(new_ieee, new_ieee, 'ZG-204ZH')]), FakeMessage(f'zigbee2mqtt/{old_name}', {'occupancy': True, 'temperature': 22.1, 'humidity': 45, 'illuminance': 40}), FakeMessage(f'zigbee2mqtt/{new_ieee}', {'occupancy': True, 'temperature': 21.0, 'humidity': 48, 'illuminance': 15, 'battery': 100})]
-            raw = mapping.candidates(started['discovery_id'], dev=True)
-            found = manager.discovered(started['discovery_id'], dev=True)
+            manager = SensorManager(mapping)
+            raw = mapping.candidates(started['session_id'], dev=True)
+            found = manager.discovered(started['session_id'], dev=True)
             with self.assertRaises(ValueError):
-                mapping.confirm(started['discovery_id'], old_ieee, name='Flur Präsenz', room='hallway')
+                mapping.confirm(started['session_id'], old_ieee, name='Flur Präsenz', room='hallway')
         self.assertEqual([item['device_id'] for item in raw['candidates']], [new_ieee])
         self.assertEqual(raw['candidate']['device_id'], new_ieee)
         self.assertEqual(found['sensor']['id'], new_ieee)
@@ -868,10 +865,7 @@ class MqttSensorSourceTests(unittest.TestCase):
             mapping.sensor_source = Zigbee2MqttSensorSource(mqtt=mqtt)
             manager = SensorManager(mapping)
             started = manager.start_discovery('door_contact', room_id='Keller', duration=60)
-            mqtt.messages = [FakeMessage('zigbee2mqtt/Keller', {'contact': True})]
-            found = manager.discovered(started['discovery_id'])
-        self.assertEqual(found['status'], 'searching')
-        self.assertIsNone(found['sensor'])
+        self.assertEqual(started['status'], 'existing_device_found')
 
     def test_delete_old_non_mqtt_mapping_only_deactivates_local_role(self) -> None:
         fake = FailingMqtt()

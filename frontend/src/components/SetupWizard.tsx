@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Cable, CheckCircle2, HeartHandshake, Mail, Plus, ShieldCheck, Smartphone, Trash2, UserRound, Wifi, X } from 'lucide-react';
-import { api, type NetworkStatus, type SenteroEsp32DiscoverySensor, type SenteroSensorRole, type WifiNetwork } from '@shared/api/client';
+import { api, type NetworkStatus, type SenteroDiscoveredSensor, type SenteroEsp32DiscoverySensor, type SenteroSensorRole, type WifiNetwork } from '@shared/api/client';
 import { SensorWizard, type SensorBinding, type SensorDiscoveryState } from './SensorWizard';
 
 type Profile = {
@@ -335,6 +335,19 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
       if (result.status === 'manual_action') {
         throw new Error(result.message || 'Die Sensor-Einrichtung ist noch nicht bereit.');
       }
+      if (result.status === 'existing_device_found') {
+        updateSensor(sensor.id, { status: 'idle' });
+        setDiscovery((current) => ({
+          ...current,
+          [sensor.id]: {
+            status: result.status,
+            device: result.device || result.devices?.[0] || null,
+            devices: result.devices || [],
+            remainingSeconds: 0,
+          },
+        }));
+        return;
+      }
       activeDiscoverySessions.current.add(result.discovery_id);
       updateSensor(sensor.id, { sessionId: result.discovery_id });
       setDiscovery((current) => ({ ...current, [sensor.id]: { ...(current[sensor.id] || {}), remainingSeconds: result.expires_in_seconds || SENSOR_DISCOVERY_SECONDS } }));
@@ -414,11 +427,16 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     }, 2000);
   }
 
-  async function applyCandidate(sensorId: string, sessionId: number, result: { status: string; sensor?: { id: string; name: string; type: string; confidence: number } | null; remaining_seconds?: number }, sensorName: string, roomId: string) {
+  async function applyCandidate(sensorId: string, sessionId: number, result: { status: string; sensor?: SenteroDiscoveredSensor | null; device?: SenteroDiscoveredSensor | null; devices?: SenteroDiscoveredSensor[]; requested_type?: string | null; detected_type?: string | null; remaining_seconds?: number }, sensorName: string, roomId: string) {
     const score = result.sensor?.confidence || 0;
     const found = Boolean(result.sensor && result.status === 'found' && score >= 50);
     const timedOut = result.remaining_seconds === 0 || result.status === 'not_found';
-    setDiscovery((current) => ({ ...current, [sensorId]: { sensor: result.sensor || null, remainingSeconds: result.remaining_seconds } }));
+    setDiscovery((current) => ({ ...current, [sensorId]: { sensor: result.sensor || null, device: result.device || null, devices: result.devices || [], status: result.status, detectedType: result.detected_type, requestedType: result.requested_type, remainingSeconds: result.remaining_seconds } }));
+    if (result.status === 'wrong_type_found' || result.status === 'unsupported_device_found') {
+      activeDiscoverySessions.current.delete(sessionId);
+      updateSensor(sensorId, { status: 'idle', sessionId: undefined });
+      return true;
+    }
     if (found && result.sensor) {
       const name = sensorName || result.sensor.name || 'Sensor';
       try {
@@ -442,6 +460,52 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
       return true;
     }
     return false;
+  }
+
+  async function useUnassignedDevice(sensor: SensorBinding, device: SenteroDiscoveredSensor, overrideType?: string | null) {
+    const sensorType = overrideType || sensorTypeForDiscovery(sensor.type);
+    const role = roleForSensor(sensorType, sensor.roomId);
+    const name = defaultSensorName(roomLabel(sensor.roomId), bindingTypeFromDiscovery(sensorType));
+    try {
+      const result = await api.assignSenteroUnassignedSensor(device.id, {
+        sensor_type: sensorType,
+        room_id: sensor.roomId,
+        role,
+        name,
+      }, devMode);
+      const targetId = result.sensor.id;
+      updateSensor(sensor.id, { status: sensor.id === targetId ? 'connected' : 'idle', score: 100, sensorManagerId: result.sensor.id });
+      if (sensor.id !== targetId) {
+        setSensorPlan((current) => ({ ...current, [sensor.roomId]: { ...(current[sensor.roomId] || emptySensorPlan()), [sensorPlanKey(bindingTypeFromDiscovery(sensorType))]: true } }));
+        setSensorBindings((current) => mergeExistingSensorBindings(current, [{
+          role: targetId,
+          room: sensor.roomId,
+          label: result.sensor.name,
+          configured: true,
+        } as SenteroSensorRole], customRooms));
+      }
+      setDiscovery((current) => ({ ...current, [sensor.id]: { sensor: { id: result.sensor.id, name: result.sensor.name, type: result.sensor.type, confidence: 100 }, status: 'found', remainingSeconds: 0 } }));
+    } catch (err) {
+      setDiscovery((current) => ({ ...current, [sensor.id]: { ...(current[sensor.id] || {}), error: userFacingSensorError(err) } }));
+    }
+  }
+
+  async function ignoreDevice(sensor: SensorBinding, device: SenteroDiscoveredSensor) {
+    if (discovery[sensor.id]?.status === 'wrong_type_found') {
+      setDiscovery((current) => ({ ...current, [sensor.id]: {} }));
+      return;
+    }
+    await api.ignoreSenteroUnassignedSensor(device.id).catch(() => undefined);
+    setDiscovery((current) => ({ ...current, [sensor.id]: {} }));
+  }
+
+  async function removeDevice(sensor: SensorBinding, device: SenteroDiscoveredSensor) {
+    try {
+      await api.removeSenteroUnassignedSensor(device.id);
+      setDiscovery((current) => ({ ...current, [sensor.id]: {} }));
+    } catch (err) {
+      setDiscovery((current) => ({ ...current, [sensor.id]: { ...(current[sensor.id] || {}), error: err instanceof Error ? err.message : 'Gerät konnte nicht entfernt werden.' } }));
+    }
   }
 
   function skipSensor(sensor: SensorBinding) {
@@ -519,7 +583,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
         {step === 1 && <NetworkStep status={networkStatus} choice={networkChoice} networks={wifiNetworks} wifiForm={wifiForm} busy={networkBusy} message={networkMessage} onChoice={setNetworkChoice} onWifiForm={setWifiForm} onRefresh={() => void refreshNetwork()} />}
         {step === 2 && <ProfileStep profile={profile} calculatedAge={calculatedAge} onChange={setProfile} />}
         {step === 3 && <RoomsStep selected={selectedRooms} customRooms={customRooms} sensorPlan={sensorPlan} lockedSensorPlan={lockedSensorPlan} customRoom={customRoom} onToggle={toggleRoom} onCustomChange={setCustomRoom} onCustomAdd={addCustomRoom} onToggleSensorType={toggleSensorType} />}
-        {step === 4 && <SensorWizard sensors={sensorBindings} discovery={discovery} roomLabel={roomLabel} devMode={devMode} connected={connectedSensors} total={sensorBindings.length} presenceTransport={presenceTransport} onChange={updateSensor} onSearch={searchSensor} onDelete={(sensor) => void deleteSensor(sensor)} onSkip={skipSensor} />}
+        {step === 4 && <SensorWizard sensors={sensorBindings} discovery={discovery} roomLabel={roomLabel} devMode={devMode} connected={connectedSensors} total={sensorBindings.length} presenceTransport={presenceTransport} onChange={updateSensor} onSearch={searchSensor} onDelete={(sensor) => void deleteSensor(sensor)} onSkip={skipSensor} onUseDevice={(sensor, device) => void useUnassignedDevice(sensor, device)} onUseAsDetected={(sensor, device) => void useUnassignedDevice(sensor, device, device.detected_type || device.type)} onIgnoreDevice={(sensor, device) => void ignoreDevice(sensor, device)} onRemoveDevice={(sensor, device) => void removeDevice(sensor, device)} />}
         {step === 5 && <ContactsStep contacts={contacts} form={contactForm} formOpen={contactFormOpen} onOpen={() => setContactFormOpen(true)} onClose={() => setContactFormOpen(false)} onFormChange={setContactForm} onAdd={addContact} onDelete={(id) => setContacts((current) => {
           const nextContacts = current.filter((contact) => contact.id !== id);
           if (nextContacts.length && !nextContacts.some((contact) => contact.primary)) {
@@ -1041,6 +1105,25 @@ function sensorTypeForDiscovery(type: SensorBinding['type']) {
   if (type === 'water_meter') return 'water_meter';
   if (type === 'gas_meter') return 'gas_meter';
   return 'presence_sensor';
+}
+
+function bindingTypeFromDiscovery(type: string): SensorBinding['type'] {
+  if (type === 'door_contact' || type === 'door') return 'door';
+  if (type === 'smoke_detector') return 'smoke_detector';
+  if (type === 'electricity_meter') return 'electricity_meter';
+  if (type === 'water_meter') return 'water_meter';
+  if (type === 'gas_meter') return 'gas_meter';
+  return 'motion';
+}
+
+function roleForSensor(sensorType: string, roomId: string) {
+  if (sensorType === 'door_contact' || sensorType === 'door') return roomId === 'entrance' || roomId === 'hallway' ? 'main_door' : `${roomId}_door`;
+  if (sensorType === 'smoke_detector') return `${roomId}_smoke`;
+  if (sensorType === 'electricity_meter') return `${roomId}_energy`;
+  if (sensorType === 'water_meter') return `${roomId}_water`;
+  if (sensorType === 'gas_meter') return `${roomId}_gas`;
+  if (sensorType === 'button') return `${roomId}_button`;
+  return `${roomId}_presence`;
 }
 
 function userFacingSensorError(err: unknown) {

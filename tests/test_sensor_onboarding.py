@@ -101,9 +101,9 @@ class SensorOnboardingTests(unittest.TestCase):
         manager, mapping, source, mqtt = self.manager()
         source.rows = [zigbee_entity('binary_sensor.sensor_a_occupancy', 'occupancy', 'off', '0xAAA')]
         started = manager.start_discovery('presence', room_id='hallway', role='hallway_presence')
-        found = manager.discovered(started['discovery_id'])
-        self.assertEqual(found['status'], 'searching')
-        self.assertIsNone(found['sensor'])
+        self.assertEqual(started['status'], 'existing_device_found')
+        self.assertEqual(started['devices'][0]['id'], '0xaaa')
+        self.assertEqual(mqtt.published, [])
         with self.assertRaises(ValueError):
             mapping.confirm(started['discovery_id'], '0xAAA', name='Flur Präsenz', room='hallway')
         self.assertEqual(mqtt.requests, [])
@@ -112,21 +112,18 @@ class SensorOnboardingTests(unittest.TestCase):
         manager, _mapping, source, _mqtt = self.manager()
         source.rows = [zigbee_entity('binary_sensor.sensor_a_occupancy', 'occupancy', 'off', '0xAAA')]
         started = manager.start_discovery('presence', room_id='hallway', role='hallway_presence')
-        source.rows = [zigbee_entity('binary_sensor.sensor_a_occupancy', 'occupancy', 'on', '0xAAA')]
-        found = manager.discovered(started['discovery_id'])
-        self.assertEqual(found['status'], 'searching')
-        self.assertIsNone(found['sensor'])
+        self.assertEqual(started['status'], 'existing_device_found')
 
     def test_only_new_physical_zigbee_device_is_accepted(self) -> None:
         manager, mapping, source, _mqtt = self.manager()
         source.rows = [zigbee_entity('binary_sensor.sensor_a_occupancy', 'occupancy', 'off', '0xAAA')]
-        started = manager.start_discovery('presence', room_id='hallway', role='hallway_presence')
+        started = mapping.start_mqtt_discovery('hallway_presence', 'hallway', duration=60, sensor_type='presence')
         source.rows = [zigbee_entity('binary_sensor.sensor_a_occupancy', 'occupancy', 'on', '0xAAA'), zigbee_entity('binary_sensor.sensor_b_occupancy', 'occupancy', 'on', '0xBBB')]
-        found = manager.discovered(started['discovery_id'], dev=True)
-        registered = manager.register(found['sensor']['id'], started['discovery_id'], name='Flur Präsenz', room_id='hallway', dev=True)
+        found = manager.discovered(started['session_id'], dev=True)
+        registered = manager.register(found['sensor']['id'], started['session_id'], name='Flur Präsenz', room_id='hallway', dev=True)
         role = mapping.get_role('hallway_presence', dev=True)
         self.assertEqual(found['status'], 'found')
-        self.assertEqual(found['sensor']['id'], '0xBBB')
+        self.assertEqual(found['sensor']['id'], '0xbbb')
         self.assertEqual(registered['status'], 'registered')
         self.assertEqual(role['device_id'], '0xBBB')
 
@@ -144,7 +141,7 @@ class SensorOnboardingTests(unittest.TestCase):
         started = manager.start_discovery('presence', room_id='hallway', role='hallway_presence')
         source.rows = [zigbee_entity('sensor.hallway_battery', 'battery', '100', '0xaaa')]
         result = manager.discovered(started['discovery_id'])
-        self.assertEqual(result['status'], 'searching')
+        self.assertEqual(result['status'], 'unsupported_device_found')
         self.assertIsNone(result['sensor'])
 
     def test_door_sensor_is_detected_by_device_class(self) -> None:
@@ -154,6 +151,90 @@ class SensorOnboardingTests(unittest.TestCase):
         result = manager.discovered(started['discovery_id'])
         self.assertEqual(result['status'], 'found')
         self.assertEqual(result['sensor']['type'], 'door_contact')
+
+    def test_door_search_with_new_smoke_detector_returns_wrong_type(self) -> None:
+        manager, _mapping, source, _mqtt = self.manager()
+        started = manager.start_discovery('door_contact', room_id='kitchen', role='kitchen_door')
+        source.rows = [zigbee_entity('binary_sensor.kitchen_smoke', 'smoke', 'off', '0xsmoke', payload_key='smoke')]
+        result = manager.discovered(started['discovery_id'])
+        self.assertEqual(result['status'], 'wrong_type_found')
+        self.assertEqual(result['detected_type'], 'smoke_detector')
+        self.assertIsNone(result['sensor'])
+
+    def test_confirm_rejects_wrong_device_type_server_side(self) -> None:
+        _manager, mapping, source, _mqtt = self.manager()
+        started = mapping.start_mqtt_discovery('kitchen_door', 'kitchen', duration=60, sensor_type='door')
+        source.rows = [zigbee_entity('binary_sensor.kitchen_smoke', 'smoke', 'off', '0xsmoke', payload_key='smoke')]
+        mapping.candidates(started['session_id'], dev=True)
+        with self.assertRaises(ValueError):
+            mapping.confirm(started['session_id'], '0xsmoke', name='Küche Tür', room='kitchen')
+
+    def test_smoke_detector_is_found_for_smoke_search(self) -> None:
+        manager, _mapping, source, _mqtt = self.manager()
+        started = manager.start_discovery('smoke_detector', room_id='kitchen', role='kitchen_smoke')
+        source.rows = [zigbee_entity('binary_sensor.kitchen_smoke', 'smoke', 'off', '0xsmoke', payload_key='smoke')]
+        result = manager.discovered(started['discovery_id'])
+        self.assertEqual(result['status'], 'found')
+        self.assertEqual(result['sensor']['type'], 'smoke_detector')
+
+    def test_existing_unassigned_smoke_detector_is_offered_without_pairing(self) -> None:
+        manager, _mapping, source, mqtt = self.manager()
+        source.rows = [zigbee_entity('binary_sensor.kitchen_smoke', 'smoke', 'off', '0xsmoke', payload_key='smoke')]
+        result = manager.start_discovery('smoke_detector', room_id='kitchen', role='kitchen_smoke')
+        self.assertEqual(result['status'], 'existing_device_found')
+        self.assertEqual(result['devices'][0]['id'], '0xsmoke')
+        self.assertEqual(mqtt.published, [])
+
+    def test_multiple_unassigned_smoke_detectors_are_listed(self) -> None:
+        manager, _mapping, source, _mqtt = self.manager()
+        source.rows = [
+            zigbee_entity('binary_sensor.kitchen_smoke', 'smoke', 'off', '0xsmoke1', payload_key='smoke'),
+            zigbee_entity('binary_sensor.hall_smoke', 'smoke', 'off', '0xsmoke2', payload_key='smoke'),
+        ]
+        result = manager.start_discovery('smoke_detector', room_id='kitchen', role='kitchen_smoke')
+        self.assertEqual(result['status'], 'existing_device_found')
+        self.assertEqual(len(result['devices']), 2)
+        self.assertIsNone(result['device'])
+
+    def test_supported_wrong_type_is_stored_unassigned(self) -> None:
+        manager, mapping, source, _mqtt = self.manager()
+        started = manager.start_discovery('door_contact', room_id='kitchen', role='kitchen_door')
+        source.rows = [zigbee_entity('binary_sensor.kitchen_smoke', 'smoke', 'off', '0xsmoke', payload_key='smoke')]
+        manager.discovered(started['discovery_id'])
+        row = mapping.inventory_device('0xsmoke')
+        self.assertEqual(row['lifecycle_status'], 'unassigned')
+        self.assertEqual(row['detected_type'], 'smoke_detector')
+
+    def test_unsupported_device_found(self) -> None:
+        manager, _mapping, source, _mqtt = self.manager()
+        started = manager.start_discovery('door_contact', room_id='kitchen', role='kitchen_door')
+        source.rows = [zigbee_entity('sensor.kitchen_temperature', 'temperature', '22', '0xtemp', payload_key='temperature')]
+        result = manager.discovered(started['discovery_id'])
+        self.assertEqual(result['status'], 'unsupported_device_found')
+
+    def test_unsupported_remove_uses_zigbee_remove_request(self) -> None:
+        manager, mapping, source, mqtt = self.manager()
+        source.rows = [zigbee_entity('sensor.kitchen_temperature', 'temperature', '22', '0xtemp', payload_key='temperature')]
+        mapping.sync_zigbee_inventory(source.rows)
+        result = manager.remove_unassigned('0xtemp')
+        self.assertTrue(result['deleted'])
+        self.assertTrue(any('bridge/request/device/remove' in request[0] for request in mqtt.requests))
+
+    def test_unsupported_keep_marks_ignored_and_is_not_warned_again(self) -> None:
+        manager, mapping, source, _mqtt = self.manager()
+        source.rows = [zigbee_entity('sensor.kitchen_temperature', 'temperature', '22', '0xtemp', payload_key='temperature')]
+        mapping.sync_zigbee_inventory(source.rows)
+        manager.ignore_unassigned('0xtemp')
+        started = manager.start_discovery('door_contact', room_id='kitchen', role='kitchen_door')
+        result = manager.discovered(started['discovery_id'])
+        self.assertEqual(result['status'], 'searching')
+
+    def test_interviewing_device_is_not_unsupported(self) -> None:
+        manager, _mapping, source, _mqtt = self.manager()
+        started = manager.start_discovery('door_contact', room_id='kitchen', role='kitchen_door')
+        source.rows = [zigbee_entity('sensor.new_device', '', 'unknown', '0xnew', payload_key='state', attrs={'interview_completed': False})]
+        result = manager.discovered(started['discovery_id'])
+        self.assertEqual(result['status'], 'searching')
 
     def test_restart_keeps_existing_sensor_assignment(self) -> None:
         manager, mapping, source, _mqtt = self.manager()
@@ -202,7 +283,10 @@ class SensorOnboardingTests(unittest.TestCase):
         manager = SensorManager(mapping)
         return (manager, mapping, source, mqtt)
 
-def zigbee_entity(entity_id: str, device_class: str, state: str, device_id: str) -> dict:
-    return {'entity_id': entity_id, 'domain': entity_id.split('.', 1)[0], 'state': state, 'friendly_name': entity_id.rsplit('.', 1)[-1].replace('_', ' ').title(), 'device_class': device_class, 'device_id': device_id, 'identifiers': [['zigbee2mqtt', device_id]], 'source': 'zigbee2mqtt', 'source_ref': f'zigbee2mqtt/{device_id}', 'last_changed': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'last_updated': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+def zigbee_entity(entity_id: str, device_class: str, state: str, device_id: str, payload_key: str | None = None, attrs: dict | None = None) -> dict:
+    attributes = {'device_class': device_class, 'device_id': device_id, **(attrs or {})}
+    if payload_key:
+        attributes[payload_key] = state
+    return {'entity_id': entity_id, 'domain': entity_id.split('.', 1)[0], 'state': state, 'friendly_name': entity_id.rsplit('.', 1)[-1].replace('_', ' ').title(), 'device_class': device_class, 'device_id': device_id.lower(), 'payload_key': payload_key, 'identifiers': [['zigbee2mqtt', device_id.lower()]], 'source': 'zigbee2mqtt', 'source_ref': f'zigbee2mqtt/{device_id.lower()}', 'attributes': attributes, 'last_changed': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'last_updated': datetime.now(timezone.utc).isoformat(timespec='seconds')}
 if __name__ == '__main__':
     unittest.main()

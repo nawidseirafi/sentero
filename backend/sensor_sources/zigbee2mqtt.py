@@ -234,11 +234,15 @@ class Zigbee2MqttSensorSource:
                 expose_keys = self._expose_keys(definition.get("exposes"))
                 item = {
                     "manufacturer": definition.get("vendor") or device.get("manufacturer"),
-                    "model": definition.get("model") or device.get("model_id") or device.get("model"),
-                    "ieee_address": ieee or None,
-                    "zigbee2mqtt_friendly_name": friendly_name or None,
-                    "smoke_capability": any(key in {*SMOKE_STATE_KEYS, "alarm"} for key in expose_keys),
-                }
+                "model": definition.get("model") or device.get("model_id") or device.get("model"),
+                "ieee_address": ieee or None,
+                "supported": device.get("supported"),
+                "interview_completed": device.get("interview_completed"),
+                "definition": definition,
+                "exposes": definition.get("exposes"),
+                "zigbee2mqtt_friendly_name": friendly_name or None,
+                "smoke_capability": any(key in {*SMOKE_STATE_KEYS, "alarm"} for key in expose_keys),
+            }
                 for key in (friendly_name, ieee):
                     clean = str(key or "").strip()
                     if clean:
@@ -278,6 +282,10 @@ class Zigbee2MqttSensorSource:
                 "manufacturer": definition.get("vendor") or device.get("manufacturer"),
                 "model": definition.get("model") or device.get("model_id") or device.get("model"),
                 "ieee_address": ieee or None,
+                "supported": device.get("supported"),
+                "interview_completed": device.get("interview_completed"),
+                "definition": definition,
+                "exposes": definition.get("exposes"),
                 # bridge/devices describes capabilities, not live sensor values.
                 # Mark these generated expose rows so state merging never mistakes
                 # the placeholder value "unknown" for telemetry.
@@ -285,6 +293,15 @@ class Zigbee2MqttSensorSource:
             }
             expose_keys = self._expose_keys(definition.get("exposes"))
             metadata["smoke_capability"] = any(key in {*SMOKE_STATE_KEYS, "alarm"} for key in expose_keys)
+            device_row = self._device_state_entity(friendly_name, metadata, timestamp)
+            device_row["state"] = "unknown"
+            device_row["metadata_only"] = True
+            device_row["attributes"] = {**device_row.get("attributes", {}), "metadata_only": True}
+            if ieee:
+                device_row["device_id"] = ieee
+                device_row["identifiers"] = [[self.name, ieee]]
+                device_row["attributes"] = {**device_row.get("attributes", {}), "ieee_address": ieee}
+            rows.append(device_row)
             for key in expose_keys:
                 row = self._entity(friendly_name, key, "unknown", metadata, timestamp)
                 row["metadata_only"] = True

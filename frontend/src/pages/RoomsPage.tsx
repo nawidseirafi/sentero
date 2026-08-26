@@ -37,6 +37,11 @@ export function RoomsPage() {
             <article className="sc-room-card quiet" key={room}>
               <div><span className="sc-room-dot" /><strong>{roomLabels[room] || room}</strong></div>
               <p>{count} Sensoren verbunden</p>
+              {sensors.filter((sensor) => sensor.room === room && isSmokeSensor(sensor)).map((sensor) => (
+                <small key={sensor.role} className={sensor.smoke === true ? 'sc-room-alert' : undefined}>
+                  Rauchmelder · {sensor.reachable === false ? 'nicht verbunden' : 'verbunden'} · {sensor.smoke === true ? 'Rauch erkannt' : 'Kein Rauch erkannt'}{sensor.battery_level == null ? '' : ` · Akku ${sensor.battery_level}%`}
+                </small>
+              ))}
               <small>{lastSeen(sensors.filter((sensor) => sensor.room === room))}</small>
             </article>
           );
@@ -44,6 +49,11 @@ export function RoomsPage() {
       </div>
     </section>
   );
+}
+
+function isSmokeSensor(sensor: SenteroSensorRole) {
+  const role = String(sensor.role || '').toLowerCase();
+  return role.endsWith('_smoke') || String(sensor.device_class || '').toLowerCase() === 'smoke';
 }
 
 function lastSeen(sensors: SenteroSensorRole[]) {

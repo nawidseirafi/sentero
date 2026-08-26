@@ -1,4 +1,4 @@
-import { Check, Loader2, Search, ShieldCheck, Trash2 } from 'lucide-react';
+import { AlertTriangle, Check, Loader2, Search, ShieldCheck, Trash2 } from 'lucide-react';
 import type { SenteroDiscoveredSensor } from '@shared/api/client';
 import { SetupWifiQr } from './SetupWifiQr';
 
@@ -16,6 +16,11 @@ export type SensorBinding = {
 
 export type SensorDiscoveryState = {
   sensor?: SenteroDiscoveredSensor | null;
+  device?: SenteroDiscoveredSensor | null;
+  devices?: SenteroDiscoveredSensor[];
+  status?: string;
+  detectedType?: string | null;
+  requestedType?: string | null;
   remainingSeconds?: number;
   error?: string;
 };
@@ -32,9 +37,13 @@ type Props = {
   onSearch: (sensor: SensorBinding) => void;
   onDelete: (sensor: SensorBinding) => void;
   onSkip: (sensor: SensorBinding) => void;
+  onUseDevice: (sensor: SensorBinding, device: SenteroDiscoveredSensor) => void;
+  onUseAsDetected: (sensor: SensorBinding, device: SenteroDiscoveredSensor) => void;
+  onIgnoreDevice: (sensor: SensorBinding, device: SenteroDiscoveredSensor) => void;
+  onRemoveDevice: (sensor: SensorBinding, device: SenteroDiscoveredSensor) => void;
 };
 
-export function SensorWizard({ sensors, discovery, devMode, connected, total, presenceTransport = 'zigbee', roomLabel, onChange, onSearch, onDelete, onSkip }: Props) {
+export function SensorWizard({ sensors, discovery, devMode, connected, total, presenceTransport = 'zigbee', roomLabel, onChange, onSearch, onDelete, onSkip, onUseDevice, onUseAsDetected, onIgnoreDevice, onRemoveDevice }: Props) {
   const grouped = sensors.reduce<Record<string, SensorBinding[]>>((acc, sensor) => {
     acc[sensor.roomId] = [...(acc[sensor.roomId] || []), sensor];
     return acc;
@@ -76,6 +85,10 @@ export function SensorWizard({ sensors, discovery, devMode, connected, total, pr
               onSearch={onSearch}
               onDelete={onDelete}
               onSkip={onSkip}
+              onUseDevice={onUseDevice}
+              onUseAsDetected={onUseAsDetected}
+              onIgnoreDevice={onIgnoreDevice}
+              onRemoveDevice={onRemoveDevice}
             />
           ))}
         </article>
@@ -84,7 +97,7 @@ export function SensorWizard({ sensors, discovery, devMode, connected, total, pr
   );
 }
 
-function SensorSetupCard({ sensor, state, devMode, presenceTransport, onChange, onSearch, onDelete, onSkip }: {
+function SensorSetupCard({ sensor, state, devMode, presenceTransport, onChange, onSearch, onDelete, onSkip, onUseDevice, onUseAsDetected, onIgnoreDevice, onRemoveDevice }: {
   sensor: SensorBinding;
   state?: SensorDiscoveryState;
   devMode: boolean;
@@ -93,6 +106,10 @@ function SensorSetupCard({ sensor, state, devMode, presenceTransport, onChange, 
   onSearch: (sensor: SensorBinding) => void;
   onDelete: (sensor: SensorBinding) => void;
   onSkip: (sensor: SensorBinding) => void;
+  onUseDevice: (sensor: SensorBinding, device: SenteroDiscoveredSensor) => void;
+  onUseAsDetected: (sensor: SensorBinding, device: SenteroDiscoveredSensor) => void;
+  onIgnoreDevice: (sensor: SensorBinding, device: SenteroDiscoveredSensor) => void;
+  onRemoveDevice: (sensor: SensorBinding, device: SenteroDiscoveredSensor) => void;
 }) {
   const label = sensorLabel(sensor);
   const help = sensorHelp(sensor);
@@ -132,10 +149,77 @@ function SensorSetupCard({ sensor, state, devMode, presenceTransport, onChange, 
           <button className="secondary" type="button" onClick={() => onSkip(sensor)} disabled={sensor.status === 'connected'}>Überspringen</button>
         </div>
       </div>
+      <DiscoveryDecision sensor={sensor} state={state} onUseDevice={onUseDevice} onUseAsDetected={onUseAsDetected} onIgnoreDevice={onIgnoreDevice} onRemoveDevice={onRemoveDevice} />
       {state?.error && sensor.status !== 'missing' && <p className="sc-sensor-error">{state.error}</p>}
       {devMode && <code className="sc-dev-line">Score {sensor.score ?? state?.sensor?.confidence ?? '-'} · Rest {state?.remainingSeconds ?? '-'}s</code>}
     </div>
   );
+}
+
+function DiscoveryDecision({ sensor, state, onUseDevice, onUseAsDetected, onIgnoreDevice, onRemoveDevice }: {
+  sensor: SensorBinding;
+  state?: SensorDiscoveryState;
+  onUseDevice: (sensor: SensorBinding, device: SenteroDiscoveredSensor) => void;
+  onUseAsDetected: (sensor: SensorBinding, device: SenteroDiscoveredSensor) => void;
+  onIgnoreDevice: (sensor: SensorBinding, device: SenteroDiscoveredSensor) => void;
+  onRemoveDevice: (sensor: SensorBinding, device: SenteroDiscoveredSensor) => void;
+}) {
+  const status = state?.status;
+  const device = state?.device || state?.sensor || state?.devices?.[0];
+  if (!device) return null;
+  const meta = [device.manufacturer, device.model].filter(Boolean).join(' · ');
+  if (status === 'existing_device_found') {
+    const multiple = (state?.devices?.length || 0) > 1;
+    return (
+      <div className="sc-sensor-decision">
+        <AlertTriangle size={18} />
+        <div>
+          <strong>{multiple ? `Bereits verbundene ${sensorLabel(sensor)} gefunden.` : `Bereits verbundener ${sensorLabel(sensor)} gefunden.`}</strong>
+          {meta && <small>{meta}</small>}
+          <div className="sc-sensor-buttons">
+            {(state?.devices || [device]).map((item) => (
+              <button className="primary" type="button" key={item.id} onClick={() => onUseDevice(sensor, item)}>
+                <Check size={18} /> Verwenden{multiple ? `: ${item.name}` : ''}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (status === 'wrong_type_found') {
+    return (
+      <div className="sc-sensor-decision">
+        <AlertTriangle size={18} />
+        <div>
+          <strong>Anderes Gerät erkannt</strong>
+          <span>Es wurde ein {sensorTypeLabel(device.detected_type || state?.detectedType || device.type)} erkannt. Er wurde nicht als {sensorLabel(sensor)} hinzugefügt.</span>
+          {meta && <small>{meta}</small>}
+          <div className="sc-sensor-buttons">
+            <button className="primary" type="button" onClick={() => onUseAsDetected(sensor, device)}><Check size={18} /> Als {sensorTypeLabel(device.detected_type || device.type)} einrichten</button>
+            <button className="secondary" type="button" onClick={() => onIgnoreDevice(sensor, device)}>Später zuordnen</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (status === 'unsupported_device_found') {
+    return (
+      <div className="sc-sensor-decision">
+        <AlertTriangle size={18} />
+        <div>
+          <strong>Nicht unterstütztes Gerät erkannt</strong>
+          <span>Dieses Gerät kann von Sentero derzeit nicht verwendet werden.</span>
+          {meta && <small>{meta}</small>}
+          <div className="sc-sensor-buttons">
+            <button className="danger" type="button" onClick={() => onRemoveDevice(sensor, device)}><Trash2 size={18} /> Gerät entfernen</button>
+            <button className="secondary" type="button" onClick={() => onIgnoreDevice(sensor, device)}>Gerät behalten</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return null;
 }
 
 function SensorStatus({ status, remainingSeconds }: { status: SensorBinding['status']; remainingSeconds?: number }) {
@@ -159,6 +243,17 @@ function sensorLabel(sensor: SensorBinding) {
   if (sensor.type === 'water_meter') return 'Wasserzähler';
   if (sensor.type === 'gas_meter') return 'Gaszähler';
   return 'Präsenzsensor';
+}
+
+function sensorTypeLabel(type?: string | null) {
+  if (type === 'door_contact' || type === 'door') return 'Türsensor';
+  if (type === 'smoke_detector') return 'Rauchmelder';
+  if (type === 'presence_sensor' || type === 'presence') return 'Präsenzsensor';
+  if (type === 'button') return 'Taster';
+  if (type === 'electricity_meter') return 'Stromzähler';
+  if (type === 'water_meter') return 'Wasserzähler';
+  if (type === 'gas_meter') return 'Gaszähler';
+  return 'Sensor';
 }
 
 function sensorHelp(sensor: SensorBinding) {

@@ -270,6 +270,8 @@ export type SenteroSensorDiscoveryStart = {
   sensor_type: string;
   room_id?: string | null;
   transport?: 'zigbee' | 'wifi_esphome' | string;
+  device?: SenteroDiscoveredSensor | null;
+  devices?: SenteroDiscoveredSensor[];
   expires_in_seconds?: number;
 };
 
@@ -277,16 +279,27 @@ export type SenteroDiscoveredSensor = {
   id: string;
   name: string;
   type: string;
+  detected_type?: string | null;
+  supported?: boolean;
+  manufacturer?: string | null;
+  model?: string | null;
+  lifecycle_status?: string | null;
+  interview_status?: string | null;
   confidence: number;
+  source?: string | null;
+  source_ref?: string | null;
   entities?: string[];
 };
 
 export type SenteroSensorDiscoveryResult = {
   discovery_id: number;
-  status: 'found' | 'searching' | 'not_found' | string;
+  status: 'found' | 'searching' | 'existing_device_found' | 'wrong_type_found' | 'unsupported_device_found' | 'not_found' | string;
   message: string;
   sensor?: SenteroDiscoveredSensor | null;
+  device?: SenteroDiscoveredSensor | null;
   devices?: SenteroDiscoveredSensor[];
+  requested_type?: string | null;
+  detected_type?: string | null;
   remaining_seconds?: number;
 };
 
@@ -617,6 +630,13 @@ export const api = {
     request<{ ok: boolean; provider?: string; reason?: string }>('/api/sentero/sensors/discovery/cancel', { method: 'POST', body: JSON.stringify({ discovery_id: discoveryId ?? null }) }),
   registerSenteroSensor: (sensorId: string, payload: { discovery_id: number; name?: string | null; room_id?: string | null }, dev = false) =>
     request<{ status: string; sensor: { id: string; name: string; room_id?: string | null; type: string } }>(`/api/sentero/sensors/${encodeURIComponent(sensorId)}/register${dev ? '?dev=true' : ''}`, { method: 'POST', body: JSON.stringify(payload) }),
+  senteroUnassignedSensors: () => request<{ devices: SenteroDiscoveredSensor[] }>('/api/sentero/sensors/unassigned'),
+  assignSenteroUnassignedSensor: (deviceId: string, payload: { sensor_type: string; room_id?: string | null; role?: string | null; name?: string | null }, dev = false) =>
+    request<{ status: string; sensor: { id: string; name: string; room_id?: string | null; type: string } }>(`/api/sentero/sensors/unassigned/${encodeURIComponent(deviceId)}/assign${dev ? '?dev=true' : ''}`, { method: 'POST', body: JSON.stringify(payload) }),
+  ignoreSenteroUnassignedSensor: (deviceId: string) =>
+    request<{ status: string; device?: SenteroDiscoveredSensor }>(`/api/sentero/sensors/unassigned/${encodeURIComponent(deviceId)}/ignore`, { method: 'POST' }),
+  removeSenteroUnassignedSensor: (deviceId: string) =>
+    request<{ deleted: boolean; device_id: string }>(`/api/sentero/sensors/unassigned/${encodeURIComponent(deviceId)}`, { method: 'DELETE' }),
   senteroSensorNetwork: () => request<SenteroSensorNetworkSettings>('/api/sentero/sensors/network'),
   saveSenteroSensorNetwork: (payload: { wifi_ssid?: string; wifi_password?: string }) =>
     request<{ status: string; network: SenteroSensorNetworkSettings }>('/api/sentero/sensors/network', { method: 'POST', body: JSON.stringify(payload) }),

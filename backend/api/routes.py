@@ -80,6 +80,13 @@ class SensorRegisterPayload(BaseModel):
     room_id: str | None = None
 
 
+class UnassignedSensorAssignPayload(BaseModel):
+    sensor_type: str
+    room_id: str | None = None
+    role: str | None = None
+    name: str | None = None
+
+
 class SensorDiscoveryCancelPayload(BaseModel):
     discovery_id: int | None = None
 
@@ -569,6 +576,49 @@ def sentero_sensor_manager_register(sensor_id: str, payload: SensorRegisterPaylo
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.get("/sensors/unassigned", tags=[TAG_SENSORS])
+def sentero_sensor_manager_unassigned():
+    try:
+        return get_services().sensor_manager.unassigned_devices()
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.post("/sensors/unassigned/{device_id}/assign", tags=[TAG_SENSORS])
+def sentero_sensor_manager_assign_unassigned(device_id: str, payload: UnassignedSensorAssignPayload, dev: bool = Query(False)):
+    try:
+        return get_services().sensor_manager.assign_unassigned(
+            device_id,
+            payload.sensor_type,
+            room_id=payload.room_id,
+            role=payload.role,
+            name=payload.name,
+            dev=is_dev_mode(dev),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.post("/sensors/unassigned/{device_id}/ignore", tags=[TAG_SENSORS])
+def sentero_sensor_manager_ignore_unassigned(device_id: str):
+    try:
+        return get_services().sensor_manager.ignore_unassigned(device_id)
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.delete("/sensors/unassigned/{device_id}", tags=[TAG_SENSORS])
+def sentero_sensor_manager_remove_unassigned(device_id: str):
+    try:
+        return get_services().sensor_manager.remove_unassigned(device_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise api_error(exc) from exc
 

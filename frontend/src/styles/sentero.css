@@ -1492,6 +1492,28 @@ button:disabled {
   margin: 0;
 }
 
+.sc-sensor-decision {
+  align-items: flex-start;
+  background: #fff8e6;
+  border: 1px solid #f0c36d;
+  border-radius: 8px;
+  color: #4f3511;
+  display: flex;
+  gap: 12px;
+  grid-column: 1 / -1;
+  padding: 12px;
+}
+
+.sc-sensor-decision > div {
+  display: grid;
+  gap: 6px;
+}
+
+.sc-sensor-decision span,
+.sc-sensor-decision small {
+  color: #5f4a25;
+}
+
 .sc-sensor-side {
   align-content: start;
   display: grid;
@@ -6449,3 +6471,7 @@ button:disabled {
     font-weight: 500;
     color: #6b756f;
   }
+.sc-room-alert {
+  color: var(--sc-red) !important;
+  font-weight: 900;
+}

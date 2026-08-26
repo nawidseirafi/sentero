@@ -188,6 +188,19 @@ class SensorManager:
                 "transport": requested_transport,
                 "detail": {"reason": "wifi_esphome_requires_provisioning"},
             }
+        existing = self.mapping.find_unassigned_devices(public_sensor_type(clean_type))
+        if existing:
+            return {
+                "discovery_id": 0,
+                "status": "existing_device_found",
+                "message": "Bereits verbundener Sensor gefunden." if len(existing) == 1 else "Bereits verbundene Sensoren gefunden.",
+                "sensor_type": clean_type,
+                "room_id": room_id,
+                "transport": requested_transport,
+                "device": existing[0] if len(existing) == 1 else None,
+                "devices": existing,
+                "expires_in_seconds": 0,
+            }
         result = self.mapping.start_mqtt_discovery(target_role, room_id, duration=duration, sensor_type=public_sensor_type(clean_type))
         return {
             "discovery_id": result["session_id"],
@@ -204,6 +217,19 @@ class SensorManager:
         candidate = result.get("candidate")
         public_candidate = public_candidate_from(candidate) if candidate else None
         devices = unique_public_candidates([*(result.get("candidates") or []), *([candidate] if candidate else [])])
+        if result.get("status") in {"wrong_type_found", "unsupported_device_found"}:
+            device = result.get("device")
+            return {
+                "discovery_id": discovery_id,
+                "status": result.get("status"),
+                "message": customer_discovery_message(str(result.get("status") or ""), result),
+                "sensor": None,
+                "device": device,
+                "devices": [device] if device else [],
+                "requested_type": result.get("requested_type"),
+                "detected_type": result.get("detected_type"),
+                "remaining_seconds": 0,
+            }
         return {
             "discovery_id": discovery_id,
             "status": "found" if public_candidate else "searching" if result.get("remaining_seconds", 0) > 0 else "not_found",
@@ -229,6 +255,30 @@ class SensorManager:
                 "type": public_type_from_role(str(role.get("role") or "")),
             },
         }
+
+    def assign_unassigned(self, device_id: str, sensor_type: str, room_id: str | None = None, role: str | None = None, name: str | None = None, dev: bool = False) -> dict[str, Any]:
+        clean_type = normalize_sensor_type(sensor_type)
+        target_role = role or role_for_sensor(clean_type, room_id)
+        result = self.mapping.assign_unassigned_device(device_id, target_role, room_id, public_sensor_type(clean_type), name=name, dev=True)
+        role_row = result.get("role") or {}
+        return {
+            "status": "registered",
+            "sensor": {
+                "id": role_row.get("role") or target_role,
+                "name": role_row.get("label") or name or "Sensor",
+                "room_id": role_row.get("room") or room_id,
+                "type": public_type_from_role(str(role_row.get("role") or target_role)),
+            },
+        }
+
+    def unassigned_devices(self) -> dict[str, Any]:
+        return {"devices": self.mapping.unassigned_devices()}
+
+    def ignore_unassigned(self, device_id: str) -> dict[str, Any]:
+        return self.mapping.ignore_unassigned_device(device_id)
+
+    def remove_unassigned(self, device_id: str) -> dict[str, Any]:
+        return self.mapping.remove_zigbee_device_by_id(device_id)
 
     def cancel_discovery(self, discovery_id: int | None = None) -> dict[str, Any]:
         return self.mapping.cancel_discovery(discovery_id)
@@ -423,6 +473,30 @@ def product_message(sensor_type: str, result: dict[str, Any]) -> str:
     if sensor_type == "gas_meter":
         return "Gaszähler wird gesucht. Bitte Zähler koppeln oder einen neuen Messwert auslösen."
     return "Sensor wird gesucht. Bitte einschalten oder Pairing-Taste drücken."
+
+
+def customer_discovery_message(status: str, result: dict[str, Any]) -> str:
+    if status == "wrong_type_found":
+        detected = str(result.get("detected_type") or "sensor")
+        requested = str(result.get("requested_type") or "sensor")
+        return f"Es wurde ein {sensor_type_label(detected)} erkannt. Er wurde nicht als {sensor_type_label(requested)} hinzugefügt."
+    if status == "unsupported_device_found":
+        return "Dieses Gerät kann von Sentero derzeit nicht verwendet werden."
+    return str(result.get("message") or "")
+
+
+def sensor_type_label(sensor_type: str) -> str:
+    return {
+        "door": "Türsensor",
+        "door_contact": "Türsensor",
+        "presence": "Präsenzsensor",
+        "presence_sensor": "Präsenzsensor",
+        "smoke_detector": "Rauchmelder",
+        "button": "Taster",
+        "electricity_meter": "Stromzähler",
+        "water_meter": "Wasserzähler",
+        "gas_meter": "Gaszähler",
+    }.get(str(sensor_type or ""), "Sensor")
 
 
 def public_candidate_from(candidate: dict[str, Any]) -> dict[str, Any]:
