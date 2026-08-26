@@ -340,6 +340,7 @@ function latestLiveMovementRole(roles: SenteroSensorRole[]) {
 }
 
 function roleSignalsMovement(role: SenteroSensorRole) {
+  if (isSmokeRole(role)) return false;
   const motion = normalizeState(role.motion_state || role.motion || role.state);
   return ['large', 'small', 'moving', 'move', 'movement', 'motion', 'active', 'detected', 'on', 'true', '1'].includes(motion);
 }
@@ -418,6 +419,7 @@ function isMotionEvent(event: BehaviorEvent) {
   const role = String(event.role || '').toLowerCase();
   const deviceClass = String(event.device_class || '').toLowerCase();
   const entityId = String(event.entity_id || '').toLowerCase();
+  if (isSmokeText(`${role} ${deviceClass} ${entityId}`)) return false;
   return role.endsWith('_motion') || deviceClass === 'motion' || entityId.endsWith('#motion');
 }
 
@@ -425,6 +427,7 @@ function isPresenceEvent(event: BehaviorEvent) {
   const role = String(event.role || '').toLowerCase();
   const deviceClass = String(event.device_class || '').toLowerCase();
   const entityId = String(event.entity_id || '').toLowerCase();
+  if (isSmokeText(`${role} ${deviceClass} ${entityId}`)) return false;
   return !isMotionEvent(event) && (role.endsWith('presence') || deviceClass === 'presence' || entityId.endsWith('#presence'));
 }
 
@@ -447,6 +450,9 @@ function isActivityEvent(event: BehaviorEvent) {
   const state = normalizeState(event.state);
   if (inactiveStates.has(state)) return false;
   const role = String(event.role || '').toLowerCase();
+  const deviceClass = String(event.device_class || '').toLowerCase();
+  const entityId = String(event.entity_id || '').toLowerCase();
+  if (isSmokeText(`${role} ${deviceClass} ${entityId}`)) return false;
   if (role.endsWith('_motion')) return activeMotionStates.has(state);
   return activeStates.has(state);
 }
@@ -476,6 +482,7 @@ const activeMotionStates = new Set(['active', 'motion', 'moving', 'large', 'smal
 const inactiveStates = new Set(['', 'unknown', 'unavailable', 'none', 'off', 'false', '0', 'no', 'inactive', 'still', 'not_ready', 'nicht bereit', 'lesefehler', 'ok', 'closed', 'closing', 'clear']);
 
 function isRoleActive(role: SenteroSensorRole) {
+  if (isSmokeRole(role)) return false;
   if (role.presence != null) return Boolean(role.presence);
   const state = normalizeState(role.state);
   if (inactiveStates.has(state)) return false;
@@ -483,6 +490,15 @@ function isRoleActive(role: SenteroSensorRole) {
   const motion = normalizeState(role.motion);
   if (role.role.endsWith('_motion') || String(role.device_class || '').toLowerCase() === 'motion') return activeMotionStates.has(motion || state);
   return false;
+}
+
+function isSmokeRole(role: SenteroSensorRole) {
+  return isSmokeText(`${role.role || ''} ${role.device_class || ''}`);
+}
+
+function isSmokeText(value: string) {
+  const text = value.toLowerCase();
+  return text.includes('smoke') || text.includes('rauch');
 }
 
 function normalizeState(value?: string | null) {

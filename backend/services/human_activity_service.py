@@ -38,6 +38,10 @@ class HumanActivityScorer:
 
         event_type = str(event.get("event_type") or "").strip().lower()
         device_class = str(event.get("device_class") or "").strip().lower()
+        role = str(event.get("role") or "").strip().lower()
+        entity_id = str(event.get("entity_id") or "").strip().lower()
+        if event_type in {"smoke", "smoke_alarm", "safety"} or device_class == "smoke" or "smoke" in role or "rauch" in role or "smoke" in entity_id:
+            return None
         room = str(event.get("room") or "").strip()
         event_time = self._parse_time(event.get("event_time"))
         motion_state = str(event.get("motion_state") or "").strip().lower().replace("-", "_")

@@ -251,6 +251,7 @@ class SenteroBehaviorAgent:
 
         written = 0
         for role in matched_roles:
+            self._handle_mqtt_smoke_warning(role, payload)
             events = self._mqtt_behavior_events(role, clean_topic, payload, received_at)
             if events:
                 written += self._write_sensor_events(events, created_at=now())
@@ -260,6 +261,26 @@ class SenteroBehaviorAgent:
                 extra={"component": "behavior", "topic": clean_topic, "written_events": written},
             )
         return written
+
+    def _handle_mqtt_smoke_warning(self, role: dict[str, Any], payload: dict[str, Any]) -> None:
+        if not self._is_smoke_role(role):
+            return
+        smoke = self._mqtt_smoke_active(payload)
+        if smoke is None:
+            return
+        sensor = {
+            **role,
+            "configured": True,
+            "active": True,
+            "enabled": True,
+            "smoke": smoke,
+            "battery_level": payload.get("battery") if isinstance(payload.get("battery"), (int, float)) else role.get("battery_level"),
+        }
+        subject_id = self.notifications._sensor_subject_id(sensor)
+        if smoke:
+            self.notifications.notify_sensor_warnings([sensor])
+        else:
+            self.notifications.resolve_system_warning(f"smoke_alarm:{subject_id}")
 
     def _roles_for_mqtt_topic(self, topic: str) -> list[dict[str, Any]]:
         clean = str(topic or "").strip().strip("/")
@@ -288,6 +309,8 @@ class SenteroBehaviorAgent:
     ) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
         role_name = str(role.get("role") or "").strip() or "sensor"
+        if self._is_smoke_role(role):
+            return events
         room = role.get("room")
         source = str(role.get("source") or "zigbee2mqtt")
 
@@ -366,6 +389,20 @@ class SenteroBehaviorAgent:
             return True
         if text in {"none", "still", "static", "stationary", "standstill", "inactive", "clear", "off", "false", "0", "no_motion", "no motion"}:
             return False
+        return None
+
+    @classmethod
+    def _mqtt_smoke_active(cls, payload: dict[str, Any]) -> bool | None:
+        for key in ("smoke", "smoke_alarm", "smoke_state"):
+            if key in payload:
+                parsed = cls._mqtt_bool(payload.get(key))
+                if parsed is not None:
+                    return parsed
+                text = str(payload.get(key) or "").strip().lower().replace("-", "_")
+                if text in {"alarm", "alert", "smoke", "smoke_detected", "detected", "fire"}:
+                    return True
+                if text in {"clear", "ok", "normal", "none", "no_smoke", "not_detected"}:
+                    return False
         return None
 
     def _profile(self) -> dict[str, Any]:
@@ -1131,6 +1168,8 @@ class SenteroBehaviorAgent:
         return average > 0 and current >= max(average * 2.5, average + 3)
 
     def _event_type(self, event: dict[str, Any]) -> str:
+        if self._is_smoke_role(event):
+            return "safety"
         if self._is_door_event(event):
             return "door"
         if self._is_presence_role(event):
@@ -1140,9 +1179,11 @@ class SenteroBehaviorAgent:
         return "sensor_state"
 
     def _is_activity_event(self, event: dict[str, Any]) -> bool:
-        return self._is_on(event.get("state")) and (self._is_presence_role(event) or self._is_motion_entity(event) or self._is_door_event(event))
+        return self._is_on(event.get("state")) and not self._is_smoke_role(event) and (self._is_presence_role(event) or self._is_motion_entity(event) or self._is_door_event(event))
 
     def _is_door_event(self, event: dict[str, Any]) -> bool:
+        if self._is_smoke_role(event):
+            return False
         text = self._entity_text(event)
         return "door" in text or "tuer" in text or "tür" in text or self._device_class(event) in {"door", "opening"}
 
@@ -1497,18 +1538,28 @@ class SenteroBehaviorAgent:
         return sorted(matches, key=lambda item: (self._entity_id(item).startswith("binary_sensor."), self._parse_time(item.get("last_updated")).timestamp()), reverse=True)[0] if matches else None
 
     def _is_presence_role(self, role: dict[str, Any]) -> bool:
+        if self._is_smoke_role(role):
+            return False
         text = self._entity_text(role)
         return str(role.get("role") or "").endswith("presence") or self._is_presence_entity(role) or "occupy" in text
 
     def _is_presence_entity(self, item: dict[str, Any]) -> bool:
+        if self._is_smoke_role(item):
+            return False
         dc = self._device_class(item)
         text = self._entity_text(item)
         return dc in {"occupancy", "presence"} or any(term in text for term in ["presence", "praesenz", "präsenz", "occupancy", "occupy"])
 
     def _is_motion_entity(self, item: dict[str, Any]) -> bool:
+        if self._is_smoke_role(item):
+            return False
         dc = self._device_class(item)
         text = self._entity_text(item)
         return dc == "motion" or any(term in text for term in ["motion", "bewegung", "pir_detection", "pir detection", "pir"])
+
+    def _is_smoke_role(self, item: dict[str, Any]) -> bool:
+        text = self._entity_text(item)
+        return self._device_class(item) == "smoke" or any(term in text for term in ["smoke", "rauch", "fire_alarm"])
 
     @staticmethod
     def _device_class(item: dict[str, Any]) -> str:

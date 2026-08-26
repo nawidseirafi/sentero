@@ -23,6 +23,8 @@ DISCOVERY_TIMEOUT_SECONDS = 180
 DISCOVERY_CONFIDENCE_THRESHOLD = 50
 PRESENCE_CLASSES = {'occupancy', 'motion', 'presence', 'moving_target', 'static_target'}
 CONTACT_CLASSES = {'door', 'window', 'opening', 'contact'}
+SMOKE_CLASSES = {'smoke'}
+SMOKE_KEYS = {'smoke', 'smoke_alarm', 'smoke_state'}
 SMART_METER_CLASSES = {'energy', 'power', 'water', 'gas'}
 DEFAULT_PRESENCE_LIVE_STATE_TTL_SECONDS = 300
 DEFAULT_PRESENCE_UNREACHABLE_GRACE_SECONDS = 900
@@ -1010,6 +1012,7 @@ class DeviceMappingService:
             explicit_presence = c1001_telemetry.get('presence')
             inferred_presence = generic_presence.get('presence')
             presence = effective_presence_value(explicit_presence, inferred_presence, motion_state, motion)
+            smoke = smoke_value_from_state(live_telemetry_state)
             logger.debug(
                 "Sensor health resolved",
                 extra={
@@ -1029,6 +1032,7 @@ class DeviceMappingService:
                     "fall_detected": c1001_telemetry.get('fall_detected'),
                     "motion": motion,
                     "motion_state": motion_state,
+                    "smoke": smoke,
                     "stale": stale,
                     "stale_seconds": stale_seconds,
                 },
@@ -1058,6 +1062,7 @@ class DeviceMappingService:
                 'fall_detected': c1001_telemetry.get('fall_detected'),
                 'motion': motion,
                 'motion_state': motion_state,
+                'smoke': smoke,
                 'stale': stale,
                 'stale_seconds': stale_seconds,
                 'data_age_seconds': data_age_seconds,
@@ -1740,7 +1745,7 @@ def count_changed_entities(baseline: list[dict[str, Any]], current: list[dict[st
 
 
 def domain_matches(role: str, domain: Any) -> bool:
-    if role_is_presence(role) or role_is_contact(role):
+    if role_is_presence(role) or role_is_contact(role) or role_is_smoke_detector(role):
         return str(domain or '') in {'binary_sensor', 'sensor', 'lock', 'switch'}
     if role_is_button(role):
         return str(domain or '') in {'button', 'sensor'}
@@ -1777,6 +1782,8 @@ def role_candidate_matches(role: str, item: dict[str, Any], allow_missing_device
     has_device_class = bool(str(device_class or '').strip())
     if role_is_presence(role) and has_presence_telemetry(item):
         return True
+    if role_is_smoke_detector(role) and has_smoke_telemetry(item):
+        return True
     source = str(item.get('source') or item.get('platform') or '').strip().lower()
     if (
         role_is_presence(role)
@@ -1796,6 +1803,12 @@ def role_candidate_matches(role: str, item: dict[str, Any], allow_missing_device
             str(device_class or '').lower() == 'button'
             or str(item.get('payload_key') or '').lower() in {'action', 'button'}
             or role_keyword_matches(role, item, include_model=True)
+        )
+    if role_is_smoke_detector(role):
+        return (
+            (domain == 'binary_sensor' and (allow_device_class_mismatch or class_matches(role, device_class)))
+            or (domain == 'sensor' and has_smoke_telemetry(item))
+            or (domain == 'mqtt' and source in {'zigbee2mqtt', 'mqtt'} and has_smoke_telemetry(item))
         )
     if role_is_presence(role):
         return (
@@ -1818,6 +1831,8 @@ def class_matches(role: str, device_class: Any) -> bool:
         return dc in PRESENCE_CLASSES
     if role_is_contact(role):
         return dc in CONTACT_CLASSES
+    if role_is_smoke_detector(role):
+        return dc in SMOKE_CLASSES
     if role_is_button(role):
         return dc == 'button'
     if role_is_smart_meter(role):
@@ -1845,6 +1860,8 @@ def role_keyword_matches(role: str, item: dict[str, Any], include_model: bool = 
         return any(term in haystack for term in ['occupy', 'occupancy', 'motion', 'presence', 'bewegung', 'praesenz', 'präsenz'])
     if role_is_contact(role):
         return any(term in haystack for term in ['contact', 'door', 'window', 'opening', 'tuer', 'tür', 'tuerschloss', 'türschloss', 'fenster'])
+    if role_is_smoke_detector(role):
+        return has_smoke_telemetry(item)
     if role_is_button(role):
         return any(term in haystack for term in ['button', 'action', 'knopf', 'taster'])
     return False
@@ -1897,6 +1914,11 @@ def candidate_entity_priority(role: str, item: dict[str, Any]) -> int:
             return 35
         if domain == 'switch' and any(term in haystack for term in ['door', 'tuer', 'tür']):
             return 20
+    if role_is_smoke_detector(role):
+        if has_smoke_telemetry(item):
+            return 60
+        if domain == 'binary_sensor' and class_matches(role, device_class):
+            return 45
     if role_is_button(role):
         if domain == 'button' or device_class == 'button':
             return 40
@@ -1958,6 +1980,7 @@ def resolve_role_state(row: dict[str, Any], states: list[dict[str, Any]], by_ent
                 is_live_mqtt_state(item),
                 sensor_reachable_status(item) is True,
                 has_presence_telemetry(item) if role_is_presence(role) else False,
+                has_smoke_telemetry(item) if role_is_smoke_detector(role) else False,
                 role_state_priority(role, item),
             ),
             reverse=True,
@@ -2016,10 +2039,14 @@ def role_state_matches(role: str, item: dict[str, Any]) -> bool:
     domain = str(item.get('domain') or str(item.get('entity_id') or '').split('.', 1)[0])
     if role_is_presence(role) and has_presence_telemetry(item):
         return True
+    if role_is_smoke_detector(role) and has_smoke_telemetry(item):
+        return True
     if role_is_button(role):
         return domain == 'button' or str(item.get('device_class') or '').lower() == 'button' or str(item.get('payload_key') or '').lower() in {'action', 'button'}
     if role_is_smart_meter(role):
         return role_candidate_matches(role, item, allow_missing_device_class=True, allow_device_class_mismatch=False)
+    if role_is_smoke_detector(role):
+        return role_candidate_matches(role, item, allow_missing_device_class=False, allow_device_class_mismatch=False)
     if domain in {'button', 'update', 'number', 'select'}:
         return False
     haystack = normalize(' '.join(str(item.get(key) or '') for key in ['entity_id', 'friendly_name', 'original_name', 'device_name']))
@@ -2044,6 +2071,11 @@ def role_state_priority(role: str, item: dict[str, Any]) -> int:
             score += 25
         if device_class in CONTACT_CLASSES:
             score += 20
+    if role_is_smoke_detector(role):
+        if 'smoke' in entity_id or 'rauch' in entity_id:
+            score += 25
+        if device_class in SMOKE_CLASSES:
+            score += 25
     if role_is_smart_meter(role):
         if any(term in entity_id for term in ['energy', 'electricity', 'strom', 'power', 'water', 'wasser', 'gas']):
             score += 25
@@ -2069,6 +2101,8 @@ def sensor_type_from_role(role: str) -> str:
         return 'door'
     if role_is_presence(role):
         return 'presence'
+    if role_is_smoke_detector(role):
+        return 'smoke_detector'
     if role_is_electricity_meter(role):
         return 'electricity_meter'
     if 'water' in normalize(role):
@@ -2292,6 +2326,9 @@ def mqtt_item_has_telemetry(item: dict[str, Any] | None) -> bool:
         'motion_state',
         'occupancy',
         'presence',
+        'smoke',
+        'smoke_alarm',
+        'smoke_state',
         'signal_quality',
         'temperature',
         'voltage',
@@ -2333,6 +2370,23 @@ def has_contact_telemetry(item: dict[str, Any] | None) -> bool:
         (key in item and mqtt_telemetry_value_is_valid(item.get(key)))
         or (key in attrs and mqtt_telemetry_value_is_valid(attrs.get(key)))
         for key in ('contact', 'open')
+    )
+
+
+def has_smoke_telemetry(item: dict[str, Any] | None) -> bool:
+    if not item or item.get('metadata_only') is True:
+        return False
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    if attrs.get('metadata_only') is True:
+        return False
+    device_class = str(item.get('device_class') or attrs.get('device_class') or '').strip().lower()
+    payload_key = str(item.get('payload_key') or attrs.get('payload_key') or '').strip().lower()
+    if device_class == 'smoke' or payload_key in SMOKE_KEYS:
+        return True
+    return any(
+        (key in item and mqtt_telemetry_value_is_valid(item.get(key)))
+        or (key in attrs and mqtt_telemetry_value_is_valid(attrs.get(key)))
+        for key in SMOKE_KEYS
     )
 
 
@@ -2384,6 +2438,9 @@ def combined_mqtt_telemetry_state(role: dict[str, Any], state: dict[str, Any] | 
         'motion_state',
         'occupancy',
         'presence',
+        'smoke',
+        'smoke_alarm',
+        'smoke_state',
         'signal_quality',
         'temperature',
         'voltage',
@@ -2597,6 +2654,33 @@ def effective_presence_value(
     if motion_state_implies_presence(motion_state) or motion_state_implies_presence(motion):
         return True
     if explicit is False or inferred is False:
+        return False
+    return None
+
+
+def smoke_value_from_state(state: dict[str, Any] | None) -> bool | None:
+    if not state:
+        return None
+    attrs = state.get('attributes') if isinstance(state.get('attributes'), dict) else {}
+    for key in ('smoke', 'smoke_alarm', 'smoke_state'):
+        parsed = parse_smoke_bool(first_present(state, attrs, key))
+        if parsed is not None:
+            return parsed
+    if str(state.get('payload_key') or '').strip().lower() in SMOKE_KEYS:
+        return parse_smoke_bool(state.get('state'))
+    if str(state.get('device_class') or attrs.get('device_class') or '').strip().lower() == 'smoke':
+        return parse_smoke_bool(state.get('state'))
+    return None
+
+
+def parse_smoke_bool(value: Any) -> bool | None:
+    parsed = parse_bool_value(value)
+    if parsed is not None:
+        return parsed
+    text = normalize(str(value or ''))
+    if text in {'alarm', 'alert', 'smoke', 'smoke_detected', 'detected', 'fire'}:
+        return True
+    if text in {'clear', 'ok', 'normal', 'none', 'no_smoke', 'not_detected'}:
         return False
     return None
 
@@ -3269,6 +3353,7 @@ def public_role(data: dict[str, Any]) -> dict[str, Any]:
         'humidity': data.get('humidity'),
         'illuminance': data.get('illuminance'),
         'presence': data.get('presence'),
+        'smoke': data.get('smoke'),
         'fall_detected': data.get('fall_detected'),
         'motion': data.get('motion'),
         'motion_state': data.get('motion_state'),
@@ -3326,6 +3411,7 @@ def battery_lookup_prefixes(entity_id: str) -> list[str]:
         '_presence',
         '_occupancy',
         '_motion',
+        '_smoke',
         '_bewegung',
         '_praesenz',
         '_präsenz',

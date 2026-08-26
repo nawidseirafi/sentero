@@ -25,7 +25,7 @@ type NotificationPreferences = {
   daily_summary: boolean;
 };
 
-type SensorPlan = { motion: boolean; door: boolean; electricity: boolean; water: boolean; gas: boolean };
+type SensorPlan = { motion: boolean; door: boolean; smoke: boolean; electricity: boolean; water: boolean; gas: boolean };
 
 const steps = ['Willkommen', 'Internetverbindung', 'Profil', 'Räume', 'Sensoren', 'Vertraute Personen', 'Benachrichtigungen', 'Abschluss'];
 const SENSOR_DISCOVERY_SECONDS = 120;
@@ -726,6 +726,10 @@ function RoomsStep({ selected, customRooms, sensorPlan, lockedSensorPlan, custom
                     <input type="checkbox" checked={plan.door} disabled={locked.door} onChange={() => onToggleSensorType(room.id, 'door')} />
                     <i aria-hidden="true" /> <span>Türsensor</span>
                   </label>
+                  <label className={`${plan.smoke ? 'active' : ''}${locked.smoke ? ' locked' : ''}`}>
+                    <input type="checkbox" checked={plan.smoke} disabled={locked.smoke} onChange={() => onToggleSensorType(room.id, 'smoke')} />
+                    <i aria-hidden="true" /> <span>Rauchmelder</span>
+                  </label>
                 </div>
               )}
             </div>
@@ -886,6 +890,10 @@ function buildBindings(roomIds: string[], sensorPlan: Record<string, SensorPlan>
       const doorId = `${roomId}_door`;
       bindings.push(byId[doorId] || { id: doorId, roomId, type: 'door', sensorId: '', name: `${label} Türkontakt`, status: 'idle' });
     }
+    if (plan.smoke) {
+      const smokeId = `${roomId}_smoke`;
+      bindings.push(byId[smokeId] || { id: smokeId, roomId, type: 'smoke_detector', sensorId: '', name: `${label} Rauchmelder`, status: 'idle' });
+    }
     if (roomId === 'home' && plan.electricity) bindings.push(byId.home_energy || { id: 'home_energy', roomId, type: 'electricity_meter', sensorId: '', name: 'Stromzähler', status: 'idle' });
     if (roomId === 'home' && plan.water) bindings.push(byId.home_water || { id: 'home_water', roomId, type: 'water_meter', sensorId: '', name: 'Wasserzähler', status: 'idle' });
     if (roomId === 'home' && plan.gas) bindings.push(byId.home_gas || { id: 'home_gas', roomId, type: 'gas_meter', sensorId: '', name: 'Gaszähler', status: 'idle' });
@@ -944,7 +952,7 @@ function lockedPlanFromRoles(roles: SenteroSensorRole[]) {
 
 function roomHasLockedSensor(lockedSensorPlan: Record<string, SensorPlan>, roomId: string) {
   const locked = lockedSensorPlan[roomId];
-  return Boolean(locked?.motion || locked?.door || locked?.electricity || locked?.water || locked?.gas);
+  return Boolean(locked?.motion || locked?.door || locked?.smoke || locked?.electricity || locked?.water || locked?.gas);
 }
 
 function unlockSensorPlan(current: Record<string, SensorPlan>, sensor: SensorBinding) {
@@ -957,6 +965,7 @@ function unlockSensorPlan(current: Record<string, SensorPlan>, sensor: SensorBin
 function sensorTypeFromRole(role: string): SensorBinding['type'] | null {
   if (role.endsWith('_presence') || role.endsWith('_motion')) return 'motion';
   if (role.endsWith('_door') || role.endsWith('_contact')) return 'door';
+  if (role.endsWith('_smoke')) return 'smoke_detector';
   if (role.endsWith('_energy') || role.endsWith('_power')) return 'electricity_meter';
   if (role.endsWith('_water')) return 'water_meter';
   if (role.endsWith('_gas')) return 'gas_meter';
@@ -964,12 +973,13 @@ function sensorTypeFromRole(role: string): SensorBinding['type'] | null {
 }
 
 function roomFromRole(role: string) {
-  return role.replace(/_(presence|motion|door|contact|energy|power|water|gas)$/, '');
+  return role.replace(/_(presence|motion|door|contact|smoke|energy|power|water|gas)$/, '');
 }
 
 function defaultSensorName(roomLabel: string, type: SensorBinding['type']) {
   if (type === 'motion') return `${roomLabel} Präsenz`;
   if (type === 'door') return `${roomLabel} Türkontakt`;
+  if (type === 'smoke_detector') return `${roomLabel} Rauchmelder`;
   if (type === 'electricity_meter') return 'Stromzähler';
   if (type === 'water_meter') return 'Wasserzähler';
   return 'Gaszähler';
@@ -1003,7 +1013,7 @@ function uniqueValues(values: string[]) {
 function selectedRoomsWithSensors(roomIds: string[], sensorPlan: Record<string, SensorPlan>) {
   const selected = roomIds.filter((roomId) => {
     const plan = sensorPlan[roomId] || emptySensorPlan();
-    return plan.motion || plan.door || plan.electricity || plan.water || plan.gas;
+    return plan.motion || plan.door || plan.smoke || plan.electricity || plan.water || plan.gas;
   });
   const homePlan = sensorPlan.home || emptySensorPlan();
   return homePlan.electricity || homePlan.water || homePlan.gas ? uniqueValues([...selected, 'home']) : selected;
@@ -1021,11 +1031,12 @@ function validBirthYear(value: string) {
 }
 
 function emptySensorPlan(): SensorPlan {
-  return { motion: false, door: false, electricity: false, water: false, gas: false };
+  return { motion: false, door: false, smoke: false, electricity: false, water: false, gas: false };
 }
 
 function sensorTypeForDiscovery(type: SensorBinding['type']) {
   if (type === 'door') return 'door_contact';
+  if (type === 'smoke_detector') return 'smoke_detector';
   if (type === 'electricity_meter') return 'electricity_meter';
   if (type === 'water_meter') return 'water_meter';
   if (type === 'gas_meter') return 'gas_meter';
@@ -1042,6 +1053,7 @@ function sensorPlanKey(type: SensorBinding['type']): keyof SensorPlan {
   if (type === 'electricity_meter') return 'electricity';
   if (type === 'water_meter') return 'water';
   if (type === 'gas_meter') return 'gas';
+  if (type === 'smoke_detector') return 'smoke';
   return type;
 }
 

@@ -62,6 +62,7 @@ export type SenteroSensorRole = {
   humidity?: number | null;
   illuminance?: number | null;
   presence?: boolean | null;
+  smoke?: boolean | null;
   fall_detected?: boolean | null;
   motion?: string | null;
   motion_state?: string | null;

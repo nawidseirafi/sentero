@@ -5,7 +5,7 @@ import { SetupWifiQr } from './SetupWifiQr';
 export type SensorBinding = {
   id: string;
   roomId: string;
-  type: 'motion' | 'door' | 'electricity_meter' | 'water_meter' | 'gas_meter';
+  type: 'motion' | 'door' | 'smoke_detector' | 'electricity_meter' | 'water_meter' | 'gas_meter';
   sensorId: string;
   name: string;
   status: 'idle' | 'searching' | 'connected' | 'missing' | 'skipped';
@@ -154,6 +154,7 @@ function isPresenceBinding(sensor: SensorBinding) {
 
 function sensorLabel(sensor: SensorBinding) {
   if (sensor.type === 'door') return 'Türsensor';
+  if (sensor.type === 'smoke_detector') return 'Rauchmelder';
   if (sensor.type === 'electricity_meter') return 'everHome EcoTracker IR';
   if (sensor.type === 'water_meter') return 'Wasserzähler';
   if (sensor.type === 'gas_meter') return 'Gaszähler';
@@ -162,6 +163,7 @@ function sensorLabel(sensor: SensorBinding) {
 
 function sensorHelp(sensor: SensorBinding) {
   if (sensor.type === 'door') return 'Erkennt, ob eine Tür oder ein Fenster geöffnet wurde.';
+  if (sensor.type === 'smoke_detector') return 'Warnt, wenn Rauch erkannt wird.';
   if (sensor.type === 'electricity_meter') return 'Liest den Stromzähler lokal über http://EcoTracker-IP/v1/json aus.';
   if (sensor.type === 'water_meter') return 'Liefert Wasserverbrauch als zusätzlichen Aktivitätshinweis.';
   if (sensor.type === 'gas_meter') return 'Liefert Gasverbrauch als zusätzlichen Aktivitätshinweis.';

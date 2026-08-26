@@ -87,7 +87,7 @@ class SensorManager:
             "mode": source,
             "status_label": "Bereit" if bool(home_status.get("sensor_ready")) else "Wartet auf Sensorverbindung",
             "network": network,
-            "supported_sensor_types": ["door_contact", "presence_sensor", "motion_sensor", "button", "electricity_meter"],
+            "supported_sensor_types": ["door_contact", "presence_sensor", "smoke_detector", "motion_sensor", "button", "electricity_meter"],
             "supported_meter_devices": ["everhome_ecotracker_ir"],
             "wifi_sensor_setup_enabled": wifi_sensor_setup_enabled(),
             "presence_sensor_transport": configured_presence_sensor_transport(),
@@ -339,6 +339,8 @@ def normalize_sensor_type(value: str) -> str:
         return "door_contact"
     if text in {"presence", "presence_sensor", "motion"}:
         return "presence_sensor"
+    if text in {"smoke", "smoke_detector", "rauch", "rauchmelder", "smoke_alarm", "fire_alarm"}:
+        return "smoke_detector"
     if text in {"button"}:
         return "button"
     if text in {"smart_meter", "meter", "electricity_meter", "energy_meter", "power_meter", "strom", "stromzaehler", "stromzähler"}:
@@ -376,6 +378,8 @@ def public_sensor_type(value: str) -> str:
         return "door"
     if value == "presence_sensor":
         return "presence"
+    if value == "smoke_detector":
+        return "smoke_detector"
     return value
 
 
@@ -383,6 +387,8 @@ def role_for_sensor(sensor_type: str, room_id: str | None) -> str:
     room = str(room_id or "home").strip() or "home"
     if sensor_type == "door_contact":
         return "main_door" if room in {"entrance", "hallway"} else f"{room}_door"
+    if sensor_type == "smoke_detector":
+        return f"{room}_smoke"
     if sensor_type == "button":
         return f"{room}_button"
     if sensor_type == "electricity_meter":
@@ -408,6 +414,8 @@ def product_message(sensor_type: str, result: dict[str, Any]) -> str:
         return "Bitte versetzen Sie den Sensor in den Verbindungsmodus."
     if sensor_type == "door_contact":
         return "Türsensor wird gesucht. Bitte Pairing-Taste drücken."
+    if sensor_type == "smoke_detector":
+        return "Rauchmelder wird gesucht. Bitte Pairing-Taste drücken."
     if sensor_type == "electricity_meter":
         return "Stromzähler wird gesucht. Bitte Zähler koppeln oder einen neuen Messwert auslösen."
     if sensor_type == "water_meter":
@@ -456,6 +464,8 @@ def public_type_from_device_class(device_class: str) -> str:
         return "door_contact"
     if device_class in {"motion", "occupancy", "presence"}:
         return "presence_sensor"
+    if device_class == "smoke":
+        return "smoke_detector"
     if device_class == "button":
         return "button"
     if device_class in {"energy", "power"}:
@@ -474,6 +484,8 @@ def public_type_from_mqtt_candidate(candidate: dict[str, Any]) -> str:
         return "door_contact"
     if device_class in {"motion", "occupancy", "presence"} or payload_key in {"occupancy", "presence", "motion"}:
         return "presence_sensor"
+    if device_class == "smoke" or payload_key in {"smoke", "smoke_alarm", "smoke_state"}:
+        return "smoke_detector"
     if device_class == "button" or payload_key in {"action", "button"}:
         return "button"
     if device_class in {"energy", "power"} or payload_key in {"energy", "energy_consumption", "electricity", "electricity_consumption", "power", "power_usage"}:
@@ -496,6 +508,8 @@ def public_type_from_role(role: str) -> str:
         return "door_contact"
     if "button" in role:
         return "button"
+    if "smoke" in role or "rauch" in role:
+        return "smoke_detector"
     if any(term in role for term in ["energy", "power", "electricity"]):
         return "electricity_meter"
     if "water" in role:

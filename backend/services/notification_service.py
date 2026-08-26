@@ -705,7 +705,25 @@ class NotificationService:
         )
         active_keys = {warning["key"] for warning in active_warnings}
         self._resolve_inactive_system_warnings(active_keys)
+        return self._deliver_system_warnings(active_warnings)
 
+    def notify_sensor_warnings(
+        self,
+        sensors: list[dict[str, Any]],
+        battery_threshold: int = BATTERY_WARNING_THRESHOLD,
+    ) -> dict[str, Any]:
+        if not self._critical_notifications_enabled():
+            return {"sent": 0, "warnings": [], "skipped": "critical_notifications_disabled"}
+        sensor_rows = [row for row in sensors if row.get("active", True) and row.get("enabled", True)]
+        active_warnings = self._system_warnings(sensor_rows, battery_threshold=battery_threshold, environmental_sensors=[])
+        return self._deliver_system_warnings(active_warnings)
+
+    def resolve_system_warning(self, warning_key: str) -> None:
+        key = str(warning_key or "").strip()
+        if key:
+            self._resolve_inactive_system_warnings(set(), keys={key})
+
+    def _deliver_system_warnings(self, active_warnings: list[dict[str, Any]]) -> dict[str, Any]:
         contacts = self._trusted_contacts()
         sent = 0
         for warning in active_warnings:
@@ -736,6 +754,22 @@ class NotificationService:
             room = str(sensor.get("room") or "").strip()
             subject_id = self._sensor_subject_id(sensor)
             battery = sensor.get("battery_level")
+            if sensor.get("smoke") is True:
+                warnings.append({
+                    "key": f"smoke_alarm:{subject_id}",
+                    "type": "smoke_alarm",
+                    "severity": "red",
+                    "title": "Sentero Rauchwarnung",
+                    "summary": f"{label} meldet Rauch.",
+                    "recommendation": "Bitte prüfen Sie die Situation sofort und folgen Sie den örtlichen Sicherheitsregeln.",
+                    "role": role,
+                    "subject_id": subject_id,
+                    "label": label,
+                    "room": room,
+                    "battery_level": battery if isinstance(battery, (int, float)) else None,
+                    "data_class": "safety",
+                    "aggregation_level": "raw",
+                })
             if isinstance(battery, (int, float)) and battery < battery_threshold:
                 warnings.append({
                     "key": f"battery_low:{subject_id}",
@@ -1280,11 +1314,20 @@ class NotificationService:
             )
             con.commit()
 
-    def _resolve_inactive_system_warnings(self, active_keys: set[str]) -> None:
+    def _resolve_inactive_system_warnings(self, active_keys: set[str], keys: set[str] | None = None) -> None:
         timestamp = now()
         required = self._incident_recovery_healthy_checks()
         with self.mapping.connect() as con:
-            rows = con.execute("select warning_key, consecutive_healthy_checks from system_warning_state where status = 'active'").fetchall()
+            if keys is None:
+                rows = con.execute("select warning_key, consecutive_healthy_checks from system_warning_state where status = 'active'").fetchall()
+            elif not keys:
+                rows = []
+            else:
+                placeholders = ",".join("?" for _ in keys)
+                rows = con.execute(
+                    f"select warning_key, consecutive_healthy_checks from system_warning_state where status = 'active' and warning_key in ({placeholders})",
+                    tuple(keys),
+                ).fetchall()
             for row in rows:
                 key = str(row["warning_key"] or "")
                 if key not in active_keys:

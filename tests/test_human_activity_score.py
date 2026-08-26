@@ -69,6 +69,17 @@ class HumanActivityScoreTests(unittest.TestCase):
         })
         self.assertIsNone(result)
 
+    def test_smoke_event_is_not_scored_as_human_activity(self) -> None:
+        result = self.scorer.assess(self.con, {
+            "event_time": "2026-08-24T10:00:00+00:00",
+            "room": "Küche",
+            "state": "on",
+            "event_type": "smoke_alarm",
+            "device_class": "smoke",
+            "role": "kitchen_smoke",
+        })
+        self.assertIsNone(result)
+
 
 if __name__ == "__main__":
     unittest.main()

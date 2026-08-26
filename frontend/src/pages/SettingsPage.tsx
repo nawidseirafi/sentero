@@ -1108,8 +1108,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                           </div>
                           <div className="sc-sensor-health">
                             {isDoorContactSensor(sensor) && <DoorContactStatus sensor={sensor} />}
+                            {isSmokeSensor(sensor) && <SmokeStatus sensor={sensor} />}
                             {isEsp32PresenceSensor(sensor) && <C1001Telemetry sensor={sensor} />}
-                            {!isEsp32PresenceSensor(sensor) && isMotionSensor(sensor) && <MotionStatus sensor={sensor} />}
+                            {!isEsp32PresenceSensor(sensor) && !isSmokeSensor(sensor) && isMotionSensor(sensor) && <MotionStatus sensor={sensor} />}
                             {isSmartMeterSensor(sensor) && <span className="battery"><Plug size={17} /> {formatMeterValue(sensor)}</span>}
                             {isEcoTrackerSensor(sensor) && ecoTrackerMeterReadingLabel(ecoTrackerReading) && <span className="battery"><Plug size={17} /> {ecoTrackerMeterReadingLabel(ecoTrackerReading)}</span>}
                             <SensorEnvironment sensor={sensor} />
@@ -2217,6 +2218,17 @@ function DoorContactStatus({ sensor }: { sensor: SenteroSensorRole }) {
     </div>
   );
 }
+
+function SmokeStatus({ sensor }: { sensor: SenteroSensorRole }) {
+  const alarm = sensor.smoke === true || ['on', 'true', '1', 'alarm', 'detected'].includes(String(sensor.state || '').toLowerCase());
+  return (
+    <span className={`presence-status ${alarm ? 'alert' : 'away'}`} aria-label={alarm ? 'Rauch erkannt' : 'Kein Rauch erkannt'}>
+      <ShieldAlert size={17} />
+      {alarm ? 'Rauch erkannt' : 'Kein Rauch erkannt'}
+    </span>
+  );
+}
+
 function C1001Telemetry({ sensor }: { sensor: SenteroSensorRole }) {
   const status = presenceMotionStatus(sensor);
   return (
@@ -2283,6 +2295,7 @@ function sensorConnectionLabel(sensor: SenteroSensorRole) {
 
 function sensorType(sensor: SenteroSensorRole) {
   if (isSmartMeterSensor(sensor)) return meterLabelFromRole(sensor.role);
+  if (isSmokeSensor(sensor)) return 'Rauchmelder';
   if (isDoorContactSensor(sensor)) return 'Türkontakt';
   if (isEsp32PresenceSensor(sensor)) return 'Präsenzsensor';
   if (String(sensor.device_class || '') === 'vibration') return 'Vibrationssensor';
@@ -2344,6 +2357,12 @@ function sensorSupportsLedControl(sensor: SenteroSensorRole) {
 
 function isDoorContactSensor(sensor: SenteroSensorRole) {
   return sensor.role === 'main_door' || sensor.role.endsWith('_door') || sensor.role.endsWith('_contact') || ['door', 'window', 'opening', 'contact'].includes(String(sensor.device_class || ''));
+}
+
+function isSmokeSensor(sensor: SenteroSensorRole) {
+  const role = String(sensor.role || '').toLowerCase();
+  const dc = String(sensor.device_class || '').toLowerCase();
+  return role.endsWith('_smoke') || dc === 'smoke';
 }
 
 function isMotionSensor(sensor: SenteroSensorRole) {

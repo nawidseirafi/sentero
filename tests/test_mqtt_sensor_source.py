@@ -191,6 +191,40 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertEqual(contact['topic'], 'zigbee2mqtt/Haustuer')
         self.assertEqual(contact['payload_key'], 'contact')
 
+    def test_zigbee2mqtt_payload_smoke_true_normalizes_smoke_detector_state(self) -> None:
+        mqtt = SnapshotMqtt([FakeMessage('zigbee2mqtt/Kueche Rauchmelder', {'smoke': True, 'battery': 92, 'linkquality': 130})])
+        with patch.dict(os.environ, {'SENTERO_MQTT_BOOTSTRAP_EVENTS': ''}, clear=False):
+            source = Zigbee2MqttSensorSource(mqtt=mqtt)
+            rows = source.snapshot()
+        smoke = next(row for row in rows if row['payload_key'] == 'smoke')
+        self.assertEqual(smoke['device_class'], 'smoke')
+        self.assertEqual(smoke['state'], 'on')
+        self.assertEqual(smoke['attributes']['smoke'], True)
+        self.assertTrue(any(row['payload_key'] == 'battery' for row in rows))
+
+    def test_zigbee2mqtt_payload_smoke_false_normalizes_normal_state(self) -> None:
+        mqtt = SnapshotMqtt([FakeMessage('zigbee2mqtt/Kueche Rauchmelder', {'smoke': False, 'battery': 92})])
+        with patch.dict(os.environ, {'SENTERO_MQTT_BOOTSTRAP_EVENTS': ''}, clear=False):
+            source = Zigbee2MqttSensorSource(mqtt=mqtt)
+            rows = source.snapshot()
+        smoke = next(row for row in rows if row['payload_key'] == 'smoke')
+        self.assertEqual(smoke['device_class'], 'smoke')
+        self.assertEqual(smoke['state'], 'off')
+
+    def test_zigbee2mqtt_alarm_requires_smoke_capability(self) -> None:
+        metadata = FakeMessage('zigbee2mqtt/bridge/devices', [{
+            'ieee_address': '0xa4c1380000000001',
+            'friendly_name': 'Kueche Alarm',
+            'definition': {'model': 'SmokeModel', 'vendor': 'Test', 'exposes': [{'type': 'binary', 'name': 'smoke alarm', 'property': 'alarm'}]},
+        }])
+        mqtt = SnapshotMqtt([metadata, FakeMessage('zigbee2mqtt/Kueche Alarm', {'alarm': True, 'battery': 90})])
+        with patch.dict(os.environ, {'SENTERO_MQTT_BOOTSTRAP_EVENTS': ''}, clear=False):
+            source = Zigbee2MqttSensorSource(mqtt=mqtt)
+            rows = source.snapshot()
+        smoke = next(row for row in rows if row.get('payload_key') == 'smoke' and row.get('metadata_only') is not True)
+        self.assertEqual(smoke['device_class'], 'smoke')
+        self.assertEqual(smoke['state'], 'on')
+
     def test_zigbee2mqtt_bridge_devices_create_presence_candidate_entities(self) -> None:
         ieee = '0xa4c1389a3e0a13e3'
         mqtt = SnapshotMqtt([FakeMessage('zigbee2mqtt/bridge/devices', [{'ieee_address': ieee, 'friendly_name': ieee, 'definition': {'model': 'ZG-204ZH', 'vendor': 'HOBEIAN', 'exposes': [{'type': 'binary', 'name': 'occupancy', 'property': 'occupancy'}, {'type': 'numeric', 'name': 'battery', 'property': 'battery'}]}}])])

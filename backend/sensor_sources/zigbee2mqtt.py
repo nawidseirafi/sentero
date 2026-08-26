@@ -13,7 +13,8 @@ from backend.services.mqtt_service import MqttService
 logger = get_logger(__name__)
 
 IGNORED_TOPIC_PARTS = {"bridge", "availability"}
-BINARY_DEVICE_CLASSES = {"contact", "occupancy", "motion", "presence", "opening"}
+BINARY_DEVICE_CLASSES = {"contact", "occupancy", "motion", "presence", "opening", "smoke"}
+SMOKE_STATE_KEYS = ("smoke", "smoke_alarm", "smoke_state")
 STATE_KEYS = (
     "contact",
     "occupancy",
@@ -29,6 +30,7 @@ STATE_KEYS = (
     "respiration_rate",
     "sleep_status",
     "bed_presence",
+    *SMOKE_STATE_KEYS,
     "state",
 )
 MEASUREMENT_KEYS = (
@@ -167,6 +169,8 @@ class Zigbee2MqttSensorSource:
         if enriched_payload.get("source") == self.name:
             rows.append(self._device_state_entity(device, enriched_payload, timestamp))
         state_keys = [key for key in STATE_KEYS if key in payload and key != "state"]
+        if "alarm" in payload and self._payload_has_smoke_capability(enriched_payload):
+            state_keys.append("alarm")
         if not state_keys and "state" in payload:
             state_keys = ["state"]
         if state_keys:
@@ -227,11 +231,13 @@ class Zigbee2MqttSensorSource:
                 ieee = str(device.get("ieee_address") or device.get("ieee") or device.get("id") or "").strip()
                 friendly_name = str(device.get("friendly_name") or "").strip()
                 definition = device.get("definition") if isinstance(device.get("definition"), dict) else {}
+                expose_keys = self._expose_keys(definition.get("exposes"))
                 item = {
                     "manufacturer": definition.get("vendor") or device.get("manufacturer"),
                     "model": definition.get("model") or device.get("model_id") or device.get("model"),
                     "ieee_address": ieee or None,
                     "zigbee2mqtt_friendly_name": friendly_name or None,
+                    "smoke_capability": any(key in {*SMOKE_STATE_KEYS, "alarm"} for key in expose_keys),
                 }
                 for key in (friendly_name, ieee):
                     clean = str(key or "").strip()
@@ -277,7 +283,9 @@ class Zigbee2MqttSensorSource:
                 # the placeholder value "unknown" for telemetry.
                 "metadata_only": True,
             }
-            for key in self._expose_keys(definition.get("exposes")):
+            expose_keys = self._expose_keys(definition.get("exposes"))
+            metadata["smoke_capability"] = any(key in {*SMOKE_STATE_KEYS, "alarm"} for key in expose_keys)
+            for key in expose_keys:
                 row = self._entity(friendly_name, key, "unknown", metadata, timestamp)
                 row["metadata_only"] = True
                 row["attributes"] = {**row.get("attributes", {}), "metadata_only": True}
@@ -302,6 +310,8 @@ class Zigbee2MqttSensorSource:
                 key = str(raw or "").strip()
                 if key in STATE_KEYS or key in MEASUREMENT_KEYS:
                     keys.append(key)
+                elif key == "alarm" and self._expose_is_smoke_alarm(value):
+                    keys.append(key)
             visit(value.get("features"))
 
         visit(exposes)
@@ -311,12 +321,22 @@ class Zigbee2MqttSensorSource:
                 result.append(key)
         return result
 
+    def _expose_is_smoke_alarm(self, value: dict[str, Any]) -> bool:
+        text = " ".join(str(value.get(key) or "") for key in ("name", "property", "label", "description", "access")).lower()
+        return "smoke" in text or "fire" in text or "rauch" in text
+
+    def _payload_has_smoke_capability(self, payload: dict[str, Any]) -> bool:
+        if payload.get("smoke_capability") is True:
+            return True
+        exposes = payload.get("exposes")
+        return any(key in {*SMOKE_STATE_KEYS, "alarm"} for key in self._expose_keys(exposes))
+
     def _entity(self, device: str, key: str, value: Any, payload: dict[str, Any], timestamp: str) -> dict[str, Any]:
         slug = slugify(device)
         source = payload.get("source") or self.name
         ieee = str(payload.get("ieee_address") or "").strip()
         physical_device_id = ieee if source == self.name and ieee else device if source == "mqtt" else slug
-        clean_key = "contact" if key == "open" else key
+        clean_key = "contact" if key == "open" else "smoke" if key in {*SMOKE_STATE_KEYS, "alarm"} else key
         is_binary = clean_key in BINARY_DEVICE_CLASSES or clean_key == "state" and str(value).lower() in {"on", "off", "true", "false"}
         domain = "button" if clean_key == "action" else "binary_sensor" if is_binary else "sensor"
         suffix = "" if is_binary else f"_{slugify(clean_key)}"
@@ -388,6 +408,8 @@ class Zigbee2MqttSensorSource:
             return "signal_quality"
         if key in {"contact", "open"}:
             return "opening"
+        if key in {*SMOKE_STATE_KEYS, "alarm"}:
+            return "smoke"
         if key in {"occupancy", "motion", "presence", "bed_presence"}:
             return "motion" if key == "motion" else key
         if key in {"fall_detected", "fall_detection", "breathing_detected", "breathing_detection"}:
