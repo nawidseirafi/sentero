@@ -1104,7 +1104,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                               />
                               <strong>{sensor.label || sensor.role}</strong>
                             </div>
-                            <small>{sensorType(sensor)} · zuletzt {formatDateTime(sensor.last_changed || sensor.last_updated || sensor.updated_at)}</small>
+                            <small>{sensorType(sensor)} · letzte Meldung {formatDateTime(sensor.last_changed || sensor.last_updated || sensor.updated_at)}</small>
                           </div>
                           <div className="sc-sensor-health">
                             {isDoorContactSensor(sensor) && <DoorContactStatus sensor={sensor} />}
@@ -2297,10 +2297,10 @@ function sensorType(sensor: SenteroSensorRole) {
   if (isSmartMeterSensor(sensor)) return meterLabelFromRole(sensor.role);
   if (isSmokeSensor(sensor)) return 'Rauchmelder';
   if (isDoorContactSensor(sensor)) return 'Türkontakt';
-  if (isEsp32PresenceSensor(sensor)) return 'Präsenzsensor';
+  if (isMotionSensor(sensor)) return 'Präsenzsensor';
   if (String(sensor.device_class || '') === 'vibration') return 'Vibrationssensor';
   if (String(sensor.domain || '') === 'lock') return 'Türsensor';
-  return 'Bewegung';
+  return 'Sensor';
 }
 
 function isSmartMeterSensor(sensor: SenteroSensorRole) {
@@ -2374,23 +2374,23 @@ function presenceMotionStatus(sensor: SenteroSensorRole) {
   if (sensor.fall_detected) {
     return { tone: 'alert', label: 'Sturz', icon: <WarningAmberIcon fontSize="small" /> };
   }
-  const motion = String(sensor.motion || '').toLowerCase();
+  const motion = String(sensor.motion_state || sensor.motion || '').toLowerCase();
   if (sensor.presence === false) {
     return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
   }
   if (sensor.presence === true) {
-    if (['active', 'move', 'moving'].includes(motion)) {
+    if (['active', 'move', 'moving', 'movement', 'motion', 'detected', 'large', 'small'].includes(motion)) {
       return { tone: 'motion', label: 'Bewegung', icon: <DirectionsRunIcon fontSize="small" /> };
     }
-    if (['still', 'static', 'stationary', 'none'].includes(motion)) {
+    if (['still', 'static', 'stationary', 'standstill', 'static_target', 'none'].includes(motion)) {
       return { tone: 'still', label: 'Still', icon: <AccessibilityNewIcon fontSize="small" /> };
     }
-    return { tone: 'motion', label: 'Bewegung', icon: <PersonIcon fontSize="small" /> };
+    return { tone: 'still', label: 'Anwesend', icon: <PersonIcon fontSize="small" /> };
   }
   if (['none', 'clear', 'off', 'false', '0', 'no_motion'].includes(motion)) {
     return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
   }
-  if (['active', 'move', 'moving', 'motion', 'detected'].includes(motion)) {
+  if (['active', 'move', 'moving', 'movement', 'motion', 'detected', 'large', 'small'].includes(motion)) {
     return { tone: 'motion', label: 'Bewegung', icon: <DirectionsRunIcon fontSize="small" /> };
   }
   const value = String(sensor.state || '').toLowerCase();
