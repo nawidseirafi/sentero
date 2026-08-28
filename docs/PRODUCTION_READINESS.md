@@ -6,7 +6,7 @@ Zielbild fuer Produktion:
 
 - Sentero laeuft als Docker-Stack.
 - Sensorik laeuft ueber Mosquitto, Zigbee2MQTT und MQTT.
-- Updates kommen ueber `UPDATE_BASE_URL=https://seirafi.de/robotersteve/sentero`.
+- Updates kommen ueber `UPDATE_BASE_URL=https://sentero.de/sentero`.
 - Runtime-Daten bleiben in `data/` und werden durch Updates nicht ueberschrieben.
 - Vertrauenspersonen erhalten relevante Warnungen zu Verhalten, Sensor-Batterie und Sensor-Erreichbarkeit.
 - Die Box kann ohne vorhandenen Router ueber ein temporaeres geschuetztes Setup-WLAN und optional LTE eingerichtet werden.
@@ -86,8 +86,8 @@ Abnahmekriterium:
 
 Offen:
 
-- Appliance-Bundle `sentero-box-<version>.zip` auf `https://seirafi.de/robotersteve/sentero/stable/releases/` hochladen.
-- `latest.json` auf `https://seirafi.de/robotersteve/sentero/stable/latest.json` hochladen.
+- Appliance-Bundle `sentero-box-<version>.zip` auf `https://sentero.de/sentero/stable/releases/` hochladen.
+- `latest.json` auf `https://sentero.de/sentero/stable/latest.json` hochladen.
 - Update-Check im laufenden Docker-System testen.
 - Update-Install im Appliance-Modus mit Host-Updater testen.
 - Backup-Verhalten pruefen.

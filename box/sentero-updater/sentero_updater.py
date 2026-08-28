@@ -164,8 +164,21 @@ def install_update(payload: dict[str, Any]) -> dict[str, Any]:
             archive.extract("release.json", tmpdir)
             archive.extract("sentero-image.tar", tmpdir)
 
+        release = json.loads((tmpdir / "release.json").read_text(encoding="utf-8"))
+        release_version = str(release.get("version") or "").strip()
+        release_image = str(release.get("image") or appliance.get("image") or "").strip()
+        image_repo, image_tag = split_image_reference(release_image)
+        if release_version != target_version:
+            raise RuntimeError("Release-Version passt nicht zur angeforderten Zielversion.")
+        if image_tag != target_version:
+            raise RuntimeError("Docker-Image-Tag passt nicht zur angeforderten Zielversion.")
+
         db_backup = backup_sqlite(target_version)
         run(["docker", "load", "-i", str(tmpdir / "sentero-image.tar")])
+        # Keep repository and version separate because docker-compose.yml combines
+        # them as ${SENTERO_IMAGE}:${SENTERO_VERSION}. This also repairs older
+        # installations that accidentally stored a tagged image in SENTERO_IMAGE.
+        replace_env_value(ENV_FILE, "SENTERO_IMAGE", image_repo)
         replace_env_value(ENV_FILE, "SENTERO_VERSION", target_version)
         run(["docker", "compose", "up", "-d", "sentero"])
         run(["docker", "exec", "sentero", "curl", "-fsS", "http://127.0.0.1:8080/health"])
@@ -174,6 +187,18 @@ def install_update(payload: dict[str, Any]) -> dict[str, Any]:
     write_state(final)
     return {"ok": True, **final}
 
+
+
+def split_image_reference(image: str) -> tuple[str, str]:
+    """Return (repository, tag) for an explicitly tagged Docker image."""
+    image = image.strip()
+    if not image or "@" in image:
+        raise RuntimeError("Release enthaelt kein gueltiges getaggtes Docker-Image.")
+    slash = image.rfind("/")
+    colon = image.rfind(":")
+    if colon <= slash or colon == len(image) - 1:
+        raise RuntimeError("Release enthaelt kein gueltiges getaggtes Docker-Image.")
+    return image[:colon], image[colon + 1 :]
 
 def container_exists(name: str) -> bool:
     result = subprocess.run(["docker", "inspect", name], text=True, capture_output=True)

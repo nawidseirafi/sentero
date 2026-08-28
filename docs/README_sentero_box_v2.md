@@ -111,7 +111,7 @@ Erzeugen:
 ```bash
 python3 deployment_build.py \
   --version 0.2.0 \
-  --base-url https://seirafi.de/robotersteve/sentero \
+  --base-url https://sentero.de/sentero \
   --release-note "Sentero Box Update 0.2.0"
 ```
 

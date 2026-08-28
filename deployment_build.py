@@ -77,7 +77,7 @@ def main() -> int:
         default=default_update_base_url(),
         help=(
             "Public update base URL, e.g. "
-            "https://seirafi.de/robotersteve/sentero"
+            "https://sentero.de/sentero"
         ),
     )
     parser.add_argument(
@@ -131,7 +131,7 @@ def main() -> int:
     args = parser.parse_args()
 
     version = validate_version(args.version.strip() or current_version())
-    base_url = args.base_url.strip().rstrip("/")
+    base_url = normalize_update_base_url(args.base_url)
     image_repo = (args.image.strip() or os.getenv("SENTERO_DOCKER_IMAGE", "") or "sentero/app").rstrip(":")
     image = f"{image_repo}:{version}"
 
@@ -537,7 +537,7 @@ def default_update_base_url() -> str:
         or os.environ.get("UPDATE_MANIFEST_URL", "")
     ).strip()
     if not manifest_url:
-        return ""
+        return "https://sentero.de/sentero"
 
     parsed = urlparse(manifest_url)
     if parsed.scheme not in {"http", "https"}:
@@ -550,8 +550,13 @@ def default_update_base_url() -> str:
         "/latest.json",
     ):
         if parsed.path.endswith(suffix):
-            return manifest_url[: -len(suffix)].rstrip("/")
-    return manifest_url.rstrip("/")
+            return normalize_update_base_url(manifest_url[: -len(suffix)])
+    return normalize_update_base_url(manifest_url)
+
+
+def normalize_update_base_url(value: str) -> str:
+    return value.strip().rstrip("/")
+
 
 
 def current_version() -> str:

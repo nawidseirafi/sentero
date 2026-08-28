@@ -7,6 +7,16 @@ sentero:
     temperature_min_celsius: 16
     temperature_max_celsius: 28
     humidity_max_percent: 70
+    co2_orange_ppm: 1000
+    co2_red_ppm: 2000
+    voc_orange_ppb: 500
+    voc_red_ppb: 1000
+    pm25_orange_ugm3: 25
+    pm25_red_ugm3: 50
+    pm10_orange_ugm3: 50
+    pm10_red_ugm3: 100
+    aqi_orange: 100
+    aqi_red: 150
 
 notifications:
   incident_recovery:
@@ -37,8 +47,8 @@ logging:
 # normalized by the same MQTT sensor pipeline.
 
 mqtt:
-  host: 192.168.178.159
-  port: 1883
+  host: SENTERO_MQTT_HOST
+  port: SENTERO_MQTT_PORT
   username: SENTERO_MQTT_USERNAME
   password: SENTERO_MQTT_PASSWORD
   topic_prefix: zigbee2mqtt
@@ -64,27 +74,17 @@ zigbee:
   provider: auto
 
 updates:
-  channel: stable
-  mode: zip
-  base_url: https://seirafi.de/robotersteve/sentero
-  manifest_path: update-manifest.json
-  manifest_url: ""
+  channel: SENTERO_UPDATE_CHANNEL
+  mode: SENTERO_UPDATE_MODE
+  base_url: SENTERO_UPDATE_BASE_URL
+  manifest_url: SENTERO_UPDATE_MANIFEST_URL
 
 llm:
   # rule_based keeps Sentero fully local and is the safe default.
   # Set provider to openai, gemini, claude or llama/ollama when wanted.
   # rule_based/openai/emini/claude/llama:
-  provider: gemini
+  provider: SENTERO_LLM_PROVIDER
   timeout_seconds: 30
-  openai:
-    api_key: OPENAI_API_KEY
-    model: gpt-4.1-mini
-  gemini:
-    api_key: GEMINI_API_KEY
-    model: gemini-2.5-flash
-  claude:
-    api_key: CLAUDE_API_KEY
-    model: claude-3-5-sonnet-latest
   llama:
-    base_url: http://localhost:11434
-    model: qwen2.5:3b
+    base_url: SENTERO_LLM_BASE_URL
+    model: SENTERO_LLM_MODEL

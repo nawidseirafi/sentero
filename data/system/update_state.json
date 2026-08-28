@@ -21,10 +21,10 @@
   },
   "channel": "stable",
   "execution_mode": "appliance",
-  "update_server_url": "https://seirafi.de/robotersteve/sentero/stable/latest.json",
+  "update_server_url": "https://sentero.de/sentero/stable/latest.json",
   "latest": {
     "latest_version": "0.1.1",
-    "download_url": "https://seirafi.de/robotersteve/sentero/stable/releases/sentero-0.1.1.zip",
+    "download_url": "https://sentero.de/sentero/stable/releases/sentero-0.1.1.zip",
     "mandatory": false,
     "release_notes": [
       "Sentero 0.1.1 deployment build."

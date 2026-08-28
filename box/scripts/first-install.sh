@@ -14,6 +14,20 @@ set -a
 . ./.env
 set +a
 
+SENTERO_IMAGE="${SENTERO_IMAGE:-sentero/app}"
+SENTERO_VERSION="${SENTERO_VERSION:-dev}"
+export SENTERO_IMAGE SENTERO_VERSION
+
+# docker-compose.yml appends :${SENTERO_VERSION}; SENTERO_IMAGE therefore must
+# contain only the repository name, never a tag such as sentero/app:0.2.2.
+case "${SENTERO_IMAGE##*/}" in
+  *:*)
+    echo "SENTERO_IMAGE darf keinen Docker-Tag enthalten: ${SENTERO_IMAGE}" >&2
+    echo "Beispiel: SENTERO_IMAGE=sentero/app und SENTERO_VERSION=0.2.2" >&2
+    exit 1
+    ;;
+esac
+
 if [ "${SENTERO_MQTT_PASSWORD:-change-me}" = "change-me" ] || [ -z "${SENTERO_MQTT_PASSWORD:-}" ]; then
   echo "Bitte SENTERO_MQTT_PASSWORD in .env auf ein starkes Passwort setzen." >&2
   exit 1

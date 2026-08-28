@@ -73,7 +73,7 @@ Sentero-Box-Appliance-Update-Artefakte erzeugen:
 DOCKER_DEFAULT_PLATFORM=linux/amd64 \
 python3 deployment_build.py \
   --version 0.2.0 \
-  --base-url https://seirafi.de/robotersteve/sentero \
+  --base-url https://sentero.de/sentero \
   --release-note "Sentero Box Update 0.2.0"
 ```
 
@@ -92,7 +92,7 @@ Metadaten-/Testlauf ohne Docker-Export:
 ```bash
 python3 deployment_build.py \
   --version 0.2.0 \
-  --base-url https://seirafi.de/robotersteve/sentero \
+  --base-url https://sentero.de/sentero \
   --skip-docker-build \
   --skip-docker-save
 ```

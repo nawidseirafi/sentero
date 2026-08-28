@@ -38,8 +38,19 @@ BATTERY_WARNING_THRESHOLD = 30
 DEFAULT_TEMPERATURE_MIN_CELSIUS = 16.0
 DEFAULT_TEMPERATURE_MAX_CELSIUS = 28.0
 DEFAULT_HUMIDITY_MAX_PERCENT = 70.0
+DEFAULT_CO2_ORANGE_PPM = 1000.0
+DEFAULT_CO2_RED_PPM = 2000.0
+DEFAULT_VOC_ORANGE_PPB = 500.0
+DEFAULT_VOC_RED_PPB = 1000.0
+DEFAULT_PM25_ORANGE_UGM3 = 25.0
+DEFAULT_PM25_RED_UGM3 = 50.0
+DEFAULT_PM10_ORANGE_UGM3 = 50.0
+DEFAULT_PM10_RED_UGM3 = 100.0
+DEFAULT_AQI_ORANGE = 100.0
+DEFAULT_AQI_RED = 150.0
 DEFAULT_INCIDENT_RECOVERY_HEALTHY_CHECKS = 3
 SEVERITY_RANK = {"green": 0, "yellow": 1, "orange": 2, "red": 3}
+ACTIVE_ALARM_STATES = {"on", "true", "1", "yes", "active", "detected", "alarm", "alert", "wet", "leak", "leaking", "flood", "flooding", "problem"}
 
 TELEGRAM_BRAND_NAME = "Sentero"
 TELEGRAM_BRAND_DESCRIPTION = (
@@ -754,7 +765,7 @@ class NotificationService:
             room = str(sensor.get("room") or "").strip()
             subject_id = self._sensor_subject_id(sensor)
             battery = sensor.get("battery_level")
-            if sensor.get("smoke") is True:
+            if self._smoke_alarm_active(sensor):
                 warnings.append({
                     "key": f"smoke_alarm:{subject_id}",
                     "type": "smoke_alarm",
@@ -767,8 +778,26 @@ class NotificationService:
                     "label": label,
                     "room": room,
                     "battery_level": battery if isinstance(battery, (int, float)) else None,
-                    "data_class": "safety",
+                    "data_class": "emergency",
                     "aggregation_level": "raw",
+                    "delivery_scope": "all_ready_channels",
+                })
+            if self._water_leak_active(sensor):
+                warnings.append({
+                    "key": f"water_leak:{subject_id}",
+                    "type": "water_leak",
+                    "severity": "red",
+                    "title": "Sentero Wasserwarnung",
+                    "summary": f"{label} meldet Wasser oder Feuchtigkeit.",
+                    "recommendation": "Bitte prüfen Sie die Stelle sofort und schließen Sie bei Bedarf Wasserzufuhr oder Hauptventil.",
+                    "role": role,
+                    "subject_id": subject_id,
+                    "label": label,
+                    "room": room,
+                    "battery_level": battery if isinstance(battery, (int, float)) else None,
+                    "data_class": "emergency",
+                    "aggregation_level": "raw",
+                    "delivery_scope": "all_ready_channels",
                 })
             if isinstance(battery, (int, float)) and battery < battery_threshold:
                 warnings.append({
@@ -837,6 +866,16 @@ class NotificationService:
             "temperature_min_celsius": config_float("sentero.environment.temperature_min_celsius", DEFAULT_TEMPERATURE_MIN_CELSIUS),
             "temperature_max_celsius": config_float("sentero.environment.temperature_max_celsius", DEFAULT_TEMPERATURE_MAX_CELSIUS),
             "humidity_max_percent": config_float("sentero.environment.humidity_max_percent", DEFAULT_HUMIDITY_MAX_PERCENT),
+            "co2_orange_ppm": config_float("sentero.environment.co2_orange_ppm", DEFAULT_CO2_ORANGE_PPM),
+            "co2_red_ppm": config_float("sentero.environment.co2_red_ppm", DEFAULT_CO2_RED_PPM),
+            "voc_orange_ppb": config_float("sentero.environment.voc_orange_ppb", DEFAULT_VOC_ORANGE_PPB),
+            "voc_red_ppb": config_float("sentero.environment.voc_red_ppb", DEFAULT_VOC_RED_PPB),
+            "pm25_orange_ugm3": config_float("sentero.environment.pm25_orange_ugm3", DEFAULT_PM25_ORANGE_UGM3),
+            "pm25_red_ugm3": config_float("sentero.environment.pm25_red_ugm3", DEFAULT_PM25_RED_UGM3),
+            "pm10_orange_ugm3": config_float("sentero.environment.pm10_orange_ugm3", DEFAULT_PM10_ORANGE_UGM3),
+            "pm10_red_ugm3": config_float("sentero.environment.pm10_red_ugm3", DEFAULT_PM10_RED_UGM3),
+            "aqi_orange": config_float("sentero.environment.aqi_orange", DEFAULT_AQI_ORANGE),
+            "aqi_red": config_float("sentero.environment.aqi_red", DEFAULT_AQI_RED),
         }
         warnings: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -847,14 +886,14 @@ class NotificationService:
             # Configured combined presence sensors may expose environmental values
             # as fields on the same role (temperature/humidity/illuminance).
             measurements: list[tuple[str, float]] = []
-            for kind, field in (("temperature", "temperature"), ("humidity", "humidity")):
+            for kind, field in (("temperature", "temperature"), ("humidity", "humidity"), ("co2", "co2"), ("voc", "voc"), ("pm25", "pm25"), ("pm10", "pm10"), ("aqi", "aqi")):
                 raw = sensor.get(field)
                 if isinstance(raw, (int, float)):
                     measurements.append((kind, float(raw)))
             if not measurements:
                 kind = self._environmental_kind(sensor)
                 value = self._measurement_value(sensor)
-                if kind in {"temperature", "humidity"} and value is not None:
+                if kind in {"temperature", "humidity", "co2", "voc", "pm25", "pm10", "aqi"} and value is not None:
                     measurements.append((kind, value))
 
             for kind, value in measurements:
@@ -866,6 +905,36 @@ class NotificationService:
                 elif kind == "humidity" and value > thresholds["humidity_max_percent"]:
                     warning = self._environmental_warning(sensor, "humidity_high", value, "%", "orange", f"über {self._format_measurement(thresholds['humidity_max_percent'])} %")
                     warning["threshold_value"] = thresholds["humidity_max_percent"]
+                elif kind == "co2" and value > thresholds["co2_red_ppm"]:
+                    warning = self._environmental_warning(sensor, "co2_critical", value, "ppm", "red", f"über {self._format_measurement(thresholds['co2_red_ppm'])} ppm")
+                    warning["threshold_value"] = thresholds["co2_red_ppm"]
+                elif kind == "co2" and value > thresholds["co2_orange_ppm"]:
+                    warning = self._environmental_warning(sensor, "co2_high", value, "ppm", "orange", f"über {self._format_measurement(thresholds['co2_orange_ppm'])} ppm")
+                    warning["threshold_value"] = thresholds["co2_orange_ppm"]
+                elif kind == "voc" and value > thresholds["voc_red_ppb"]:
+                    warning = self._environmental_warning(sensor, "voc_critical", value, "ppb", "red", f"über {self._format_measurement(thresholds['voc_red_ppb'])} ppb")
+                    warning["threshold_value"] = thresholds["voc_red_ppb"]
+                elif kind == "voc" and value > thresholds["voc_orange_ppb"]:
+                    warning = self._environmental_warning(sensor, "voc_high", value, "ppb", "orange", f"über {self._format_measurement(thresholds['voc_orange_ppb'])} ppb")
+                    warning["threshold_value"] = thresholds["voc_orange_ppb"]
+                elif kind == "pm25" and value > thresholds["pm25_red_ugm3"]:
+                    warning = self._environmental_warning(sensor, "pm25_critical", value, "µg/m³", "red", f"über {self._format_measurement(thresholds['pm25_red_ugm3'])} µg/m³")
+                    warning["threshold_value"] = thresholds["pm25_red_ugm3"]
+                elif kind == "pm25" and value > thresholds["pm25_orange_ugm3"]:
+                    warning = self._environmental_warning(sensor, "pm25_high", value, "µg/m³", "orange", f"über {self._format_measurement(thresholds['pm25_orange_ugm3'])} µg/m³")
+                    warning["threshold_value"] = thresholds["pm25_orange_ugm3"]
+                elif kind == "pm10" and value > thresholds["pm10_red_ugm3"]:
+                    warning = self._environmental_warning(sensor, "pm10_critical", value, "µg/m³", "red", f"über {self._format_measurement(thresholds['pm10_red_ugm3'])} µg/m³")
+                    warning["threshold_value"] = thresholds["pm10_red_ugm3"]
+                elif kind == "pm10" and value > thresholds["pm10_orange_ugm3"]:
+                    warning = self._environmental_warning(sensor, "pm10_high", value, "µg/m³", "orange", f"über {self._format_measurement(thresholds['pm10_orange_ugm3'])} µg/m³")
+                    warning["threshold_value"] = thresholds["pm10_orange_ugm3"]
+                elif kind == "aqi" and value > thresholds["aqi_red"]:
+                    warning = self._environmental_warning(sensor, "aqi_critical", value, "AQI", "red", f"über {self._format_measurement(thresholds['aqi_red'])} AQI")
+                    warning["threshold_value"] = thresholds["aqi_red"]
+                elif kind == "aqi" and value > thresholds["aqi_orange"]:
+                    warning = self._environmental_warning(sensor, "aqi_high", value, "AQI", "orange", f"über {self._format_measurement(thresholds['aqi_orange'])} AQI")
+                    warning["threshold_value"] = thresholds["aqi_orange"]
                 else:
                     continue
                 warning["raw_measurement_value"] = value
@@ -885,10 +954,14 @@ class NotificationService:
             summary = f"{label} meldet eine {direction} Raumtemperatur von {self._format_measurement(value)} {unit}."
             recommendation = "Bitte prüfen Sie Heizung, Lüftung oder Klimatisierung und kontaktieren Sie die betreute Person zeitnah."
             title = "Sentero Raumtemperatur kritisch"
-        else:
+        elif warning_type == "humidity_high":
             summary = f"{label} meldet eine hohe Luftfeuchtigkeit von {self._format_measurement(value)} {unit}."
             recommendation = "Bitte prüfen Sie Lüftung, Bad-/Küchennutzung oder mögliche Feuchtigkeitsschäden zeitnah."
             title = "Sentero Luftfeuchtigkeit auffällig"
+        else:
+            summary = f"{label} meldet auffällige Luftqualität: {self._format_measurement(value)} {unit}."
+            recommendation = "Bitte lüften Sie zeitnah und prüfen Sie die Situation, besonders wenn Personen im Raum sind."
+            title = "Sentero Luftqualität kritisch" if severity == "red" else "Sentero Luftqualität auffällig"
         return {
             "key": "",
             "type": warning_type,
@@ -904,6 +977,7 @@ class NotificationService:
             "measurement_unit": unit,
             "data_class": "environmental",
             "aggregation_level": "raw",
+            "delivery_scope": "all_ready_channels" if severity == "red" else "preferred_channels",
         }
 
     def _environmental_kind(self, sensor: dict[str, Any]) -> str | None:
@@ -915,6 +989,16 @@ class NotificationService:
             return "temperature"
         if device_class == "humidity":
             return "humidity"
+        if device_class in {"carbon_dioxide", "co2"}:
+            return "co2"
+        if device_class in {"volatile_organic_compounds", "voc"}:
+            return "voc"
+        if device_class in {"pm25", "pm2_5"}:
+            return "pm25"
+        if device_class == "pm10":
+            return "pm10"
+        if device_class in {"aqi", "air_quality"}:
+            return "aqi"
         if device_class:
             return None
         text = " ".join(str(sensor.get(key) or "").lower() for key in ("entity_id", "label", "friendly_name"))
@@ -924,6 +1008,16 @@ class NotificationService:
             return "temperature"
         if "humidity" in text or "luftfeuchtigkeit" in text:
             return "humidity"
+        if "co2" in text or "carbon dioxide" in text or "kohlendioxid" in text:
+            return "co2"
+        if "voc" in text or "volatile organic" in text:
+            return "voc"
+        if "pm2_5" in text or "pm25" in text or "feinstaub 2" in text:
+            return "pm25"
+        if "pm10" in text or "feinstaub 10" in text:
+            return "pm10"
+        if "aqi" in text or "air quality" in text or "luftqualitaet" in text or "luftqualität" in text:
+            return "aqi"
         return None
 
     def _measurement_value(self, sensor: dict[str, Any]) -> float | None:
@@ -945,6 +1039,47 @@ class NotificationService:
             return str(int(value))
         return f"{value:.1f}".replace(".", ",")
 
+    def _smoke_alarm_active(self, sensor: dict[str, Any]) -> bool:
+        if sensor.get("smoke") is True:
+            return True
+        text = self._sensor_text(sensor)
+        if "smoke" not in text and "rauch" not in text:
+            return False
+        return self._alarm_state_active(sensor)
+
+    def _water_leak_active(self, sensor: dict[str, Any]) -> bool:
+        text = self._sensor_text(sensor)
+        device_class = str(sensor.get("device_class") or "").strip().lower()
+        if device_class != "moisture" and not any(term in text for term in ("leak", "water leak", "wasserleck", "flood", "flooding", "moisture", "feuchtigkeit", "wasseralarm")):
+            return False
+        if str(sensor.get("role") or "").lower().endswith("_water") and "leak" not in text and "wasserleck" not in text:
+            return False
+        return self._alarm_state_active(sensor)
+
+    def _sensor_text(self, sensor: dict[str, Any]) -> str:
+        attrs = sensor.get("attributes") if isinstance(sensor.get("attributes"), dict) else {}
+        values = [
+            sensor.get("role"),
+            sensor.get("entity_id"),
+            sensor.get("resolved_entity_id"),
+            sensor.get("primary_entity_id"),
+            sensor.get("source_ref"),
+            sensor.get("label"),
+            sensor.get("friendly_name"),
+            sensor.get("original_name"),
+            sensor.get("device_class"),
+            sensor.get("payload_key"),
+            attrs.get("device_class"),
+            attrs.get("payload_key"),
+        ]
+        return " ".join(str(value or "").strip().lower() for value in values)
+
+    def _alarm_state_active(self, sensor: dict[str, Any]) -> bool:
+        attrs = sensor.get("attributes") if isinstance(sensor.get("attributes"), dict) else {}
+        values = [sensor.get("state"), sensor.get("value")]
+        values.extend(attrs.get(key) for key in ("state", "smoke", "smoke_alarm", "water_leak", "leak", "moisture", "flood", "alarm"))
+        return any(str(value or "").strip().lower().replace("-", "_") in ACTIVE_ALARM_STATES for value in values)
+
     def _send_system_warning(self, warning: dict[str, Any], contacts: list[dict[str, Any]]) -> int:
         title = str(warning.get("title") or "Sentero Systemwarnung")
         email_text = self._system_warning_email_text(warning)
@@ -954,7 +1089,7 @@ class NotificationService:
         for contact in contacts:
             if not bool(contact.get("notification_enabled", 1)):
                 continue
-            for channel in self._channels_for_contact(contact, severity):
+            for channel in self._channels_for_warning(contact, warning):
                 before = self._log_count()
                 self._send_with_log(contact, channel, severity, title, email_text, fallback=False, incident_key=incident_key)
                 if self._log_count() > before:
@@ -1376,6 +1511,16 @@ class NotificationService:
             channels.insert(0, "email")
         if severity == "yellow":
             return ["email"] if "email" in channels else []
+        return channels
+
+    def _channels_for_warning(self, contact: dict[str, Any], warning: dict[str, Any]) -> list[str]:
+        severity = str(warning.get("severity") or "orange")
+        if warning.get("delivery_scope") != "all_ready_channels":
+            return self._channels_for_contact(contact, severity)
+
+        channels = [channel for channel in CHANNELS if self._contact_channel_ready(contact, channel)]
+        if not channels:
+            return []
         return channels
 
     def _contact_channel_ready(self, contact: dict[str, Any], channel: str) -> bool:

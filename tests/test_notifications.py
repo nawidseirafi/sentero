@@ -652,6 +652,121 @@ class NotificationSystemWarningTests(unittest.TestCase):
             self.assertEqual(result["warnings"][0]["severity"], "orange")
             self.assertEqual(result["warnings"][0]["data_class"], "environmental")
 
+    def test_smoke_alarm_from_raw_sensor_state_is_red_and_uses_all_ready_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
+            timestamp = now()
+            with mapping.connect() as con:
+                con.execute(
+                    """insert into trusted_contacts
+                       (name, relationship, email, telegram_chat_id, whatsapp_phone_number, active, created_at, updated_at, preferred_channels, notification_enabled, primary_contact)
+                       values (?, ?, ?, ?, ?, 1, ?, ?, ?, 1, 1)""",
+                    ("Nawid", "owner", "nawid@example.test", "123", "+491234", timestamp, timestamp, json.dumps(["email"])),
+                )
+                for channel in ("email", "telegram", "whatsapp"):
+                    con.execute(
+                        """insert into notification_channel_settings (channel, enabled, config_json, created_at, updated_at)
+                           values (?, 1, '{}', ?, ?)
+                           on conflict(channel) do update set enabled = 1, config_json = '{}', updated_at = excluded.updated_at""",
+                        (channel, timestamp, timestamp),
+                    )
+                con.commit()
+
+            service = NotificationService(mapping)
+            providers = {channel: RecordingProvider() for channel in ("email", "telegram", "whatsapp")}
+            service.providers.update(providers)
+
+            result = service.notify_system_warnings(
+                sensors=[
+                    {
+                        "role": "kitchen_smoke",
+                        "label": "Küche Rauchmelder",
+                        "room": "Küche",
+                        "configured": True,
+                        "device_id": "0xsmoke",
+                        "entity_id": "binary_sensor.kitchen_smoke",
+                        "device_class": "smoke",
+                        "state": "on",
+                        "reachable": True,
+                    }
+                ]
+            )
+
+            self.assertEqual(result["sent"], 3)
+            self.assertEqual(result["warnings"][0]["type"], "smoke_alarm")
+            self.assertEqual(result["warnings"][0]["severity"], "red")
+            self.assertEqual(result["warnings"][0]["data_class"], "emergency")
+            self.assertEqual(len(providers["email"].sent), 1)
+            self.assertEqual(len(providers["telegram"].sent), 1)
+            self.assertEqual(len(providers["whatsapp"].sent), 1)
+
+            second = service.notify_system_warnings(
+                sensors=[
+                    {
+                        "role": "kitchen_smoke",
+                        "label": "Küche Rauchmelder",
+                        "room": "Küche",
+                        "configured": True,
+                        "device_id": "0xsmoke",
+                        "entity_id": "binary_sensor.kitchen_smoke",
+                        "device_class": "smoke",
+                        "state": "on",
+                        "reachable": True,
+                    }
+                ]
+            )
+            self.assertEqual(second["sent"], 0)
+
+    def test_water_leak_warning_is_red(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
+            insert_contact(mapping)
+            provider = RecordingProvider()
+            service = NotificationService(mapping)
+            service.providers["email"] = provider
+
+            result = service.notify_system_warnings(
+                sensors=[
+                    {
+                        "role": "bathroom_water_leak",
+                        "label": "Bad Wassersensor",
+                        "room": "Bad",
+                        "configured": True,
+                        "device_id": "0xleak",
+                        "entity_id": "binary_sensor.bathroom_water_leak",
+                        "device_class": "moisture",
+                        "state": "wet",
+                        "reachable": True,
+                    }
+                ]
+            )
+
+            self.assertEqual(result["sent"], 1)
+            self.assertEqual(result["warnings"][0]["key"], "water_leak:0xleak")
+            self.assertEqual(result["warnings"][0]["severity"], "red")
+            self.assertIn("Wasser oder Feuchtigkeit", provider.sent[0]["text"])
+
+    def test_air_quality_warnings_cover_orange_and_red_thresholds(self) -> None:
+        mapping = MemoryMapping()
+        try:
+            service = NotificationService(mapping)
+            warnings = service._environmental_warnings([
+                {"domain": "sensor", "device_id": "0xco2a", "entity_id": "sensor.living_co2", "friendly_name": "Wohnzimmer CO2", "device_class": "carbon_dioxide", "state": 1200},
+                {"domain": "sensor", "device_id": "0xco2b", "entity_id": "sensor.kitchen_co2", "friendly_name": "Küche CO2", "device_class": "carbon_dioxide", "state": 2200},
+                {"domain": "sensor", "device_id": "0xpm", "entity_id": "sensor.living_pm25", "friendly_name": "Wohnzimmer PM2.5", "device_class": "pm25", "state": 55},
+                {"domain": "sensor", "device_id": "0xaqi", "entity_id": "sensor.living_air_quality", "friendly_name": "Wohnzimmer Luftqualität", "device_class": "aqi", "state": 170},
+            ])
+        finally:
+            mapping.close()
+
+        by_key = {warning["key"]: warning for warning in warnings}
+        self.assertEqual(by_key["co2_high:0xco2a"]["severity"], "orange")
+        self.assertEqual(by_key["co2_critical:0xco2b"]["severity"], "red")
+        self.assertEqual(by_key["pm25_critical:0xpm"]["severity"], "red")
+        self.assertEqual(by_key["aqi_critical:0xaqi"]["severity"], "red")
+
     def test_same_sensor_warning_rechecked_after_restart_sends_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")

@@ -1,3 +1,5 @@
+name: sentero
+
 services:
   sentero:
     image: ${SENTERO_IMAGE:-sentero/app}:${SENTERO_VERSION:-dev}
