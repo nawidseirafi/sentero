@@ -49,7 +49,7 @@ export function UpdatePanel({ variant = 'sentero' }: Props) {
       await api.senteroCheckUpdates();
       await load();
     } catch {
-      setError('Die Update-Pruefung ist fehlgeschlagen. Bitte versuchen Sie es spaeter erneut.');
+      setError('Die Update-Prüfung ist fehlgeschlagen. Bitte versuchen Sie es später erneut.');
     } finally {
       setBusy('');
     }
@@ -69,9 +69,9 @@ export function UpdatePanel({ variant = 'sentero' }: Props) {
 
       const outcome = await waitForUpdateResult();
       if (outcome === false) {
-        setError('Das Update konnte nicht vollstaendig installiert werden. Bitte versuchen Sie es erneut oder kontaktieren Sie den Support.');
+        setError('Das Update konnte nicht vollständig installiert werden. Bitte versuchen Sie es erneut oder kontaktieren Sie den Support.');
       } else if (outcome === null) {
-        setError('Das Update laeuft weiterhin im Hintergrund. Der Status wird nach dem Neustart automatisch aktualisiert.');
+        setError('Das Update läuft weiterhin im Hintergrund. Der Status wird nach dem Neustart automatisch aktualisiert.');
       }
     } finally {
       setBusy('');
@@ -105,13 +105,13 @@ export function UpdatePanel({ variant = 'sentero' }: Props) {
 
       {error && <div className="update-alert error"><ShieldAlert size={18} /> {error}</div>}
       {isSuccess && <div className="update-alert success"><CheckCircle2 size={18} /> {product} wurde erfolgreich aktualisiert.</div>}
-      {isFailed && <div className="update-alert error"><ShieldAlert size={18} /> Das Update konnte nicht vollstaendig installiert werden. Bitte kontaktieren Sie den Support.</div>}
+      {isFailed && <div className="update-alert error"><ShieldAlert size={18} /> Das Update konnte nicht vollständig installiert werden. Bitte kontaktieren Sie den Support.</div>}
 
       <div className="update-version-grid update-version-grid-simple">
         <VersionItem label="Produkt" value={product} />
         <VersionItem label="Aktuelle Version" value={status?.current_version || '-'} />
         <VersionItem label="Update-Status" value={statusLabel(displayState, updateAvailable)} />
-        <VersionItem label="Letzte Pruefung" value={formatDate(status?.last_checked)} />
+        <VersionItem label="Letzte Prüfung" value={formatDate(status?.last_checked)} />
       </div>
 
       {updateAvailable && (
@@ -166,7 +166,7 @@ function ReleaseNotes({ notes }: { notes?: string[] | string }) {
     : typeof notes === 'string'
       ? notes.split('\n').filter(Boolean)
       : [];
-  if (!items.length) return <p>Details zu diesem Update werden nach der Pruefung angezeigt.</p>;
+  if (!items.length) return <p>Details zu diesem Update werden nach der Prüfung angezeigt.</p>;
   return (
     <ul className="update-release-notes">
       {items.map((item, index) => <li key={`${item}-${index}`}>{renderMarkdownLine(item)}</li>)}
@@ -214,17 +214,17 @@ function titleForState(state: string, updateAvailable: boolean) {
   if (state === 'running') return 'Update wird installiert';
   if (state === 'success' || state === 'completed') return 'Update erfolgreich';
   if (state === 'failed' || state === 'error') return 'Update fehlgeschlagen';
-  if (state === 'check_failed') return 'Update-Pruefung fehlgeschlagen';
-  if (updateAvailable) return 'Update verfuegbar';
+  if (state === 'check_failed') return 'Update-Prüfung fehlgeschlagen';
+  if (updateAvailable) return 'Update verfügbar';
   return 'Applikation ist aktuell';
 }
 
 function textForState(product: string, status: UpdateStatus | null, state: string, updateAvailable: boolean) {
   if (state === 'running') return `${product} wird aktualisiert. Bitte warten Sie, bis der Vorgang abgeschlossen ist.`;
   if (state === 'success' || state === 'completed') return `${product} wurde erfolgreich aktualisiert.`;
-  if (state === 'failed' || state === 'error') return 'Das Update konnte nicht vollstaendig installiert werden. Bitte versuchen Sie es erneut oder kontaktieren Sie den Support.';
-  if (state === 'check_failed') return status?.message || 'Die Update-Pruefung konnte nicht abgeschlossen werden. Bitte versuchen Sie es spaeter erneut.';
-  if (updateAvailable) return `Eine neue Version von ${product} ist verfuegbar.`;
+  if (state === 'failed' || state === 'error') return 'Das Update konnte nicht vollständig installiert werden. Bitte versuchen Sie es erneut oder kontaktieren Sie den Support.';
+  if (state === 'check_failed') return status?.message || 'Die Update-Prüfung konnte nicht abgeschlossen werden. Bitte versuchen Sie es später erneut.';
+  if (updateAvailable) return `Eine neue Version von ${product} ist verfügbar.`;
   return status?.message || 'Ihre Installation ist auf dem neuesten Stand.';
 }
 
@@ -233,7 +233,7 @@ function statusLabel(state: string, updateAvailable: boolean) {
   if (state === 'success' || state === 'completed') return 'Aktualisiert';
   if (state === 'failed' || state === 'error') return 'Fehlgeschlagen';
   if (state === 'check_failed') return 'Pruefung fehlgeschlagen';
-  return updateAvailable ? 'Update verfuegbar' : 'Aktuell';
+  return updateAvailable ? 'Update verfügbar' : 'Aktuell';
 }
 
 function stepStatusLabel(status: string) {

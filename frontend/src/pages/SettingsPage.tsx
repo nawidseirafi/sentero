@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
-import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, Copy, DoorClosed, DoorOpen, Droplets, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, ShieldCheck, Thermometer, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
+import { Battery, Bell, ChevronDown, ChevronLeft, ChevronRight, CheckCircle2, Copy, DoorClosed, DoorOpen, Droplets, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, ShieldCheck, Thermometer, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
 import QRCode from 'qrcode';
 import { api, type BoxNetworkStatus, type MailConfig, type SenteroConsent, type SenteroEcoTrackerReading, type SenteroExportToken, type SenteroMailQuerySettings, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroSystemStatus, type SenteroTelegramBotInfo, type SenteroTransparency, type SenteroTrustedContact } from '@shared/api/client';
 import { UpdatePanel } from '../components/UpdatePanel';
@@ -61,6 +61,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [status, setStatus] = useState<SenteroSetupStatus | null>(null);
   const [systemStatus, setSystemStatus] = useState<SenteroSystemStatus | null>(null);
   const [systemStatusLoading, setSystemStatusLoading] = useState(false);
+  const [systemHealthOpen, setSystemHealthOpen] = useState(false);
   const [sensors, setSensors] = useState<SenteroSensorRole[]>([]);
   const [saved, setSaved] = useState('');
   const [error, setError] = useState('');
@@ -197,6 +198,12 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       window.clearInterval(timer);
     };
   }, [activeTab]);
+
+  useEffect(() => {
+    if (systemStatus?.overall && systemStatus.overall !== 'ok') {
+      setSystemHealthOpen(true);
+    }
+  }, [systemStatus?.overall]);
 
   useEffect(() => {
     setAccountForm({ display_name: user?.display_name || '', email: user?.email || '' });
@@ -1574,45 +1581,71 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
           <div className="sc-section-title sc-system-heading">
             <div>
               <h2>System</h2>
-              <p>Ein ruhiger Überblick über die wichtigsten Bereiche Ihrer Sentero Box.</p>
+              <p>Systemverwaltung und Status Ihrer Sentero Box.</p>
             </div>
-            <span className={`sc-system-summary sc-system-summary-${systemStatus?.overall || 'warning'}`}>
-              <i aria-hidden="true" />
-              {systemStatus?.summary || (systemStatusLoading ? 'Status wird geprüft …' : 'Status wird geladen …')}
-            </span>
           </div>
 
-          <div className="sc-service-status-grid" aria-live="polite">
-            {(systemStatus?.services || []).map((service) => (
-              <article className="sc-service-status-card" key={service.key}>
-                <div className="sc-service-status-main">
-                  <span className={`sc-service-dot sc-service-dot-${service.state}`} aria-hidden="true" />
-                  <div>
-                    <strong>{service.label}</strong>
-                    <span>{service.detail || systemServiceLabel(service.state)}</span>
-                  </div>
+          <section className={`sc-system-health sc-system-health-${systemStatus?.overall || 'warning'} ${systemHealthOpen ? 'open' : ''}`}>
+            <button
+              className="sc-system-health-toggle"
+              type="button"
+              aria-expanded={systemHealthOpen}
+              aria-controls="sentero-system-health-details"
+              onClick={() => setSystemHealthOpen((value) => !value)}
+            >
+              <div className="sc-system-health-title">
+                <span className={`sc-system-health-icon sc-system-health-icon-${systemStatus?.overall || 'warning'}`} aria-hidden="true">
+                  <CheckCircle2 size={22} />
+                </span>
+                <div>
+                  <strong>Systemzustand</strong>
+                  <span>{systemHealthSummary(systemStatus, systemStatusLoading)}</span>
                 </div>
-                <span className={`sc-service-state sc-service-state-${service.state}`}>{systemServiceLabel(service.state)}</span>
-              </article>
-            ))}
-            {!systemStatus?.services?.length && (
-              <div className="sc-system-status-placeholder">Systemstatus wird geladen …</div>
+              </div>
+              <div className="sc-system-health-toggle-meta">
+                <span className={`sc-system-health-pill sc-system-health-pill-${systemStatus?.overall || 'warning'}`}>
+                  {systemStatus?.summary || (systemStatusLoading ? 'Wird geprüft …' : 'Status laden …')}
+                </span>
+                <ChevronDown size={20} aria-hidden="true" />
+              </div>
+            </button>
+
+            {systemHealthOpen && (
+              <div className="sc-system-health-details" id="sentero-system-health-details">
+                <div className="sc-service-status-grid" aria-live="polite">
+                  {(systemStatus?.services || []).map((service) => (
+                    <article className="sc-service-status-card" key={service.key}>
+                      <div className="sc-service-status-main">
+                        <span className={`sc-service-dot sc-service-dot-${service.state}`} aria-hidden="true" />
+                        <div>
+                          <strong>{service.label}</strong>
+                          <span>{service.detail || systemServiceLabel(service.state)}</span>
+                        </div>
+                      </div>
+                      <span className={`sc-service-state sc-service-state-${service.state}`}>{systemServiceLabel(service.state)}</span>
+                    </article>
+                  ))}
+                  {!systemStatus?.services?.length && (
+                    <div className="sc-system-status-placeholder">Systemstatus wird geladen …</div>
+                  )}
+                </div>
+
+                <div className="sc-system-soft-facts">
+                  <p><span>Sensoren</span><strong>{sensors.filter((sensor) => sensor.configured).length} eingerichtet</strong></p>
+                  <p><span>Erreichbarkeit</span><strong>{sensors.filter((sensor) => sensor.reachable === false).length ? `${sensors.filter((sensor) => sensor.reachable === false).length} nicht erreichbar` : 'Alles erreichbar'}</strong></p>
+                  <p><span>Letzte Prüfung</span><strong>{formatDateTime(systemStatus?.checked_at || status?.updated_at)}</strong></p>
+                </div>
+
+                <div className="sc-system-query-note">
+                  <div>
+                    <Mail size={18} />
+                    <MessageCircle size={18} />
+                  </div>
+                  <p><strong>Status auch unterwegs abrufen</strong><span>Per E-Mail „Systemstatus“ oder in Telegram <code>/status</code> senden.</span></p>
+                </div>
+              </div>
             )}
-          </div>
-
-          <div className="sc-system-soft-facts">
-            <p><span>Sensoren</span><strong>{sensors.filter((sensor) => sensor.configured).length} eingerichtet</strong></p>
-            <p><span>Erreichbarkeit</span><strong>{sensors.filter((sensor) => sensor.reachable === false).length ? `${sensors.filter((sensor) => sensor.reachable === false).length} nicht erreichbar` : 'Alles erreichbar'}</strong></p>
-            <p><span>Letzte Prüfung</span><strong>{formatDateTime(systemStatus?.checked_at || status?.updated_at)}</strong></p>
-          </div>
-
-          <div className="sc-system-query-note">
-            <div>
-              <Mail size={18} />
-              <MessageCircle size={18} />
-            </div>
-            <p><strong>Status auch unterwegs abrufen</strong><span>Per E-Mail „Systemstatus“ oder in Telegram <code>/status</code> senden.</span></p>
-          </div>
+          </section>
 
           <UpdatePanel />
           <div className="sc-danger-zone">
@@ -1635,6 +1668,15 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       </div>
     </section>
   );
+}
+
+function systemHealthSummary(systemStatus: SenteroSystemStatus | null, loading: boolean) {
+  const services = systemStatus?.services || [];
+  if (!services.length) return loading ? 'Dienste werden geprüft …' : 'Status wird geladen …';
+  const ready = services.filter((service) => service.state === 'ok').length;
+  if (systemStatus?.overall === 'ok') return `${ready} von ${services.length} Diensten bereit`;
+  const issues = services.length - ready;
+  return issues === 1 ? '1 Bereich benötigt Aufmerksamkeit' : `${issues} Bereiche benötigen Aufmerksamkeit`;
 }
 
 function systemServiceLabel(state?: string) {
