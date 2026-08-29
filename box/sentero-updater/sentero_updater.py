@@ -21,6 +21,7 @@ BOX_DIR = Path(os.getenv("SENTERO_BOX_DIR", "/opt/sentero/box"))
 ENV_FILE = BOX_DIR / ".env"
 SOCKET_PATH = Path(os.getenv("SENTERO_UPDATER_SOCKET", "/run/sentero-updater/updater.sock"))
 STATE_FILE = BOX_DIR / "data" / "sentero" / "system" / "host_update_state.json"
+FACTORY_RESET_STATE_FILE = Path(os.getenv("SENTERO_FACTORY_RESET_STATE", "/var/lib/sentero/factory-reset-state.json"))
 BACKUP_DIR = BOX_DIR / "backups"
 DB_FILE = BOX_DIR / "data" / "sentero" / "sentero.db"
 MAX_BUNDLE_BYTES = int(os.getenv("SENTERO_UPDATER_MAX_BUNDLE_BYTES", str(1024 * 1024 * 1024)))
@@ -431,10 +432,64 @@ def read_state() -> dict[str, Any]:
         return {}
 
 
+def read_factory_reset_state() -> dict[str, Any]:
+    try:
+        data = json.loads(FACTORY_RESET_STATE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def write_factory_reset_state(data: dict[str, Any]) -> None:
+    FACTORY_RESET_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = FACTORY_RESET_STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, FACTORY_RESET_STATE_FILE)
+
+
+def schedule_factory_reset() -> dict[str, Any]:
+    script = BOX_DIR / "scripts" / "factory-reset.py"
+    if not script.is_file():
+        raise RuntimeError("Factory-Reset-Skript fehlt auf der Box.")
+    current = read_factory_reset_state()
+    if str(current.get("status") or "") in {"accepted", "running"}:
+        return {"ok": True, "accepted": True, "already_running": True, "state": current}
+    accepted = {
+        "status": "accepted",
+        "accepted_at": utc_now(),
+        "message": "Werkseinstellungen werden vorbereitet. Die Box startet anschließend neu.",
+    }
+    write_factory_reset_state(accepted)
+    unit = f"sentero-factory-reset-{os.getpid()}-{int(time.time())}"
+    scheduled = run_no_fail([
+        "systemd-run",
+        "--quiet",
+        "--collect",
+        f"--unit={unit}",
+        "--on-active=2s",
+        "/usr/bin/python3",
+        str(script),
+    ])
+    if not scheduled:
+        failed = {**accepted, "status": "failed", "finished_at": utc_now(), "error": "Factory Reset konnte nicht geplant werden."}
+        write_factory_reset_state(failed)
+        raise RuntimeError(str(failed["error"]))
+    return {"ok": True, "accepted": True, "message": accepted["message"], "state": accepted}
+
+
 def handle(payload: dict[str, Any]) -> dict[str, Any]:
     action = str(payload.get("action") or "")
     if action == "status":
         return {"ok": True, "state": read_state()}
+    if action == "factory_reset_status":
+        return {"ok": True, "state": read_factory_reset_state()}
+    if action == "factory_reset":
+        if str(payload.get("confirm") or "") != "ZURÜCKSETZEN":
+            return {"ok": False, "error": "Zur Bestätigung muss ZURÜCKSETZEN eingegeben werden."}
+        try:
+            return schedule_factory_reset()
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
     if action != "install":
         return {"ok": False, "error": "Nicht unterstuetzte Aktion."}
     try:

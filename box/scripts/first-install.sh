@@ -265,6 +265,33 @@ if [ -n "$NETWORK_STATE" ]; then
 else
   echo "Kein LAN/WLAN mit lokaler IPv4-Adresse: starte zunächst nur die Sentero-App für die Provisionierung."
   docker compose up -d --no-deps sentero
+  # Start the setup AP explicitly.  The host agent intentionally does not
+  # create an AP merely because it is running; the LAN-first decision belongs
+  # to this installation/state-machine branch.
+  if AP_START_RESULT="$(python3 - <<'PYCODE'
+import json
+import socket
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+    client.settimeout(35)
+    client.connect("/run/sentero-network/network.sock")
+    client.sendall(b'{"action":"start_setup_ap"}\n')
+    raw = b""
+    while b"\n" not in raw:
+        chunk = client.recv(65536)
+        if not chunk:
+            break
+        raw += chunk
+response = json.loads(raw.split(b"\n", 1)[0] or b"{}")
+if not response.get("ok"):
+    raise SystemExit(str(response.get("message") or "Setup-WLAN konnte nicht gestartet werden."))
+print(response.get("ssid") or "Sentero-Setup")
+PYCODE
+)"; then
+    echo "Setup-WLAN aktiv: ${AP_START_RESULT}"
+  else
+    echo "WARNUNG: Setup-WLAN konnte nicht automatisch gestartet werden." >&2
+  fi
 fi
 
 echo "[9/10] Setup-Etikett erzeugen ..."

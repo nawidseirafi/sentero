@@ -66,6 +66,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [saved, setSaved] = useState('');
   const [error, setError] = useState('');
   const [resetText, setResetText] = useState('');
+  const [factoryResetBusy, setFactoryResetBusy] = useState(false);
+  const [factoryResetMessage, setFactoryResetMessage] = useState('');
   const [mobileShowList, setMobileShowList] = useState(true);
   const [profile, setProfile] = useState({ name: '', birthYear: '', notes: '' });
   const [contactForm, setContactForm] = useState(emptyContactForm());
@@ -430,6 +432,27 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       toast('Netzwerk-Einrichtung gestartet');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Netzwerk-Einrichtung konnte nicht gestartet werden.');
+    }
+  }
+
+  async function factoryReset() {
+    if (resetText !== 'ZURÜCKSETZEN' || factoryResetBusy) return;
+    const confirmed = window.confirm(
+      'Werkseinstellungen wirklich wiederherstellen? Kundendaten, Benutzer, Sensoren, Benachrichtigungen, Zigbee-Kopplungen und gespeicherte WLANs werden gelöscht. Die installierte Sentero-Version und die Box-ID bleiben erhalten. Die Box startet anschließend neu.'
+    );
+    if (!confirmed) return;
+
+    setFactoryResetBusy(true);
+    setFactoryResetMessage('Werkseinstellungen werden vorbereitet …');
+    setError('');
+    try {
+      const result = await api.senteroFactoryReset(resetText);
+      setFactoryResetMessage(result.message || 'Werkseinstellungen werden wiederhergestellt. Die Box startet gleich neu.');
+      setResetText('');
+    } catch (err) {
+      setFactoryResetMessage('');
+      setError(err instanceof Error ? err.message : 'Werkseinstellungen konnten nicht gestartet werden.');
+      setFactoryResetBusy(false);
     }
   }
 
@@ -1650,9 +1673,20 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
           <UpdatePanel />
           <div className="sc-danger-zone">
             <h3><ShieldAlert size={22} /> Werkseinstellungen</h3>
-            <p>Zum Zurücksetzen bitte ZURÜCKSETZEN eingeben.</p>
-            <input value={resetText} onChange={(event) => setResetText(event.target.value)} placeholder="ZURÜCKSETZEN" />
-            <button type="button" disabled={resetText !== 'ZURÜCKSETZEN'} onClick={() => window.confirm('Alle Sentero-Daten löschen?')}>Factory Reset</button>
+            <p>Setzt Kundendaten, Benutzer, Sensoren, Benachrichtigungen, Zigbee-Kopplungen und gespeicherte WLANs zurück. Sentero-Version, Box-ID und Systemsoftware bleiben erhalten.</p>
+            <p>Zum Zurücksetzen bitte <strong>ZURÜCKSETZEN</strong> eingeben.</p>
+            <input
+              value={resetText}
+              onChange={(event) => setResetText(event.target.value)}
+              placeholder="ZURÜCKSETZEN"
+              disabled={factoryResetBusy}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <button type="button" disabled={resetText !== 'ZURÜCKSETZEN' || factoryResetBusy} onClick={() => void factoryReset()}>
+              {factoryResetBusy ? 'Box wird zurückgesetzt …' : 'Werkseinstellungen wiederherstellen'}
+            </button>
+            {factoryResetMessage && <p className="sc-factory-reset-status" role="status">{factoryResetMessage}</p>}
           </div>
         </section>
       )}

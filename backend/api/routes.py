@@ -244,6 +244,10 @@ class UpdateInstallRequest(BaseModel):
     layer: str | None = None
 
 
+class FactoryResetRequest(BaseModel):
+    confirm: str
+
+
 class MailDiscoverPayload(BaseModel):
     email: str
 
@@ -455,6 +459,30 @@ def sentero_auth_reset_password(payload: ResetPasswordPayload):
 @router.get("/system/status", tags=[TAG_SYSTEM])
 def sentero_system_status():
     return get_services().system_status.status()
+
+
+@router.get("/system/factory-reset/status", tags=[TAG_SYSTEM])
+def sentero_factory_reset_status(request: Request):
+    user = get_services().auth.user_from_request(request, required=True)
+    if str(user.get("role") or "") not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Nur Inhaber und Administratoren dürfen die Werkseinstellungen verwalten.")
+    try:
+        return get_services().factory_reset.status()
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.post("/system/factory-reset", tags=[TAG_SYSTEM])
+def sentero_factory_reset(payload: FactoryResetRequest, request: Request):
+    user = get_services().auth.user_from_request(request, required=True)
+    if str(user.get("role") or "") not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Nur Inhaber und Administratoren dürfen die Box zurücksetzen.")
+    try:
+        return get_services().factory_reset.start(payload.confirm)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
 
 
 @router.get("/system/update/status", tags=[TAG_SYSTEM])

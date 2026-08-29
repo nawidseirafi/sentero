@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="${SENTERO_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 export LC_ALL=C
 export LANG=C
-cd /opt/sentero/box
+BOX_DIR="${SENTERO_BOX_DIR:-/opt/sentero/box}"
+DOCKER_BIN="${SENTERO_DOCKER_BIN:-/usr/bin/docker}"
+PYTHON_BIN="${SENTERO_PYTHON_BIN:-/usr/bin/python3}"
+export SENTERO_NETWORK_SOCKET="${SENTERO_NETWORK_SOCKET:-/run/sentero-network/network.sock}"
+cd "$BOX_DIR"
 
 device_global_ipv4() {
   local dev="$1" ip
@@ -16,6 +20,31 @@ device_global_ipv4() {
   fi
   ip="$(nmcli -g IP4.ADDRESS device show "$dev" 2>/dev/null | head -n1 | cut -d/ -f1 || true)"
   [ -n "$ip" ] && [[ "$ip" != 169.254.* ]] && printf '%s\n' "$ip"
+}
+
+
+start_setup_ap_via_agent() {
+  "$PYTHON_BIN" - <<'PYCODE'
+import json
+import os
+import socket
+
+path = os.getenv("SENTERO_NETWORK_SOCKET", "/run/sentero-network/network.sock")
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+    client.settimeout(35)
+    client.connect(path)
+    client.sendall(b'{"action":"start_setup_ap"}\n')
+    raw = b""
+    while b"\n" not in raw:
+        chunk = client.recv(65536)
+        if not chunk:
+            break
+        raw += chunk
+response = json.loads(raw.split(b"\n", 1)[0] or b"{}")
+if not response.get("ok"):
+    raise SystemExit(str(response.get("message") or "Setup-WLAN konnte nicht gestartet werden."))
+print(response.get("ssid") or "Sentero-Setup")
+PYCODE
 }
 
 local_network_state() {
@@ -52,8 +81,13 @@ if [ -n "$NETWORK_STATE" ]; then
   # connected by LAN or a saved Wi-Fi profile.
   nmcli connection down sentero-setup-ap >/dev/null 2>&1 || true
   echo "Sentero: lokales Netzwerk aktiv (${NETWORK_TYPE}, ${NETWORK_IP}); Setup-WLAN bleibt aus."
-  exec /usr/bin/docker compose up -d
+  exec "$DOCKER_BIN" compose up -d
 fi
 
 echo "Sentero: weder LAN noch gespeichertes WLAN mit IPv4 verfügbar; starte Provisionierungsoberfläche."
-exec /usr/bin/docker compose up -d --no-deps sentero
+"$DOCKER_BIN" compose up -d --no-deps sentero
+if AP_SSID="$(start_setup_ap_via_agent 2>/dev/null)"; then
+  echo "Sentero: Setup-WLAN aktiv (${AP_SSID})."
+else
+  echo "WARNUNG: Setup-WLAN konnte nicht automatisch gestartet werden." >&2
+fi

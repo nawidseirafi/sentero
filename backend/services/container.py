@@ -12,6 +12,7 @@ from backend.services.box_network_service import BoxNetworkService
 from backend.services.consent_service import ConsentService
 from backend.services.device_mapping_service import DeviceMappingService
 from backend.services.export_service import ExportService
+from backend.services.factory_reset_service import FactoryResetService
 from backend.services.notification_service import NotificationService
 from backend.services.network import NetworkService
 from backend.services.sensor_manager import SensorManager
@@ -40,6 +41,7 @@ class SenteroServices:
     mail_assistant_settings: SenteroMailAssistantSettings
     telegram_assistant: SenteroTelegramAssistant
     system_status: SystemStatusService
+    factory_reset: FactoryResetService
 
 
 @lru_cache(maxsize=1)
@@ -67,6 +69,7 @@ def get_services() -> SenteroServices:
         mail_assistant_settings=SenteroMailAssistantSettings(mapping),
         telegram_assistant=SenteroTelegramAssistant(mapping, sentero, notification),
         system_status=SystemStatusService(),
+        factory_reset=FactoryResetService(),
     )
 
 

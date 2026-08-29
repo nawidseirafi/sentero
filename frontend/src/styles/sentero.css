@@ -6691,3 +6691,15 @@ button:disabled {
   .sc-system-health-pill { display: none; }
   .sc-system-health-details { padding: 0 14px 14px; }
 }
+
+.sc-factory-reset-status {
+  color: #8f2028;
+  font-size: 0.92rem;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+.sc-danger-zone button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}

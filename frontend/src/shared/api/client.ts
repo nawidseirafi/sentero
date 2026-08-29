@@ -496,6 +496,25 @@ export type SenteroSystemStatus = {
   };
 };
 
+export type FactoryResetState = {
+  status?: 'accepted' | 'running' | 'completed' | 'failed' | string;
+  phase?: string;
+  message?: string;
+  accepted_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  updated_at?: string;
+  error?: string;
+};
+
+export type FactoryResetResult = {
+  ok: boolean;
+  accepted?: boolean;
+  already_running?: boolean;
+  message?: string;
+  state?: FactoryResetState;
+};
+
 export type UpdateStatus = {
   product?: string;
   current_version?: string;
@@ -618,6 +637,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 export const api = {
   messages: async (_limit = 100) => ({ messages: [] as MessageCenterItem[] }),
   senteroSystemStatus: () => request<SenteroSystemStatus>('/api/sentero/system/status'),
+  senteroFactoryResetStatus: () => request<FactoryResetResult>('/api/sentero/system/factory-reset/status'),
+  senteroFactoryReset: (confirm: string) =>
+    request<FactoryResetResult>('/api/sentero/system/factory-reset', { method: 'POST', body: JSON.stringify({ confirm }) }),
   senteroUpdateStatus: () => request<UpdateStatus>('/api/sentero/system/update/status'),
   senteroCheckUpdates: () => request<UpdateCheckResult>('/api/sentero/system/update/check'),
   senteroInstallUpdate: () => request<UpdateStatus>('/api/sentero/system/update/install', { method: 'POST', body: JSON.stringify({}) }),
