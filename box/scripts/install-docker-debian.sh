@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Bitte mit sudo ausfuehren: sudo ./scripts/install-docker-debian.sh" >&2

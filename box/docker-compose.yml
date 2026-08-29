@@ -16,6 +16,7 @@ services:
       - ./data/sentero:/app/data
       - ./config:/app/config:ro
       - /run/sentero-updater:/run/sentero-updater:ro
+      - /run/sentero-network:/run/sentero-network:ro
     depends_on:
       mosquitto:
         condition: service_started
@@ -41,12 +42,14 @@ services:
 
   zigbee2mqtt:
     image: koenkk/zigbee2mqtt:latest
+    profiles:
+      - zigbee
     container_name: sentero-zigbee2mqtt
     restart: unless-stopped
     environment:
       TZ: ${SENTERO_TIMEZONE:-Europe/Berlin}
     devices:
-      - "${ZIGBEE_ADAPTER_HOST}:${ZIGBEE_ADAPTER_CONTAINER:-/dev/ttyACM0}"
+      - "${ZIGBEE_ADAPTER_HOST:-/dev/null}:${ZIGBEE_ADAPTER_CONTAINER:-/dev/ttyACM0}"
     volumes:
       - ./zigbee2mqtt/data:/app/data
       - /run/udev:/run/udev:ro

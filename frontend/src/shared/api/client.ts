@@ -343,6 +343,8 @@ export type BoxNetworkStatus = {
   wifi_active: boolean;
   ip_address?: string | null;
   setup_ap_active: boolean;
+  setup_ap_ssid?: string | null;
+  setup_url?: string | null;
   hostname: string;
   local_url: string;
   message: string;
@@ -647,6 +649,7 @@ export const api = {
   connectSenteroEcoTracker: (host: string) =>
     request<{ status: string; sensor: { id: string; name: string; room_id?: string | null; type: string }; reading: SenteroEcoTrackerReading }>('/api/sentero/sensors/ecotracker/connect', { method: 'POST', body: JSON.stringify({ host }) }),
   boxNetworkStatus: () => request<BoxNetworkStatus>('/api/setup/box-network/status'),
+  boxNetworkWifiNetworks: () => request<{ networks: WifiNetwork[] }>('/api/setup/network/wifi/networks'),
   saveBoxNetworkWifi: (payload: { ssid: string; password: string }) =>
     request<BoxNetworkWifiResult>('/api/setup/box-network/wifi', { method: 'POST', body: JSON.stringify(payload) }),
   networkStatus: (diagnostics = false) => request<NetworkStatus>(`/api/sentero/network/status${diagnostics ? '?diagnostics=true' : ''}`),

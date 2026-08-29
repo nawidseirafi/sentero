@@ -35,7 +35,6 @@ RELEASE_DIR = UPDATE_DIR / "releases"
 
 APPLIANCE_DOCKERFILE = ROOT / "docker" / "Dockerfile.appliance"
 VERSION_FILE = ROOT / "version.json"
-DEFAULT_TARGET_PLATFORM = os.getenv("SENTERO_TARGET_PLATFORM", "linux/amd64").strip() or "linux/amd64"
 
 NEVER_COPY_NAMES = {
     ".env",
@@ -93,11 +92,6 @@ def main() -> int:
         help="Docker image name without tag. Default: sentero/app",
     )
     parser.add_argument(
-        "--platform",
-        default=DEFAULT_TARGET_PLATFORM,
-        help="Docker target platform. Default: linux/amd64.",
-    )
-    parser.add_argument(
         "--no-box",
         action="store_true",
         help="Do not create build/sentero-box initial deployment tree.",
@@ -140,7 +134,6 @@ def main() -> int:
     base_url = normalize_update_base_url(args.base_url)
     image_repo = (args.image.strip() or os.getenv("SENTERO_DOCKER_IMAGE", "") or "sentero/app").rstrip(":")
     image = f"{image_repo}:{version}"
-    platform = normalize_platform(args.platform)
 
     if not args.no_update and not base_url:
         raise SystemExit(
@@ -150,13 +143,20 @@ def main() -> int:
 
     clean_output(channel=args.channel)
 
-    # The appliance Dockerfile is multi-stage and builds the frontend inside
-    # Docker. This avoids host/macOS node_modules leaking into the Linux image.
-    if not args.no_update and not args.skip_docker_build:
-        build_docker_image(image=image, version=version, platform=platform)
+    # Both the initial customer package and the update bundle need the same
+    # versioned Docker image. Build it whenever at least one real deployment
+    # artifact is requested. Previously --no-update accidentally skipped the
+    # Docker build, which left build/sentero-box without sentero-image.tar.
+    needs_docker_image = not args.no_box or not args.no_update
+    if needs_docker_image and not args.skip_docker_build:
+        build_docker_image(image=image, version=version)
 
     if not args.no_box:
-        create_initial_box(version=version, image_repo=image_repo)
+        create_initial_box(
+            version=version,
+            image=image,
+            save_image=not args.skip_docker_save,
+        )
 
     if not args.no_update:
         create_appliance_update(
@@ -167,17 +167,13 @@ def main() -> int:
             mandatory=args.mandatory,
             release_notes=args.release_note,
             save_image=not args.skip_docker_save,
-            platform=platform,
         )
 
     print()
     print(f"Sentero version: {version}")
     print(f"Docker image:    {image}")
-    print(f"Target platform: {platform}")
     if not args.no_box:
         print(f"Initial box:     {BOX_TARGET_DIR}")
-        if not args.no_update and not args.skip_docker_save:
-            print(f"Initial image:   {BOX_TARGET_DIR / 'sentero-image.tar'}")
     if not args.no_update:
         channel_dir = BUILD_DIR / "updates" / "sentero" / args.channel
         print(f"Update files:    {channel_dir}")
@@ -195,7 +191,7 @@ def clean_output(channel: str) -> None:
     (channel_dir / "releases").mkdir(parents=True, exist_ok=True)
 
 
-def build_docker_image(*, image: str, version: str, platform: str) -> None:
+def build_docker_image(*, image: str, version: str) -> None:
     if not APPLIANCE_DOCKERFILE.exists():
         raise SystemExit(
             f"{APPLIANCE_DOCKERFILE} not found. "
@@ -212,9 +208,9 @@ def build_docker_image(*, image: str, version: str, platform: str) -> None:
             "buildx",
             "build",
             "--platform",
-            platform,
-            "--pull",
+            "linux/amd64",
             "--load",
+            "--pull",
             "--file",
             str(APPLIANCE_DOCKERFILE),
             "--tag",
@@ -224,41 +220,9 @@ def build_docker_image(*, image: str, version: str, platform: str) -> None:
         cwd=ROOT,
         purpose="Docker image build",
     )
-    validate_docker_image_platform(image, platform)
 
 
-def normalize_platform(value: str) -> str:
-    platform = value.strip().lower()
-    if platform != "linux/amd64":
-        raise SystemExit(
-            f"Unsupported target platform {platform!r}. "
-            "Sentero Box releases currently require linux/amd64."
-        )
-    return platform
-
-
-def validate_docker_image_platform(image: str, expected_platform: str) -> None:
-    actual = run(
-        [
-            "docker",
-            "image",
-            "inspect",
-            image,
-            "--format",
-            "{{.Os}}/{{.Architecture}}",
-        ],
-        cwd=ROOT,
-        purpose="Docker image platform validation",
-        capture_output=True,
-    ).strip().lower()
-    if actual != expected_platform:
-        raise SystemExit(
-            f"Docker image {image} has platform {actual!r}, "
-            f"expected {expected_platform!r}. Refusing to publish update bundle."
-        )
-
-
-def create_initial_box(*, version: str, image_repo: str) -> None:
+def create_initial_box(*, version: str, image: str, save_image: bool) -> None:
     if not BOX_SOURCE_DIR.exists():
         print(
             "Warning: project has no box/ directory; "
@@ -266,6 +230,11 @@ def create_initial_box(*, version: str, image_repo: str) -> None:
             file=sys.stderr,
         )
         return
+
+    # `data` directories are excluded from the customer tree, but the
+    # Zigbee2MQTT example is static configuration and must survive that filter.
+    source_zigbee_template = BOX_SOURCE_DIR / "zigbee2mqtt/data/configuration.yaml.example"
+    zigbee_template = source_zigbee_template.read_bytes() if source_zigbee_template.exists() else None
 
     shutil.copytree(
         BOX_SOURCE_DIR,
@@ -275,8 +244,12 @@ def create_initial_box(*, version: str, image_repo: str) -> None:
 
     env_example = BOX_TARGET_DIR / ".env.example"
     if env_example.exists():
+        # SENTERO_IMAGE is the repository only; compose appends SENTERO_VERSION.
+        image_repo = image.rsplit(":", 1)[0]
         replace_env_value(env_example, "SENTERO_IMAGE", image_repo)
         replace_env_value(env_example, "SENTERO_VERSION", version)
+
+    zigbee_template_path = BOX_TARGET_DIR / "zigbee2mqtt/data/configuration.yaml.example"
 
     # The customer package must never contain runtime secrets or data.
     for relative in (
@@ -308,6 +281,35 @@ def create_initial_box(*, version: str, image_repo: str) -> None:
         path.mkdir(parents=True, exist_ok=True)
         (path / ".gitkeep").write_text("", encoding="utf-8")
 
+    if zigbee_template is not None:
+        zigbee_template_path.parent.mkdir(parents=True, exist_ok=True)
+        zigbee_template_path.write_bytes(zigbee_template)
+
+    # Archive/extraction tools do not always preserve executable bits. Make the
+    # generated customer package self-contained and directly runnable.
+    for script in (BOX_TARGET_DIR / "scripts").glob("*.sh"):
+        script.chmod(script.stat().st_mode | 0o111)
+    for directory in ("sentero-updater", "sentero-network"):
+        for script in (BOX_TARGET_DIR / directory).glob("*.py"):
+            script.chmod(script.stat().st_mode | 0o111)
+
+    # A fresh Debian installation is intentionally self-contained: the
+    # installer loads this file with `docker load` and must not depend on a
+    # registry being reachable. Keep the canonical filename expected by the
+    # box installer directly in build/sentero-box/.
+    if save_image:
+        image_tar = BOX_TARGET_DIR / "sentero-image.tar"
+        ensure_local_image(image)
+        run(
+            ["docker", "save", image, "-o", str(image_tar)],
+            cwd=ROOT,
+            purpose="Initial box Docker image export",
+        )
+        if not image_tar.is_file() or image_tar.stat().st_size == 0:
+            raise SystemExit(
+                f"Docker image export did not create a usable {image_tar}."
+            )
+
 
 def create_appliance_update(
     *,
@@ -318,7 +320,6 @@ def create_appliance_update(
     mandatory: bool,
     release_notes: list[str],
     save_image: bool,
-    platform: str,
 ) -> None:
     channel_dir = BUILD_DIR / "updates" / "sentero" / channel
     release_dir = channel_dir / "releases"
@@ -337,7 +338,6 @@ def create_appliance_update(
         "image_tar": "sentero-image.tar",
         "created_at": utc_now(),
         "commit": git_commit(),
-        "platform": platform,
     }
     release_json.write_text(
         json.dumps(release_metadata, ensure_ascii=False, indent=2) + "\n",
@@ -346,7 +346,6 @@ def create_appliance_update(
 
     if save_image:
         ensure_local_image(image)
-        validate_docker_image_platform(image, platform)
         run(
             ["docker", "save", image, "-o", str(image_tar)],
             cwd=ROOT,
@@ -359,14 +358,7 @@ def create_appliance_update(
             image_tar=image_tar,
         )
 
-        # The initial customer box must be self-contained. A freshly installed
-        # Debian box can therefore be provisioned with only build/sentero-box.
-        if BOX_TARGET_DIR.exists():
-            shutil.copy2(image_tar, BOX_TARGET_DIR / "sentero-image.tar")
-            shutil.copy2(release_json, BOX_TARGET_DIR / "release.json")
-
-        # Temporary release files are not needed after the ZIP and initial box
-        # package have been created.
+        # Temporary files are not needed after the self-contained ZIP exists.
         release_json.unlink(missing_ok=True)
         image_tar.unlink(missing_ok=True)
 
@@ -406,7 +398,6 @@ def create_appliance_update(
                     "size_bytes": bundle_size,
                     "format": 1,
                     "image": image,
-                    "platform": platform,
                 },
             }
         }
@@ -424,7 +415,6 @@ def create_appliance_update(
         "channel": channel,
         "created_at": utc_now(),
         "image": image,
-        "platform": platform,
         "manifest": "latest.json",
         "manifest_url": f"{base_url}/{channel}/latest.json",
         "artifact": f"releases/{bundle_name}",
@@ -555,29 +545,18 @@ def run(
     *,
     cwd: Path,
     purpose: str,
-    capture_output: bool = False,
-) -> str:
+) -> None:
     print(f"{purpose}: {' '.join(command)}")
     try:
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            check=True,
-            text=True,
-            capture_output=capture_output,
-        )
+        subprocess.run(command, cwd=cwd, check=True)
     except FileNotFoundError as exc:
         raise SystemExit(
             f"{command[0]!r} is not installed or not in PATH."
         ) from exc
     except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or exc.stdout or "").strip() if capture_output else ""
-        suffix = f"\n{detail}" if detail else ""
         raise SystemExit(
-            f"{purpose} failed with exit code {exc.returncode}.{suffix}"
+            f"{purpose} failed with exit code {exc.returncode}."
         ) from exc
-
-    return result.stdout if capture_output else ""
 
 
 def load_env_file(path: Path) -> None:

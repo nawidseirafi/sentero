@@ -11,6 +11,7 @@ from backend.services.device_mapping_service import DeviceMappingService, now
 from backend.services.network.access_point_service import AccessPointService
 from backend.services.network.cellular_service import CellularService
 from backend.services.network.connectivity_service import ConnectivityService
+from backend.services.network.host_client import HostNetworkClient
 from backend.services.network.models import (
     CellularStatus,
     ConnectionType,
@@ -43,6 +44,7 @@ class NetworkService:
         self.access_point = access_point or AccessPointService(self.secret_store)
         self.cellular = cellular or CellularService()
         self.connectivity = connectivity or ConnectivityService()
+        self.host = HostNetworkClient()
         self._failure_count = 0
         self._recovery_count = 0
         self.ensure_schema()
@@ -100,27 +102,36 @@ class NetworkService:
         password = str(payload.get("password") or "")
         if not ssid:
             raise ValueError("Bitte wählen Sie ein WLAN aus.")
-        if not password:
-            raise ValueError("Bitte geben Sie das WLAN-Passwort ein.")
         if self.mode() == "disabled":
+            if not password:
+                raise ValueError("Bitte geben Sie das WLAN-Passwort ein.")
             self.secret_store.set("wifi", {"ssid": ssid, "password": password})
             self._persist_wifi(ssid, configured=True)
             self._set_active_connection(ConnectionType.WIFI)
             self.stop_setup_ap(mark_setup_complete=True)
             self._event("wifi_connected", ConnectionType.WIFI, True, reason="development_mode")
             return {"ok": True, "applied": False, "message": "Development-Modus: WLAN-Daten gespeichert, keine Netzwerkänderung ausgeführt.", "status": self.status()}
+
+        # Appliance mode delegates the actual NIC switch to the Debian host.
+        # The host agent restores the setup AP automatically when WiFi fails.
         result = self.wifi.connect(ssid, password)
         if not result.get("ok"):
             self._event("wifi_lost", ConnectionType.WIFI, False, reason="connect_failed")
-            return {"ok": False, "applied": False, "message": result.get("message") or "WLAN konnte nicht verbunden werden.", "status": self.status()}
-        check = self.connectivity.check(ConnectionType.WIFI)
-        if check.status != NetworkStatusCode.ONLINE_WIFI:
-            self._event("wifi_lost", ConnectionType.WIFI, False, reason=check.reason or "internet_unreachable")
-            return {"ok": False, "applied": True, "message": "WLAN ist verbunden, aber das Internet ist nicht erreichbar. Das Setup-WLAN bleibt aktiv.", "status": self.status()}
+            return {"ok": False, "applied": True, "message": result.get("message") or "WLAN konnte nicht verbunden werden.", "status": self.status()}
+
+        if self.host.available():
+            try:
+                host_status = self.host.request("status")
+                if not host_status.get("network_ready"):
+                    self._event("wifi_lost", ConnectionType.WIFI, False, reason="internet_unreachable")
+                    return {"ok": False, "applied": True, "message": "WLAN ist verbunden, aber das Internet ist nicht erreichbar. Das Setup-WLAN wurde wieder gestartet.", "status": self.status()}
+            except Exception:
+                logger.exception("Host status after WiFi connect failed", extra={"component": "network", "ssid": ssid})
+
         self.secret_store.set("wifi", {"ssid": ssid, "password": password})
         self._persist_wifi(ssid, configured=True)
         self._set_active_connection(ConnectionType.WIFI)
-        self.stop_setup_ap(mark_setup_complete=True)
+        self._set_setup_ap(False, setup_completed=True)
         self._event("wifi_connected", ConnectionType.WIFI, True)
         return {"ok": True, "applied": True, "message": "Sentero ist mit dem Internet verbunden.", "status": self.status()}
 
@@ -251,9 +262,17 @@ class NetworkService:
     def legacy_status(self) -> dict[str, Any]:
         status = self._status()
         data = status.public()
+        host_status: dict[str, Any] = {}
+        if self.mode() != "disabled" and self.host.available():
+            try:
+                host_status = self.host.request("status")
+            except Exception:
+                logger.exception("Host network status unavailable", extra={"component": "network"})
         data.update({
             "mode": self.mode(),
-            "ip_address": local_ip_address(),
+            "ip_address": host_status.get("ip_address") or local_ip_address(),
+            "setup_ap_ssid": host_status.get("setup_ap_ssid") or self.access_point.setup_ssid(),
+            "setup_url": "http://192.168.50.1:8080",
         })
         return data
 
@@ -268,6 +287,55 @@ class NetworkService:
 
     def _status(self) -> NetworkStatus:
         settings = self.settings(public=False)
+
+        # In appliance mode the real NICs belong to the Debian host, not the
+        # Docker container. Read their state from the privileged host agent.
+        if self.mode() != "disabled" and self.host.available():
+            try:
+                host = self.host.request("status")
+                active_raw = str(host.get("active_connection") or "none")
+                try:
+                    active = ConnectionType(active_raw)
+                except ValueError:
+                    active = ConnectionType.NONE
+                internet = bool(host.get("internet_reachable"))
+                ready = bool(host.get("network_ready"))
+                if ready and active == ConnectionType.ETHERNET:
+                    status_code = NetworkStatusCode.ONLINE_ETHERNET
+                elif ready and active == ConnectionType.WIFI:
+                    status_code = NetworkStatusCode.ONLINE_WIFI
+                elif active != ConnectionType.NONE:
+                    status_code = NetworkStatusCode.LOCAL_ONLY
+                else:
+                    status_code = NetworkStatusCode.OFFLINE
+                cellular = self.cellular.status()
+                capabilities_raw = host.get("capabilities") or {}
+                capabilities = NetworkCapabilities(
+                    ethernet=bool(capabilities_raw.get("ethernet", True)),
+                    wifi=bool(capabilities_raw.get("wifi")),
+                    wifi_ap=bool(capabilities_raw.get("wifi_ap")),
+                    cellular=cellular.available,
+                )
+                return NetworkStatus(
+                    status=status_code,
+                    active_connection=active,
+                    network_ready=ready,
+                    internet_reachable=internet,
+                    ethernet_active=bool(host.get("ethernet_active")),
+                    wifi_active=bool(host.get("wifi_active")),
+                    cellular_active=False,
+                    setup_ap_active=bool(host.get("setup_ap_active")),
+                    wifi_configured=bool(settings.get("wifi_configured")) or active == ConnectionType.WIFI,
+                    cellular=cellular,
+                    capabilities=capabilities,
+                    hostname=self.hostname(),
+                    local_url=f"http://{self.hostname()}.local:8080",
+                    customer_message=customer_message(status_code, active, cellular),
+                    diagnostics={"host_network": host, "failover": self.failover_config().__dict__},
+                )
+            except Exception:
+                logger.exception("Host network status failed", extra={"component": "network"})
+
         active = self._active_connection()
         cellular = self.cellular.status()
         capabilities = self._capabilities(cellular=cellular)
@@ -293,13 +361,9 @@ class NetworkService:
             cellular=cellular,
             capabilities=capabilities,
             hostname=self.hostname(),
-            local_url=f"http://{self.hostname()}.local",
+            local_url=f"http://{self.hostname()}.local:8080",
             customer_message=customer_message(status, active, cellular),
-            diagnostics={
-                "connectivity": check.public(),
-                "failover": self.failover_config().__dict__,
-                "default_route": active.value,
-            },
+            diagnostics={"connectivity": check.public(), "failover": self.failover_config().__dict__, "default_route": active.value},
         )
 
     def _capabilities(self, cellular: CellularStatus | None = None) -> NetworkCapabilities:

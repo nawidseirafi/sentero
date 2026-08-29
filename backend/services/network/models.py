@@ -79,8 +79,8 @@ class ConnectivityCheck:
 class SetupAccessPointStatus:
     active: bool
     ssid: str
-    local_url: str = "http://sentero.local"
-    local_ip_url: str = "http://192.168.50.1"
+    local_url: str = "http://sentero.local:8080"
+    local_ip_url: str = "http://192.168.50.1:8080"
 
     def public(self) -> dict[str, Any]:
         return asdict(self)

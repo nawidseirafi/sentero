@@ -15,6 +15,9 @@ Kompletten Ordner auf die frisch installierte Debian-13-amd64-Box kopieren:
 
 Dann auf der Box nur noch:
   cd /root/sentero-box
+    find scripts -type f -name "*.sh" -exec chmod +x {} \;
+    chmod +x sentero-network/*.py 2>/dev/null || true
+    chmod +x sentero-updater/*.py 2>/dev/null || true
   ./scripts/first-install.sh
 
 Das Skript:
