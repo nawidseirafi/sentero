@@ -73,11 +73,7 @@ esp32:
 zigbee:
   provider: auto
 
-updates:
-  channel: SENTERO_UPDATE_CHANNEL
-  mode: SENTERO_UPDATE_MODE
-  base_url: SENTERO_UPDATE_BASE_URL
-  manifest_url: SENTERO_UPDATE_MANIFEST_URL
+updates: {}
 
 llm:
   # rule_based keeps Sentero fully local and is the safe default.

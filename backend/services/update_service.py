@@ -340,7 +340,7 @@ class SenteroUpdateService:
         )
         request = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(10)
+        client.settimeout(300)
         try:
             client.connect(socket_path)
             client.sendall(request)

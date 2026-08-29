@@ -9,6 +9,7 @@ import socket
 import sqlite3
 import subprocess
 import tempfile
+import time
 import urllib.request
 import zipfile
 from datetime import datetime, timezone
@@ -23,6 +24,8 @@ STATE_FILE = BOX_DIR / "data" / "sentero" / "system" / "host_update_state.json"
 BACKUP_DIR = BOX_DIR / "backups"
 DB_FILE = BOX_DIR / "data" / "sentero" / "sentero.db"
 MAX_BUNDLE_BYTES = int(os.getenv("SENTERO_UPDATER_MAX_BUNDLE_BYTES", str(1024 * 1024 * 1024)))
+TARGET_PLATFORM = os.getenv("SENTERO_TARGET_PLATFORM", "linux/amd64").strip().lower() or "linux/amd64"
+HEALTH_TIMEOUT_SECONDS = int(os.getenv("SENTERO_UPDATER_HEALTH_TIMEOUT", "90"))
 
 
 def utc_now() -> str:
@@ -50,6 +53,34 @@ def write_state(data: dict[str, Any]) -> None:
 def run(command: list[str], *, cwd: Path = BOX_DIR) -> str:
     result = subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=True)
     return result.stdout.strip()
+
+
+
+
+def image_platform(image: str) -> str:
+    return run([
+        "docker", "image", "inspect", image,
+        "--format", "{{.Os}}/{{.Architecture}}",
+    ]).strip().lower()
+
+
+def wait_for_health(container: str = "sentero", timeout_seconds: int = HEALTH_TIMEOUT_SECONDS) -> None:
+    deadline = time.monotonic() + max(timeout_seconds, 1)
+    last_error = ""
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ["docker", "exec", container, "curl", "-fsS", "http://127.0.0.1:8080/health"],
+            cwd=BOX_DIR,
+            text=True,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return
+        last_error = (result.stderr or result.stdout or "healthcheck failed").strip()
+        time.sleep(2)
+    raise RuntimeError(
+        f"Sentero healthcheck nach {timeout_seconds}s fehlgeschlagen: {last_error}"
+    )
 
 
 def sha256(path: Path) -> str:
@@ -175,13 +206,18 @@ def install_update(payload: dict[str, Any]) -> dict[str, Any]:
 
         db_backup = backup_sqlite(target_version)
         run(["docker", "load", "-i", str(tmpdir / "sentero-image.tar")])
+        actual_platform = image_platform(release_image)
+        if actual_platform != TARGET_PLATFORM:
+            raise RuntimeError(
+                f"Docker-Image hat Plattform {actual_platform}, erwartet wird {TARGET_PLATFORM}."
+            )
         # Keep repository and version separate because docker-compose.yml combines
         # them as ${SENTERO_IMAGE}:${SENTERO_VERSION}. This also repairs older
         # installations that accidentally stored a tagged image in SENTERO_IMAGE.
         replace_env_value(ENV_FILE, "SENTERO_IMAGE", image_repo)
         replace_env_value(ENV_FILE, "SENTERO_VERSION", target_version)
         run(["docker", "compose", "up", "-d", "sentero"])
-        run(["docker", "exec", "sentero", "curl", "-fsS", "http://127.0.0.1:8080/health"])
+        wait_for_health("sentero")
 
     final = {**state, "status": "success", "finished_at": utc_now(), "db_backup": str(db_backup) if db_backup else None}
     write_state(final)
@@ -247,7 +283,12 @@ def main() -> None:
         with connection:
             raw = connection.recv(65536).split(b"\n", 1)[0].decode("utf-8", errors="replace")
             response = handle(json.loads(raw or "{}"))
-            connection.sendall((json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8"))
+            try:
+                connection.sendall((json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8"))
+            except BrokenPipeError:
+                # The caller may have disconnected while a long update was running.
+                # The persisted state remains authoritative; keep the updater alive.
+                pass
 
 
 if __name__ == "__main__":
