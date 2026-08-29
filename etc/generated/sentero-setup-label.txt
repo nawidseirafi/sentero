@@ -1,0 +1,4 @@
+Sentero Setup WLAN
+SSID: Sentero-Setup-C5B9
+QR payload: WIFI:T:nopass;S:Sentero-Setup-C5B9;;
+Label: /opt/sentero/box/generated/sentero-setup-label.svg
