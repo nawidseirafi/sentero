@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Cable, CheckCircle2, HeartHandshake, Mail, Plus, ShieldCheck, Smartphone, Trash2, UserRound, Wifi, X } from 'lucide-react';
 import { api, type NetworkStatus, type SenteroDiscoveredSensor, type SenteroEsp32DiscoverySensor, type SenteroSensorRole, type WifiNetwork } from '@shared/api/client';
 import { SensorWizard, type SensorBinding, type SensorDiscoveryState } from './SensorWizard';
+import { createId } from "../utils/id"
 
 type Profile = {
   name: string;
@@ -567,7 +568,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     setContacts((current) => {
       const primary = contactForm.primary || current.length === 0;
       const existing = primary ? current.map((contact) => ({ ...contact, primary: false })) : current;
-      return [...existing, { ...contactForm, email, channels: ['E-Mail'], primary, id: crypto.randomUUID() }];
+      return [...existing, { ...contactForm, email, channels: ['E-Mail'], primary, id: createId() }];
     });
     setContactForm({ id: '', name: '', relation: 'Tochter', phone: '', email: '', channels: ['E-Mail'], primary: false });
     setContactFormOpen(false);
