@@ -380,7 +380,9 @@ class SenteroUpdateService:
         }
         self._write_json(STATE_FILE, state)
 
+        request_sent = False
         try:
+            request_sent = True
             response = self._request_appliance_updater(
                 {
                     "action": "install",
@@ -390,6 +392,22 @@ class SenteroUpdateService:
             )
             if not response.get("ok"):
                 raise RuntimeError(str(response.get("error") or "Appliance-Updater hat die Anfrage abgelehnt."))
+        except (socket.timeout, TimeoutError, ConnectionResetError, BrokenPipeError, json.JSONDecodeError):
+            # The privileged updater works synchronously and deliberately
+            # recreates this application container. A missing/late socket
+            # response after the request was sent is therefore not an update
+            # failure. Keep durable app state at `running`; status polling will
+            # reconcile it with the host updater after Sentero is back online.
+            if request_sent:
+                pending = {
+                    **state,
+                    "status": "running",
+                    "state": "running",
+                    "message": "Update wird auf der Sentero Box weiter installiert. Sentero startet dabei automatisch neu.",
+                }
+                self._write_json(STATE_FILE, pending)
+                return {**pending, "accepted": True, "response_pending": True}
+            raise
         except Exception as exc:
             failed = {
                 **state,

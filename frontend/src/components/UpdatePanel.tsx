@@ -21,7 +21,7 @@ export function UpdatePanel({ variant = 'sentero' }: Props) {
   };
 
   const waitForUpdateResult = async () => {
-    const deadline = Date.now() + 120_000;
+    const deadline = Date.now() + 15 * 60_000;
     while (Date.now() < deadline) {
       await new Promise((resolve) => window.setTimeout(resolve, 2_000));
       try {
@@ -71,7 +71,7 @@ export function UpdatePanel({ variant = 'sentero' }: Props) {
       if (outcome === false) {
         setError('Das Update konnte nicht vollstaendig installiert werden. Bitte versuchen Sie es erneut oder kontaktieren Sie den Support.');
       } else if (outcome === null) {
-        setError('Sentero startet nach dem Update noch neu. Bitte laden Sie die Seite in einem Moment erneut.');
+        setError('Das Update laeuft weiterhin im Hintergrund. Der Status wird nach dem Neustart automatisch aktualisiert.');
       }
     } finally {
       setBusy('');

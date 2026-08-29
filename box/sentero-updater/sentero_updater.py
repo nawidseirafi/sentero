@@ -25,6 +25,7 @@ BACKUP_DIR = BOX_DIR / "backups"
 DB_FILE = BOX_DIR / "data" / "sentero" / "sentero.db"
 MAX_BUNDLE_BYTES = int(os.getenv("SENTERO_UPDATER_MAX_BUNDLE_BYTES", str(1024 * 1024 * 1024)))
 HEALTH_TIMEOUT_SECONDS = int(os.getenv("SENTERO_UPDATER_HEALTH_TIMEOUT_SECONDS", "120"))
+COMPOSE_TIMEOUT_SECONDS = int(os.getenv("SENTERO_UPDATER_COMPOSE_TIMEOUT_SECONDS", "90"))
 
 # Only these host paths may ever be replaced by an appliance update. Persistent
 # customer/runtime state (.env, data, backups, MQTT passwords, Zigbee runtime
@@ -64,9 +65,40 @@ def write_state(data: dict[str, Any]) -> None:
     os.replace(tmp, STATE_FILE)
 
 
-def run(command: list[str], *, cwd: Path = BOX_DIR) -> str:
-    result = subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=True)
-    return result.stdout.strip()
+def log(message: str) -> None:
+    print(f"[{utc_now()}] {message}", flush=True)
+
+
+def run(command: list[str], *, cwd: Path = BOX_DIR, timeout: float | None = None) -> str:
+    started = time.monotonic()
+    display = " ".join(command)
+    log(f"START {display}")
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            check=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        elapsed = time.monotonic() - started
+        stdout = (exc.stdout or "").strip() if isinstance(exc.stdout, str) else ""
+        stderr = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
+        log(f"TIMEOUT after {elapsed:.1f}s: {display}; stdout={stdout!r}; stderr={stderr!r}")
+        raise RuntimeError(f"Befehl hat nach {elapsed:.0f}s das Zeitlimit ueberschritten: {display}") from exc
+    except subprocess.CalledProcessError as exc:
+        elapsed = time.monotonic() - started
+        stdout = (exc.stdout or "").strip()
+        stderr = (exc.stderr or "").strip()
+        log(f"FAILED after {elapsed:.1f}s: {display}; rc={exc.returncode}; stdout={stdout!r}; stderr={stderr!r}")
+        raise
+    elapsed = time.monotonic() - started
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    log(f"DONE after {elapsed:.1f}s: {display}; stdout={stdout!r}; stderr={stderr!r}")
+    return stdout
 
 
 def run_no_fail(command: list[str], *, cwd: Path = BOX_DIR) -> bool:
@@ -333,7 +365,13 @@ def install_update(payload: dict[str, Any]) -> dict[str, Any]:
             run(["docker", "load", "-i", str(tmpdir / "sentero-image.tar")])
             updated_host_files = install_host_files(host_files, host_stage)
             replace_env_value(ENV_FILE, "SENTERO_VERSION", target_version)
-            run(["docker", "compose", "up", "-d", "sentero"])
+            # Updating the Sentero app must never implicitly pull/start unrelated
+            # dependencies such as ollama. On a freshly provisioned box that can
+            # turn a seconds-long app restart into a multi-minute operation.
+            run(
+                ["docker", "compose", "up", "-d", "--no-deps", "--force-recreate", "sentero"],
+                timeout=COMPOSE_TIMEOUT_SECONDS,
+            )
             wait_for_sentero_health()
             updater_restart_required = refresh_host_services(updated_host_files)
         except Exception:
