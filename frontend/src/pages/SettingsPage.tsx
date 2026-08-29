@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, Copy, DoorClosed, DoorOpen, Droplets, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, ShieldCheck, Thermometer, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
 import QRCode from 'qrcode';
-import { api, type BoxNetworkStatus, type MailConfig, type SenteroConsent, type SenteroEcoTrackerReading, type SenteroExportToken, type SenteroMailQuerySettings, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroTelegramBotInfo, type SenteroTransparency, type SenteroTrustedContact } from '@shared/api/client';
+import { api, type BoxNetworkStatus, type MailConfig, type SenteroConsent, type SenteroEcoTrackerReading, type SenteroExportToken, type SenteroMailQuerySettings, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroSystemStatus, type SenteroTelegramBotInfo, type SenteroTransparency, type SenteroTrustedContact } from '@shared/api/client';
 import { UpdatePanel } from '../components/UpdatePanel';
 import { useSenteroAuth } from '../auth/SenteroAuthContext';
 import type { SenteroSettingsTab } from '../routes/routes';
@@ -59,6 +59,8 @@ const settingsTabs: Array<{ tab: SenteroSettingsTab; label: string; shortLabel: 
 export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const { user, updateMe, changePassword } = useSenteroAuth();
   const [status, setStatus] = useState<SenteroSetupStatus | null>(null);
+  const [systemStatus, setSystemStatus] = useState<SenteroSystemStatus | null>(null);
+  const [systemStatusLoading, setSystemStatusLoading] = useState(false);
   const [sensors, setSensors] = useState<SenteroSensorRole[]>([]);
   const [saved, setSaved] = useState('');
   const [error, setError] = useState('');
@@ -162,6 +164,34 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
     void refreshSensors();
     const timer = window.setInterval(() => void refreshSensors(), 2000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'system') return;
+    let active = true;
+    let loading = false;
+
+    async function refreshSystemStatus() {
+      if (loading) return;
+      loading = true;
+      if (active) setSystemStatusLoading(true);
+      try {
+        const next = await api.senteroSystemStatus();
+        if (active) setSystemStatus(next);
+      } catch {
+        // Keep the last known status visible during short service restarts.
+      } finally {
+        loading = false;
+        if (active) setSystemStatusLoading(false);
+      }
+    }
+
+    void refreshSystemStatus();
+    const timer = window.setInterval(() => void refreshSystemStatus(), 15000);
     return () => {
       active = false;
       window.clearInterval(timer);
@@ -1541,15 +1571,49 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
       {activeTab === 'system' && (
         <section className="sc-panel sc-settings-panel">
-           <div className="sc-section-title">
-          <h2>System</h2>
-           </div>
-          <div className="sc-system-grid">
-            <p><strong>Home verbunden</strong><span>{status?.home.connected ? 'Ja' : 'Nein'}</span></p>
-            <p><strong>Sensoren verbunden</strong><span>{sensors.filter((sensor) => sensor.configured).length}</span></p>
-            <p><strong>Sensoren offline</strong><span>{sensors.filter((sensor) => sensor.reachable === false).length}</span></p>
-            <p><strong>Letzte Aktualisierung</strong><span>{formatDateTime(status?.updated_at)}</span></p>
+          <div className="sc-section-title sc-system-heading">
+            <div>
+              <h2>System</h2>
+              <p>Ein ruhiger Überblick über die wichtigsten Bereiche Ihrer Sentero Box.</p>
+            </div>
+            <span className={`sc-system-summary sc-system-summary-${systemStatus?.overall || 'warning'}`}>
+              <i aria-hidden="true" />
+              {systemStatus?.summary || (systemStatusLoading ? 'Status wird geprüft …' : 'Status wird geladen …')}
+            </span>
           </div>
+
+          <div className="sc-service-status-grid" aria-live="polite">
+            {(systemStatus?.services || []).map((service) => (
+              <article className="sc-service-status-card" key={service.key}>
+                <div className="sc-service-status-main">
+                  <span className={`sc-service-dot sc-service-dot-${service.state}`} aria-hidden="true" />
+                  <div>
+                    <strong>{service.label}</strong>
+                    <span>{service.detail || systemServiceLabel(service.state)}</span>
+                  </div>
+                </div>
+                <span className={`sc-service-state sc-service-state-${service.state}`}>{systemServiceLabel(service.state)}</span>
+              </article>
+            ))}
+            {!systemStatus?.services?.length && (
+              <div className="sc-system-status-placeholder">Systemstatus wird geladen …</div>
+            )}
+          </div>
+
+          <div className="sc-system-soft-facts">
+            <p><span>Sensoren</span><strong>{sensors.filter((sensor) => sensor.configured).length} eingerichtet</strong></p>
+            <p><span>Erreichbarkeit</span><strong>{sensors.filter((sensor) => sensor.reachable === false).length ? `${sensors.filter((sensor) => sensor.reachable === false).length} nicht erreichbar` : 'Alles erreichbar'}</strong></p>
+            <p><span>Letzte Prüfung</span><strong>{formatDateTime(systemStatus?.checked_at || status?.updated_at)}</strong></p>
+          </div>
+
+          <div className="sc-system-query-note">
+            <div>
+              <Mail size={18} />
+              <MessageCircle size={18} />
+            </div>
+            <p><strong>Status auch unterwegs abrufen</strong><span>Per E-Mail „Systemstatus“ oder in Telegram <code>/status</code> senden.</span></p>
+          </div>
+
           <UpdatePanel />
           <div className="sc-danger-zone">
             <h3><ShieldAlert size={22} /> Werkseinstellungen</h3>
@@ -1571,6 +1635,13 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       </div>
     </section>
   );
+}
+
+function systemServiceLabel(state?: string) {
+  if (state === 'ok') return 'Bereit';
+  if (state === 'error') return 'Prüfen';
+  if (state === 'inactive') return 'Nicht aktiv';
+  return 'Hinweis';
 }
 
 function EmptyState({ text, action }: { text: string; action: string }) {

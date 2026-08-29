@@ -6475,3 +6475,126 @@ button:disabled {
   color: var(--sc-red) !important;
   font-weight: 900;
 }
+
+/* v15: calm, customer-facing appliance health overview */
+.sc-system-heading {
+  align-items: flex-start;
+  gap: 18px;
+}
+.sc-system-heading > div > p {
+  margin: 6px 0 0;
+  color: var(--sc-text-muted, #737b86);
+  max-width: 620px;
+}
+.sc-system-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 1px solid rgba(120, 128, 140, .16);
+  border-radius: 999px;
+  background: rgba(120, 128, 140, .06);
+  font-size: .86rem;
+  white-space: nowrap;
+}
+.sc-system-summary i,
+.sc-service-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #9aa1aa;
+  box-shadow: 0 0 0 4px rgba(154, 161, 170, .10);
+}
+.sc-system-summary-ok i,
+.sc-service-dot-ok { background: #2fa66a; box-shadow: 0 0 0 4px rgba(47, 166, 106, .10); }
+.sc-system-summary-warning i,
+.sc-service-dot-warning { background: #c79a3b; box-shadow: 0 0 0 4px rgba(199, 154, 59, .10); }
+.sc-system-summary-error i,
+.sc-service-dot-error { background: #cb5b5b; box-shadow: 0 0 0 4px rgba(203, 91, 91, .10); }
+.sc-service-dot-inactive { background: #a6acb4; box-shadow: none; }
+.sc-service-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0 14px;
+}
+.sc-service-status-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 72px;
+  padding: 14px 16px;
+  border: 1px solid rgba(120, 128, 140, .14);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .018);
+}
+.sc-service-status-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.sc-service-status-main > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 3px;
+}
+.sc-service-status-main strong { font-size: .96rem; font-weight: 620; }
+.sc-service-status-main span { color: var(--sc-text-muted, #7a828d); font-size: .82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-service-state {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border-radius: 999px;
+  font-size: .74rem;
+  background: rgba(120, 128, 140, .08);
+  color: var(--sc-text-muted, #7a828d);
+}
+.sc-service-state-ok { color: #2f9965; background: rgba(47, 166, 106, .08); }
+.sc-service-state-error { color: #b94d4d; background: rgba(203, 91, 91, .09); }
+.sc-service-state-warning { color: #a97e27; background: rgba(199, 154, 59, .09); }
+.sc-system-soft-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0 0 16px;
+  overflow: hidden;
+  border: 1px solid rgba(120, 128, 140, .12);
+  border-radius: 14px;
+  background: rgba(120, 128, 140, .08);
+}
+.sc-system-soft-facts p {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--sc-surface, #fff);
+}
+.sc-system-soft-facts span { color: var(--sc-text-muted, #7a828d); font-size: .76rem; }
+.sc-system-soft-facts strong { font-size: .88rem; font-weight: 600; }
+.sc-system-query-note {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  margin: 0 0 18px;
+  border-radius: 15px;
+  background: rgba(91, 116, 173, .055);
+  border: 1px solid rgba(91, 116, 173, .10);
+}
+.sc-system-query-note > div { display: flex; gap: 7px; opacity: .72; }
+.sc-system-query-note p { display: flex; flex-direction: column; gap: 3px; margin: 0; }
+.sc-system-query-note p strong { font-size: .9rem; }
+.sc-system-query-note p span { color: var(--sc-text-muted, #7a828d); font-size: .82rem; }
+.sc-system-query-note code { font-family: inherit; font-weight: 650; padding: 1px 5px; border-radius: 5px; background: rgba(120, 128, 140, .08); }
+.sc-system-status-placeholder { grid-column: 1 / -1; padding: 24px; text-align: center; color: var(--sc-text-muted, #7a828d); }
+@media (max-width: 760px) {
+  .sc-system-heading { flex-direction: column; }
+  .sc-system-summary { white-space: normal; }
+  .sc-service-status-grid { grid-template-columns: 1fr; }
+  .sc-system-soft-facts { grid-template-columns: 1fr; }
+}

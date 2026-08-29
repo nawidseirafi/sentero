@@ -18,6 +18,7 @@ from backend.services.sensor_manager import SensorManager
 from backend.services.service import SenteroService
 from backend.services.setup_service import SenteroSetupService
 from backend.services.update_service import SenteroUpdateService
+from backend.services.system_status_service import SystemStatusService
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class SenteroServices:
     mail_assistant: SenteroMailAssistant
     mail_assistant_settings: SenteroMailAssistantSettings
     telegram_assistant: SenteroTelegramAssistant
+    system_status: SystemStatusService
 
 
 @lru_cache(maxsize=1)
@@ -64,6 +66,7 @@ def get_services() -> SenteroServices:
         mail_assistant=SenteroMailAssistant(mapping, sentero, notification),
         mail_assistant_settings=SenteroMailAssistantSettings(mapping),
         telegram_assistant=SenteroTelegramAssistant(mapping, sentero, notification),
+        system_status=SystemStatusService(),
     )
 
 

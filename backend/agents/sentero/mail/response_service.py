@@ -201,19 +201,26 @@ class MailResponseService:
 
     def _sensor_health(self, result: QueryResult) -> str:
         facts = result.facts
-        lines = ["Guten Tag,", "", f"Sentero kennt aktuell {facts.get('sensor_count', 0)} Sensoren."]
+        system = facts.get("system_status") or {}
+        lines = ["Guten Tag,", "", f"Sentero Systemstatus: {system.get('summary') or 'Status verfügbar.'}"]
         context = _context_sentence(result)
         if context:
             lines.insert(2, context)
+        services = system.get("services") or []
+        symbols = {"ok": "✓", "warning": "•", "error": "!", "inactive": "–"}
+        for service in services:
+            label = str(service.get("label") or "Dienst")
+            detail = str(service.get("detail") or "").strip()
+            mark = symbols.get(str(service.get("state") or "warning"), "•")
+            lines.append(f"{mark} {label}: {detail}" if detail else f"{mark} {label}")
+        lines.append("")
+        lines.append(f"Sensoren: {facts.get('sensor_count', 0)} eingerichtet.")
         if facts.get("unreachable"):
             lines.append(f"{len(facts['unreachable'])} Sensoren sind momentan nicht erreichbar.")
         if facts.get("low_battery"):
             lines.append(f"{len(facts['low_battery'])} Sensoren melden eine schwache Batterie.")
         if not facts.get("unreachable") and not facts.get("low_battery"):
-            lines.append("Es liegen aktuell keine technischen Sensorwarnungen vor.")
-        latest = _sensor_update_sentence(facts)
-        if latest:
-            lines.append(latest)
+            lines.append("Keine technischen Sensorwarnungen.")
         lines.extend(["", "Viele Grüße", "Sentero"])
         return "\n".join(lines)
 
@@ -222,6 +229,7 @@ HELP_TEXT = """Guten Tag,
 
 Sie können Sentero zum Beispiel fragen:
 • Ist alles in Ordnung?
+• Systemstatus
 • Wann wurde zuletzt Aktivität erkannt?
 • Wo wurde zuletzt Aktivität erkannt?
 • Gab es heute Auffälligkeiten?

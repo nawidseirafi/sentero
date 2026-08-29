@@ -288,10 +288,132 @@ def connect_wifi(ssid: str, password: str) -> dict[str, Any]:
     return {"ok": True, "message": message, "active": True, "status": current}
 
 
+
+def _service_state(unit: str) -> str:
+    result = run(["systemctl", "is-active", unit], 4)
+    return (result.stdout or "").strip().lower() or "unknown"
+
+
+def _container_state(name: str) -> dict[str, Any]:
+    result = run([
+        "/usr/bin/docker", "inspect", name,
+        "--format", '{{json .State}}',
+    ], 6)
+    if result.returncode != 0 or not (result.stdout or "").strip():
+        return {"present": False, "running": False, "health": None}
+    try:
+        state = json.loads(result.stdout.strip())
+    except json.JSONDecodeError:
+        return {"present": True, "running": False, "health": None}
+    health = None
+    if isinstance(state.get("Health"), dict):
+        health = str(state["Health"].get("Status") or "").strip().lower() or None
+    return {
+        "present": True,
+        "running": bool(state.get("Running")),
+        "status": str(state.get("Status") or "").strip().lower(),
+        "health": health,
+    }
+
+
+def _env_value(name: str) -> str:
+    env_file = BOX_DIR / ".env"
+    try:
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() == name:
+            return value.strip().strip('"').strip("'")
+    return ""
+
+
+def system_status() -> dict[str, Any]:
+    net = status()
+    profiles = {item.strip() for item in _env_value("COMPOSE_PROFILES").split(",") if item.strip()}
+    zigbee_enabled = "zigbee" in profiles
+    zigbee_path = _env_value("ZIGBEE_ADAPTER_HOST")
+    zigbee_adapter = bool(zigbee_path and Path(zigbee_path).exists())
+
+    sentero = _container_state("sentero")
+    mqtt = _container_state("sentero-mosquitto")
+    zigbee = _container_state("sentero-zigbee2mqtt")
+    ollama = _container_state("sentero-ollama")
+
+    def item(key: str, label: str, state: str, detail: str = "") -> dict[str, Any]:
+        return {"key": key, "label": label, "state": state, "detail": detail}
+
+    sentero_ok = sentero.get("running") and sentero.get("health") in {None, "healthy"}
+    mqtt_ok = bool(mqtt.get("running"))
+    ollama_ok = bool(ollama.get("running"))
+    updater_ok = _service_state("sentero-updater.service") == "active"
+    network_agent_ok = _service_state("sentero-network.service") == "active"
+    mdns_ok = _service_state("avahi-daemon.service") == "active"
+
+    services = [
+        item("sentero", "Sentero", "ok" if sentero_ok else "error", "Bereit" if sentero_ok else "Nicht erreichbar"),
+        item("network", "Netzwerk", "ok" if net.get("network_ready") else "warning",
+             (f"Ethernet · {net.get('ethernet_ip_address')}" if net.get("ethernet_active") else
+              f"WLAN · {net.get('wifi_ip_address')}" if net.get("wifi_active") else
+              "Keine lokale Verbindung")),
+        item("mqtt", "Nachrichten", "ok" if mqtt_ok else "error", "Bereit" if mqtt_ok else "Nicht aktiv"),
+    ]
+
+    if zigbee_enabled:
+        if not zigbee_adapter:
+            services.append(item("zigbee", "Zigbee", "error", "Adapter nicht erkannt"))
+        elif zigbee.get("running"):
+            services.append(item("zigbee", "Zigbee", "ok", "Verbunden"))
+        else:
+            services.append(item("zigbee", "Zigbee", "error", "Dienst nicht aktiv"))
+    else:
+        services.append(item("zigbee", "Zigbee", "inactive", "Nicht eingerichtet"))
+
+    services.extend([
+        item("ollama", "Lokale KI", "ok" if ollama_ok else "warning", "Bereit" if ollama_ok else "Nicht aktiv"),
+        item("updater", "Updates", "ok" if updater_ok else "warning", "Bereit" if updater_ok else "Wird geprüft"),
+        item("mdns", "sentero.local", "ok" if mdns_ok else "warning", "Aktiv" if mdns_ok else "Nicht aktiv"),
+    ])
+
+    core_states = [row["state"] for row in services if row["key"] in {"sentero", "network", "mqtt", "zigbee", "updater"} and row["state"] != "inactive"]
+    if "error" in core_states:
+        overall = "error"
+        summary = "Ein Bereich benötigt Aufmerksamkeit."
+    elif "warning" in core_states or not network_agent_ok:
+        overall = "warning"
+        summary = "Sentero läuft mit einer Einschränkung."
+    else:
+        overall = "ok"
+        summary = "Alles bereit."
+
+    return {
+        "ok": True,
+        "overall": overall,
+        "summary": summary,
+        "checked_at": datetime_now(),
+        "services": services,
+        "network": {
+            "active_connection": net.get("active_connection"),
+            "ip_address": net.get("ip_address"),
+            "internet_reachable": net.get("internet_reachable"),
+        },
+    }
+
+
+def datetime_now() -> str:
+    # ISO UTC without importing a large dependency; time is only informational.
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
 def handle(request: dict[str, Any]) -> dict[str, Any]:
     action = str(request.get("action") or "")
     if action == "status":
         return status()
+    if action == "system_status":
+        return system_status()
     if action == "scan_wifi":
         return scan_wifi()
     if action == "start_setup_ap":

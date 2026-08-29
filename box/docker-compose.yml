@@ -10,6 +10,13 @@ services:
         required: false
     environment:
       TZ: ${SENTERO_TIMEZONE:-Europe/Berlin}
+    # Keep update/notification DNS working even when Docker was started while
+    # the appliance only had its setup AP and therefore no upstream resolver.
+    # Docker's embedded resolver (127.0.0.11) still handles service names and
+    # forwards external lookups to these configurable fallbacks.
+    dns:
+      - ${SENTERO_DNS_PRIMARY:-1.1.1.1}
+      - ${SENTERO_DNS_SECONDARY:-8.8.8.8}
     ports:
       - "${SENTERO_HTTP_BIND:-0.0.0.0}:${SENTERO_HTTP_PORT:-8080}:8080"
     volumes:

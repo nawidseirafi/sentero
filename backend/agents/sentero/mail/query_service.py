@@ -9,6 +9,7 @@ from typing import Any
 from backend.agents.sentero.mail.models import INTENT_PERMISSIONS, AuthorizedContact, MailIntent, MailPermission, MailThreadContext, QueryResult
 from backend.services.device_mapping_service import DeviceMappingService, ROOM_LABELS
 from backend.services.service import SenteroService
+from backend.services.system_status_service import SystemStatusService
 from backend.services.environment_labels import illuminance_description, illuminance_display
 
 ACTIVITY_CLASSES = {"presence", "motion", "occupancy"}
@@ -217,6 +218,7 @@ class MailQueryService:
         unreachable = [role for role in roles if role.get("reachable") is False]
         low_battery = [role for role in roles if isinstance(role.get("battery_level"), (int, float)) and role.get("battery_level") < 30]
         latest = max((self._parse_time(role.get("last_changed") or role.get("last_updated") or role.get("updated_at")) for role in roles if role.get("last_changed") or role.get("last_updated") or role.get("updated_at")), default=None)
+        appliance = SystemStatusService().status()
         return QueryResult(intent=MailIntent.SENSOR_HEALTH, status="ok", facts={
             "sensor_count": len(roles),
             "unreachable": unreachable,
@@ -226,6 +228,7 @@ class MailQueryService:
             "latest_sensor_update_label": self._local_time_label(latest),
             "latest_sensor_update_relative": self._relative_time_label(latest),
             "timezone": self._sentero_timezone().key,
+            "system_status": appliance,
         })
 
     def _dashboard_summary(self, assessment: dict[str, Any] | None, activity: dict[str, Any] | None, contact: AuthorizedContact) -> dict[str, Any]:

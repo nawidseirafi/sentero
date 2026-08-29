@@ -476,6 +476,26 @@ export type UpdateLatest = {
   layers: string[];
 };
 
+export type SenteroSystemServiceStatus = {
+  key: string;
+  label: string;
+  state: 'ok' | 'warning' | 'error' | 'inactive' | string;
+  detail?: string;
+};
+
+export type SenteroSystemStatus = {
+  ok: boolean;
+  overall: 'ok' | 'warning' | 'error' | string;
+  summary: string;
+  checked_at?: string;
+  services: SenteroSystemServiceStatus[];
+  network?: {
+    active_connection?: string | null;
+    ip_address?: string | null;
+    internet_reachable?: boolean;
+  };
+};
+
 export type UpdateStatus = {
   product?: string;
   current_version?: string;
@@ -597,6 +617,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   messages: async (_limit = 100) => ({ messages: [] as MessageCenterItem[] }),
+  senteroSystemStatus: () => request<SenteroSystemStatus>('/api/sentero/system/status'),
   senteroUpdateStatus: () => request<UpdateStatus>('/api/sentero/system/update/status'),
   senteroCheckUpdates: () => request<UpdateCheckResult>('/api/sentero/system/update/check'),
   senteroInstallUpdate: () => request<UpdateStatus>('/api/sentero/system/update/install', { method: 'POST', body: JSON.stringify({}) }),

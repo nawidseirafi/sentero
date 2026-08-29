@@ -26,8 +26,8 @@ class MailIntentService:
             return IntentResult(MailIntent.NIGHT_SUMMARY, 0.88)
         if any(term in text for term in ["auffällig", "auffaellig", "auffälligkeit", "auffaelligkeit", "ungewöhnlich", "ungewoehnlich", "alarm", "warnung"]):
             return IntentResult(MailIntent.ANOMALIES, 0.9)
-        if any(term in text for term in ["sensor", "batterie", "erreichbar", "gesundheit der technik", "technik"]):
-            return IntentResult(MailIntent.SENSOR_HEALTH, 0.86)
+        if text in {"/status", "systemstatus", "system status"} or any(term in text for term in ["systemstatus", "system status", "dienste", "zigbee", "mqtt", "updater", "sentero.local", "sensor", "batterie", "erreichbar", "gesundheit der technik", "technik"]):
+            return IntentResult(MailIntent.SENSOR_HEALTH, 0.92)
         if any(term in text for term in ["heute passiert", "tagesverlauf", "heute", "zusammenfassung"]):
             return IntentResult(MailIntent.TODAY_SUMMARY, 0.84)
         if any(term in text for term in ["wo ist", "wo war", "wo befindet", "welcher raum", "in welchem raum", "wo wurde", "zuletzt erkannt", "letzter raum"]):

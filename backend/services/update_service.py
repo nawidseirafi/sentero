@@ -110,6 +110,15 @@ class SenteroUpdateService:
         if target_from_app and target_from_app == current_version and stale_state in {"running", "failed", "error"}:
             return self._mark_appliance_success(state, target_from_app, None)
 
+        # Only reconcile with the host updater while an appliance install is
+        # actually in a transitional/error state. A completed host update is
+        # durable history, not the current update-check result. Without this
+        # guard an old successful update (for example 0.3.2) can overwrite a
+        # freshly detected newer release (for example 0.3.3) back to
+        # update_available=False on the next status request.
+        if stale_state not in {"running", "failed", "error"}:
+            return state
+
         try:
             response = self._request_appliance_updater({"action": "status"}, timeout=2.0)
         except Exception:

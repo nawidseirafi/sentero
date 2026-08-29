@@ -80,12 +80,14 @@ export function UpdatePanel({ variant = 'sentero' }: Props) {
 
   const product = status?.product || 'Sentero';
   const uiState = status?.status || status?.state || 'idle';
-  const isRunning = busy === 'install' || uiState === 'running';
-  const isSuccess = uiState === 'success' || uiState === 'completed';
-  const isFailed = uiState === 'failed' || uiState === 'error';
   const updateAvailable = Boolean(status?.update_available);
-  const title = titleForState(uiState, updateAvailable);
-  const text = textForState(product, status, uiState, updateAvailable);
+  const recentSuccess = (uiState === 'success' || uiState === 'completed') && isRecent(status?.install?.finished_at, 10 * 60_000);
+  const displayState = (uiState === 'success' || uiState === 'completed') && !recentSuccess ? 'idle' : uiState;
+  const isRunning = busy === 'install' || displayState === 'running';
+  const isSuccess = recentSuccess;
+  const isFailed = displayState === 'failed' || displayState === 'error';
+  const title = titleForState(displayState, updateAvailable);
+  const text = textForState(product, status, displayState, updateAvailable);
   const rootClass = `panel settings-card update-panel ${variant === 'sentero' ? 'sentero-update-panel' : ''}`;
 
   return (
@@ -108,7 +110,7 @@ export function UpdatePanel({ variant = 'sentero' }: Props) {
       <div className="update-version-grid update-version-grid-simple">
         <VersionItem label="Produkt" value={product} />
         <VersionItem label="Aktuelle Version" value={status?.current_version || '-'} />
-        <VersionItem label="Update-Status" value={statusLabel(uiState, updateAvailable)} />
+        <VersionItem label="Update-Status" value={statusLabel(displayState, updateAvailable)} />
         <VersionItem label="Letzte Pruefung" value={formatDate(status?.last_checked)} />
       </div>
 
@@ -247,3 +249,10 @@ function formatDate(value?: string | null) {
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(date);
 }
+function isRecent(value?: string | null, windowMs = 10 * 60_000) {
+  if (!value) return false;
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) return false;
+  return Date.now() - timestamp >= 0 && Date.now() - timestamp <= windowMs;
+}
+

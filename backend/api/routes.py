@@ -452,6 +452,11 @@ def sentero_auth_reset_password(payload: ResetPasswordPayload):
     return get_services().auth.reset_password(model_data(payload))
 
 
+@router.get("/system/status", tags=[TAG_SYSTEM])
+def sentero_system_status():
+    return get_services().system_status.status()
+
+
 @router.get("/system/update/status", tags=[TAG_SYSTEM])
 def sentero_update_status():
     return get_services().update.status()
