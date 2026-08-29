@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Eye, EyeOff, Lock, RefreshCw } from 'lucide-react';
 import { api, type BoxNetworkStatus, type WifiNetwork } from '@shared/api/client';
+import logo from '../../assets/logo2.png';
 
 type Props = {
   initialStatus?: BoxNetworkStatus | null;
@@ -216,7 +217,7 @@ export function BoxNetworkSetup({ initialStatus = null, onReady }: Props) {
       <style>{styles}</style>
       <div className="sp-wrap">
         <div className="sp-brand">
-          <img src="/sentero-logo.jpg" alt="Sentero" width={40} height={40} />
+          <img src={logo} alt="Sentero" width={40} height={40} />
           <div>
             <h1>WLAN einrichten</h1>
             <p>Verbinde deine Sentero Box mit deinem Heimnetz</p>
