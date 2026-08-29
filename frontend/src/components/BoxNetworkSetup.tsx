@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Eye, EyeOff, Lock, RefreshCw } from 'lucide-react';
 import { api, type BoxNetworkStatus, type WifiNetwork } from '@shared/api/client';
-import logo from '../../assets/logo2.png';
+import logo from '../assets/logo2.png';
 
 type Props = {
   initialStatus?: BoxNetworkStatus | null;
