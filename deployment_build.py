@@ -36,6 +36,18 @@ RELEASE_DIR = UPDATE_DIR / "releases"
 APPLIANCE_DOCKERFILE = ROOT / "docker" / "Dockerfile.appliance"
 VERSION_FILE = ROOT / "version.json"
 
+# Host-side files that are safe and intentional to update in place on an
+# already installed appliance. Runtime/customer state is deliberately absent.
+HOST_UPDATE_PATHS = (
+    ".env.example",
+    "docker-compose.yml",
+    "scripts",
+    "sentero-network",
+    "sentero-updater",
+    "systemd",
+    "zigbee2mqtt/data/configuration.yaml.example",
+)
+
 NEVER_COPY_NAMES = {
     ".env",
     ".venv",
@@ -329,13 +341,17 @@ def create_appliance_update(
     bundle_path = release_dir / bundle_name
     image_tar = release_dir / f"sentero-image-{version}.tar"
     release_json = release_dir / f"release-{version}.json"
+    host_payload_dir = release_dir / f"host-files-{version}"
 
+    host_files = create_host_update_payload(host_payload_dir)
     release_metadata = {
-        "format": 1,
+        "format": 2,
         "product": "Sentero Box",
         "version": version,
         "image": image,
         "image_tar": "sentero-image.tar",
+        "host_payload": "host",
+        "host_files": host_files,
         "created_at": utc_now(),
         "commit": git_commit(),
     }
@@ -356,11 +372,13 @@ def create_appliance_update(
             bundle_path=bundle_path,
             release_json=release_json,
             image_tar=image_tar,
+            host_payload_dir=host_payload_dir,
         )
 
         # Temporary files are not needed after the self-contained ZIP exists.
         release_json.unlink(missing_ok=True)
         image_tar.unlink(missing_ok=True)
+        shutil.rmtree(host_payload_dir, ignore_errors=True)
 
         bundle_sha = file_sha256(bundle_path)
         bundle_size = bundle_path.stat().st_size
@@ -376,6 +394,7 @@ def create_appliance_update(
             f"{base_url}/{channel}/releases/{bundle_name}"
         )
         release_json.unlink(missing_ok=True)
+        shutil.rmtree(host_payload_dir, ignore_errors=True)
 
     notes = release_notes or [f"Sentero {version} Appliance-Release."]
 
@@ -385,7 +404,7 @@ def create_appliance_update(
                 "latest_version": version,
                 "mandatory": bool(mandatory),
                 "release_notes": notes,
-                "layers": ["application"],
+                "layers": ["application", "host"],
                 # Legacy fields stay present for older GUI/parser versions.
                 # The Docker appliance installer intentionally uses the
                 # `appliance` block below instead of modifying container files.
@@ -396,8 +415,9 @@ def create_appliance_update(
                     "bundle_url": bundle_url,
                     "sha256": bundle_sha,
                     "size_bytes": bundle_size,
-                    "format": 1,
+                    "format": 2,
                     "image": image,
+                    "host_payload": True,
                 },
             }
         }
@@ -433,28 +453,66 @@ def create_appliance_update(
         validate_bundle(bundle_path, expected_version=version, expected_image=image)
 
 
+def create_host_update_payload(target_dir: Path) -> list[dict[str, Any]]:
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    files: list[dict[str, Any]] = []
+    for relative in HOST_UPDATE_PATHS:
+        source = BOX_SOURCE_DIR / relative
+        if not source.exists():
+            continue
+        if source.is_dir():
+            candidates = sorted(path for path in source.rglob("*") if path.is_file())
+        else:
+            candidates = [source]
+        for source_file in candidates:
+            rel = source_file.relative_to(BOX_SOURCE_DIR)
+            # Never package runtime/customer state, even if a future directory
+            # is accidentally added to HOST_UPDATE_PATHS. The Zigbee example
+            # is static configuration and is the one intentional data/ path.
+            is_static_zigbee_template = rel.as_posix() == "zigbee2mqtt/data/configuration.yaml.example"
+            if not is_static_zigbee_template and any(part in NEVER_COPY_NAMES for part in rel.parts):
+                continue
+            if source_file.suffix in NEVER_COPY_SUFFIXES:
+                continue
+            destination = target_dir / rel
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_file, destination)
+            mode = source_file.stat().st_mode & 0o777
+            if rel.parts and rel.parts[0] == "scripts" and source_file.suffix == ".sh":
+                mode |= 0o111
+                destination.chmod(mode)
+            if rel.parts and rel.parts[0] in {"sentero-network", "sentero-updater"} and source_file.suffix == ".py":
+                mode |= 0o111
+                destination.chmod(mode)
+            files.append({
+                "path": rel.as_posix(),
+                "sha256": file_sha256(destination),
+                "mode": mode,
+            })
+    return files
+
+
 def create_release_zip(
     *,
     bundle_path: Path,
     release_json: Path,
     image_tar: Path,
+    host_payload_dir: Path,
 ) -> None:
     if bundle_path.exists():
         bundle_path.unlink()
 
     # ZIP_STORED for the Docker tar avoids wasting large amounts of CPU trying
-    # to recompress already-compressed image layers.
+    # to recompress already-compressed image layers. Host files stay deflated.
     with zipfile.ZipFile(bundle_path, "w") as archive:
-        archive.write(
-            release_json,
-            "release.json",
-            compress_type=zipfile.ZIP_DEFLATED,
-        )
-        archive.write(
-            image_tar,
-            "sentero-image.tar",
-            compress_type=zipfile.ZIP_STORED,
-        )
+        archive.write(release_json, "release.json", compress_type=zipfile.ZIP_DEFLATED)
+        archive.write(image_tar, "sentero-image.tar", compress_type=zipfile.ZIP_STORED)
+        for source in sorted(path for path in host_payload_dir.rglob("*") if path.is_file()):
+            rel = source.relative_to(host_payload_dir).as_posix()
+            archive.write(source, f"host/{rel}", compress_type=zipfile.ZIP_DEFLATED)
 
 
 def validate_bundle(
@@ -472,6 +530,13 @@ def validate_bundle(
                 f"Invalid appliance bundle; missing: {', '.join(sorted(missing))}"
             )
         release = json.loads(archive.read("release.json").decode("utf-8"))
+        host_files = release.get("host_files") or []
+        for item in host_files:
+            if not isinstance(item, dict) or not item.get("path"):
+                raise SystemExit("Release ZIP contains invalid host file metadata.")
+            member = f"host/{item['path']}"
+            if member not in names:
+                raise SystemExit(f"Release ZIP is missing host file: {item['path']}")
 
     if release.get("version") != expected_version:
         raise SystemExit("Release ZIP version does not match requested version.")

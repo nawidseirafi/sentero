@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import time
 from typing import Any
 
 from backend.config import config_int, config_str, config_value
@@ -11,7 +12,6 @@ from backend.services.device_mapping_service import DeviceMappingService, now
 from backend.services.network.access_point_service import AccessPointService
 from backend.services.network.cellular_service import CellularService
 from backend.services.network.connectivity_service import ConnectivityService
-from backend.services.network.host_client import HostNetworkClient
 from backend.services.network.models import (
     CellularStatus,
     ConnectionType,
@@ -44,9 +44,10 @@ class NetworkService:
         self.access_point = access_point or AccessPointService(self.secret_store)
         self.cellular = cellular or CellularService()
         self.connectivity = connectivity or ConnectivityService()
-        self.host = HostNetworkClient()
         self._failure_count = 0
         self._recovery_count = 0
+        self._host_status_cache: dict[str, Any] | None = None
+        self._host_status_cached_at = 0.0
         self.ensure_schema()
 
     def ensure_schema(self) -> None:
@@ -102,38 +103,50 @@ class NetworkService:
         password = str(payload.get("password") or "")
         if not ssid:
             raise ValueError("Bitte wählen Sie ein WLAN aus.")
+        if not password:
+            raise ValueError("Bitte geben Sie das WLAN-Passwort ein.")
         if self.mode() == "disabled":
-            if not password:
-                raise ValueError("Bitte geben Sie das WLAN-Passwort ein.")
             self.secret_store.set("wifi", {"ssid": ssid, "password": password})
             self._persist_wifi(ssid, configured=True)
             self._set_active_connection(ConnectionType.WIFI)
             self.stop_setup_ap(mark_setup_complete=True)
             self._event("wifi_connected", ConnectionType.WIFI, True, reason="development_mode")
             return {"ok": True, "applied": False, "message": "Development-Modus: WLAN-Daten gespeichert, keine Netzwerkänderung ausgeführt.", "status": self.status()}
-
-        # Appliance mode delegates the actual NIC switch to the Debian host.
-        # The host agent restores the setup AP automatically when WiFi fails.
         result = self.wifi.connect(ssid, password)
         if not result.get("ok"):
             self._event("wifi_lost", ConnectionType.WIFI, False, reason="connect_failed")
-            return {"ok": False, "applied": True, "message": result.get("message") or "WLAN konnte nicht verbunden werden.", "status": self.status()}
+            return {"ok": False, "applied": False, "message": result.get("message") or "WLAN konnte nicht verbunden werden.", "status": self.status()}
 
-        if self.host.available():
-            try:
-                host_status = self.host.request("status")
-                if not host_status.get("network_ready"):
-                    self._event("wifi_lost", ConnectionType.WIFI, False, reason="internet_unreachable")
-                    return {"ok": False, "applied": True, "message": "WLAN ist verbunden, aber das Internet ist nicht erreichbar. Das Setup-WLAN wurde wieder gestartet.", "status": self.status()}
-            except Exception:
-                logger.exception("Host status after WiFi connect failed", extra={"component": "network", "ssid": ssid})
+        # On the appliance the privileged host agent already verified a real
+        # Wi-Fi client connection plus DHCP address. Do not reject that local
+        # network merely because an Internet probe is blocked or still slow.
+        host_status = result.get("status") if isinstance(result.get("status"), dict) else None
+        if host_status is not None:
+            wifi_local_ready = bool(host_status.get("wifi_active") and host_status.get("wifi_ip_address"))
+            internet_reachable = bool(host_status.get("internet_reachable"))
+        else:
+            check = self.connectivity.check(ConnectionType.WIFI)
+            wifi_local_ready = check.status in {
+                NetworkStatusCode.ONLINE_WIFI,
+                NetworkStatusCode.LOCAL_ONLY,
+                NetworkStatusCode.DEGRADED,
+            }
+            internet_reachable = bool(check.internet)
+
+        if not wifi_local_ready:
+            self._event("wifi_lost", ConnectionType.WIFI, False, reason="local_network_unavailable")
+            return {"ok": False, "applied": True, "message": "WLAN konnte keine lokale Netzwerkadresse beziehen.", "status": self.status()}
 
         self.secret_store.set("wifi", {"ssid": ssid, "password": password})
         self._persist_wifi(ssid, configured=True)
-        self._set_active_connection(ConnectionType.WIFI)
-        self._set_setup_ap(False, setup_completed=True)
+        # Ethernet remains the preferred active path when it is present. The
+        # host status is authoritative for the current physical connection.
+        if not (host_status and host_status.get("ethernet_active")):
+            self._set_active_connection(ConnectionType.WIFI)
+        self.stop_setup_ap(mark_setup_complete=True)
         self._event("wifi_connected", ConnectionType.WIFI, True)
-        return {"ok": True, "applied": True, "message": "Sentero ist mit dem Internet verbunden.", "status": self.status()}
+        message = "WLAN ist verbunden." if internet_reachable else "WLAN ist lokal verbunden. Internet ist derzeit noch nicht erreichbar."
+        return {"ok": True, "applied": True, "message": message, "status": self.status()}
 
     def test_wifi(self) -> dict[str, Any]:
         check = self.connectivity.check(ConnectionType.WIFI)
@@ -188,8 +201,16 @@ class NetworkService:
         status = self._status()
         if self.mode() == "force":
             return self.start_setup_ap(reason="force")
-        if self.mode() == "auto" and not status.network_ready and not status.setup_ap_active:
-            return self.start_setup_ap(reason="first_boot")
+        if self.mode() == "auto":
+            # LAN or a saved Wi-Fi client with a local IPv4 address means the
+            # box is already provisioned enough to be reached locally. Never
+            # expose the setup AP automatically in that state.
+            if status.network_ready:
+                if status.setup_ap_active:
+                    return self.stop_setup_ap(mark_setup_complete=True)
+                return {"ok": True, "message": "Lokales Netzwerk vorhanden; Setup-WLAN bleibt aus.", "status": status.public()}
+            if not status.setup_ap_active:
+                return self.start_setup_ap(reason="first_boot")
         return {"ok": True, "message": "Keine Setup-Änderung nötig.", "status": status.public()}
 
     def failover_test(self, checks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -221,6 +242,22 @@ class NetworkService:
         config = self.failover_config()
         status = self._status()
         actions: list[str] = []
+
+        # Keep onboarding synchronized with actual local reachability, not with
+        # Internet availability. This also handles a customer plugging/unplugging
+        # Ethernet while the box is already running.
+        if self.mode() == "auto":
+            if status.network_ready and status.setup_ap_active:
+                result = self.stop_setup_ap(mark_setup_complete=True)
+                if result.get("ok"):
+                    actions.append("setup_ap_stopped_local_network_ready")
+                status = self._status()
+            elif not status.network_ready and not status.setup_ap_active:
+                result = self.start_setup_ap(reason="local_network_lost")
+                if result.get("ok"):
+                    actions.append("setup_ap_started_local_network_lost")
+                status = self._status()
+
         if not config.enabled:
             return {"ok": True, "actions": actions, "status": status.public()}
 
@@ -262,17 +299,11 @@ class NetworkService:
     def legacy_status(self) -> dict[str, Any]:
         status = self._status()
         data = status.public()
-        host_status: dict[str, Any] = {}
-        if self.mode() != "disabled" and self.host.available():
-            try:
-                host_status = self.host.request("status")
-            except Exception:
-                logger.exception("Host network status unavailable", extra={"component": "network"})
+        host = self._host_status()
         data.update({
             "mode": self.mode(),
-            "ip_address": host_status.get("ip_address") or local_ip_address(),
-            "setup_ap_ssid": host_status.get("setup_ap_ssid") or self.access_point.setup_ssid(),
-            "setup_url": "http://192.168.50.1:8080",
+            "ip_address": host.get("ip_address") if host else local_ip_address(),
+            "setup_ap_ssid": host.get("setup_ap_ssid") if host else self.access_point.setup_ssid(),
         })
         return data
 
@@ -285,71 +316,96 @@ class NetworkService:
             return {"wifi_ssid": data.get("wifi_ssid") or "", "wifi_password_set": configured and bool(self.secret_store.get("wifi").get("password")), "configured": configured}
         return data
 
+    def _host_status(self) -> dict[str, Any] | None:
+        host = getattr(self.wifi, "host", None)
+        if host is None or not host.available():
+            return None
+
+        now_monotonic = time.monotonic()
+        # Settings and onboarding can request network state several times during
+        # one render. Do not execute the privileged nmcli/iw status pipeline for
+        # every API call. A few seconds of cache is more than enough for UI use.
+        if self._host_status_cache is not None and now_monotonic - self._host_status_cached_at < 5.0:
+            return self._host_status_cache
+        try:
+            result = host.request("status", timeout=2.5)
+            if isinstance(result, dict) and result.get("ok"):
+                self._host_status_cache = result
+                self._host_status_cached_at = now_monotonic
+                return result
+        except Exception:
+            # Old host agents may spend many seconds in an active Internet
+            # connectivity probe. Never let that stall normal page navigation;
+            # return the last known good local state instead.
+            logger.warning("Host network status timed out; using cached state", extra={"component": "network"})
+        return self._host_status_cache
+
     def _status(self) -> NetworkStatus:
         settings = self.settings(public=False)
-
-        # In appliance mode the real NICs belong to the Debian host, not the
-        # Docker container. Read their state from the privileged host agent.
-        if self.mode() != "disabled" and self.host.available():
-            try:
-                host = self.host.request("status")
-                active_raw = str(host.get("active_connection") or "none")
-                try:
-                    active = ConnectionType(active_raw)
-                except ValueError:
-                    active = ConnectionType.NONE
-                internet = bool(host.get("internet_reachable"))
-                ready = bool(host.get("network_ready"))
-                if ready and active == ConnectionType.ETHERNET:
-                    status_code = NetworkStatusCode.ONLINE_ETHERNET
-                elif ready and active == ConnectionType.WIFI:
-                    status_code = NetworkStatusCode.ONLINE_WIFI
-                elif active != ConnectionType.NONE:
-                    status_code = NetworkStatusCode.LOCAL_ONLY
-                else:
-                    status_code = NetworkStatusCode.OFFLINE
-                cellular = self.cellular.status()
-                capabilities_raw = host.get("capabilities") or {}
-                capabilities = NetworkCapabilities(
-                    ethernet=bool(capabilities_raw.get("ethernet", True)),
-                    wifi=bool(capabilities_raw.get("wifi")),
-                    wifi_ap=bool(capabilities_raw.get("wifi_ap")),
-                    cellular=cellular.available,
-                )
-                return NetworkStatus(
-                    status=status_code,
-                    active_connection=active,
-                    network_ready=ready,
-                    internet_reachable=internet,
-                    ethernet_active=bool(host.get("ethernet_active")),
-                    wifi_active=bool(host.get("wifi_active")),
-                    cellular_active=False,
-                    setup_ap_active=bool(host.get("setup_ap_active")),
-                    wifi_configured=bool(settings.get("wifi_configured")) or active == ConnectionType.WIFI,
-                    cellular=cellular,
-                    capabilities=capabilities,
-                    hostname=self.hostname(),
-                    local_url=f"http://{self.hostname()}.local:8080",
-                    customer_message=customer_message(status_code, active, cellular),
-                    diagnostics={"host_network": host, "failover": self.failover_config().__dict__},
-                )
-            except Exception:
-                logger.exception("Host network status failed", extra={"component": "network"})
-
-        active = self._active_connection()
         cellular = self.cellular.status()
         capabilities = self._capabilities(cellular=cellular)
+        host = self._host_status()
+
+        if host is not None:
+            raw_active = str(host.get("active_connection") or "none")
+            try:
+                active = ConnectionType(raw_active)
+            except ValueError:
+                active = ConnectionType.NONE
+            network_ready = bool(host.get("network_ready"))
+            internet = bool(host.get("internet_reachable"))
+            ethernet_active = bool(host.get("ethernet_active"))
+            wifi_active = bool(host.get("wifi_active"))
+            cellular_active = active == ConnectionType.CELLULAR and cellular.connected
+            setup_ap = bool(host.get("setup_ap_active"))
+
+            if not network_ready:
+                status_code = NetworkStatusCode.OFFLINE
+            elif not internet:
+                status_code = NetworkStatusCode.LOCAL_ONLY
+            else:
+                status_code = {
+                    ConnectionType.ETHERNET: NetworkStatusCode.ONLINE_ETHERNET,
+                    ConnectionType.WIFI: NetworkStatusCode.ONLINE_WIFI,
+                    ConnectionType.CELLULAR: NetworkStatusCode.ONLINE_CELLULAR,
+                }.get(active, NetworkStatusCode.DEGRADED)
+
+            return NetworkStatus(
+                status=status_code,
+                active_connection=active,
+                network_ready=network_ready,
+                internet_reachable=internet,
+                ethernet_active=ethernet_active,
+                wifi_active=wifi_active,
+                cellular_active=cellular_active,
+                setup_ap_active=setup_ap,
+                wifi_configured=bool(settings.get("wifi_configured")),
+                cellular=cellular,
+                capabilities=capabilities,
+                hostname=self.hostname(),
+                local_url=f"http://{self.hostname()}.local",
+                customer_message=customer_message(status_code, active, cellular),
+                diagnostics={
+                    "host": host,
+                    "failover": self.failover_config().__dict__,
+                    "default_route": active.value,
+                },
+            )
+
+        # Development/non-appliance fallback: keep the existing connectivity
+        # probes, but local-only connections still count as network-ready.
+        active = self._active_connection()
         check = self.connectivity.check(active)
         setup_ap = bool(settings.get("setup_ap_active"))
         if self.mode() == "force":
             setup_ap = True
-        ethernet_active = active == ConnectionType.ETHERNET and check.internet
-        wifi_active = active == ConnectionType.WIFI and check.internet
-        cellular_active = active == ConnectionType.CELLULAR and (cellular.connected or check.internet)
-        network_ready = check.internet and active != ConnectionType.NONE
-        status = check.status if network_ready or check.status in {NetworkStatusCode.LOCAL_ONLY, NetworkStatusCode.DEGRADED} else NetworkStatusCode.OFFLINE
+        network_ready = active != ConnectionType.NONE and check.link
+        ethernet_active = active == ConnectionType.ETHERNET and network_ready
+        wifi_active = active == ConnectionType.WIFI and network_ready
+        cellular_active = active == ConnectionType.CELLULAR and (cellular.connected or network_ready)
+        status_code = check.status if network_ready else NetworkStatusCode.OFFLINE
         return NetworkStatus(
-            status=status,
+            status=status_code,
             active_connection=active,
             network_ready=network_ready,
             internet_reachable=check.internet,
@@ -361,9 +417,13 @@ class NetworkService:
             cellular=cellular,
             capabilities=capabilities,
             hostname=self.hostname(),
-            local_url=f"http://{self.hostname()}.local:8080",
-            customer_message=customer_message(status, active, cellular),
-            diagnostics={"connectivity": check.public(), "failover": self.failover_config().__dict__, "default_route": active.value},
+            local_url=f"http://{self.hostname()}.local",
+            customer_message=customer_message(status_code, active, cellular),
+            diagnostics={
+                "connectivity": check.public(),
+                "failover": self.failover_config().__dict__,
+                "default_route": active.value,
+            },
         )
 
     def _capabilities(self, cellular: CellularStatus | None = None) -> NetworkCapabilities:
@@ -375,12 +435,19 @@ class NetworkService:
         )
 
     def _preferred_available_connection(self) -> ConnectionType:
+        host = self._host_status()
+        if host:
+            if host.get("ethernet_active"):
+                return ConnectionType.ETHERNET
+            if host.get("wifi_active"):
+                return ConnectionType.WIFI
+            return ConnectionType.NONE
         ethernet = self.connectivity.check(ConnectionType.ETHERNET)
-        if ethernet.status == NetworkStatusCode.ONLINE_ETHERNET:
+        if ethernet.status in {NetworkStatusCode.ONLINE_ETHERNET, NetworkStatusCode.LOCAL_ONLY, NetworkStatusCode.DEGRADED}:
             return ConnectionType.ETHERNET
         if self.settings(public=True).get("configured"):
             wifi = self.connectivity.check(ConnectionType.WIFI)
-            if wifi.status == NetworkStatusCode.ONLINE_WIFI:
+            if wifi.status in {NetworkStatusCode.ONLINE_WIFI, NetworkStatusCode.LOCAL_ONLY, NetworkStatusCode.DEGRADED}:
                 return ConnectionType.WIFI
         return ConnectionType.NONE
 
@@ -437,11 +504,14 @@ def customer_message(status: NetworkStatusCode, connection: ConnectionType, cell
             signal = " Signal: Gut." if cellular.signal_percent >= 60 else " Signal: Schwach."
         return f"Internet verbunden. Sentero verwendet momentan Mobilfunk.{signal}".strip()
     if status in {NetworkStatusCode.ONLINE_WIFI, NetworkStatusCode.ONLINE_ETHERNET}:
-        via = "WLAN" if connection == ConnectionType.WIFI else "Ethernet"
-        return f"Internet verbunden. Über {via}."
+        via = "WLAN" if connection == ConnectionType.WIFI else "LAN"
+        return f"Lokales Netzwerk und Internet verbunden. Über {via}."
+    if status == NetworkStatusCode.LOCAL_ONLY:
+        via = "WLAN" if connection == ConnectionType.WIFI else "LAN" if connection == ConnectionType.ETHERNET else "Netzwerk"
+        return f"Lokales Netzwerk verbunden über {via}. Internet ist derzeit nicht erreichbar."
     if status == NetworkStatusCode.DEGRADED:
-        return "Internet teilweise verbunden. Benachrichtigungen können verzögert sein."
-    return "Internet nicht verbunden. Sentero überwacht weiterhin lokal. Benachrichtigungen werden später versendet."
+        return "Lokales Netzwerk verbunden. Internet teilweise erreichbar; Benachrichtigungen können verzögert sein."
+    return "Keine lokale Netzwerkverbindung. Die Netzwerkeinrichtung ist verfügbar."
 
 
 def local_ip_address() -> str | None:

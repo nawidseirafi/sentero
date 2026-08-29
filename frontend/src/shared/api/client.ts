@@ -338,6 +338,8 @@ export type SenteroSensorManagerStatus = {
 
 export type BoxNetworkStatus = {
   mode: 'disabled' | 'auto' | 'force' | string;
+  status?: 'OFFLINE' | 'LOCAL_ONLY' | 'ONLINE_ETHERNET' | 'ONLINE_WIFI' | 'ONLINE_CELLULAR' | 'DEGRADED' | string;
+  active_connection?: 'ethernet' | 'wifi' | 'cellular' | 'none' | string;
   network_ready: boolean;
   ethernet_active: boolean;
   wifi_active: boolean;

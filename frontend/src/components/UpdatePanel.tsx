@@ -20,6 +20,24 @@ export function UpdatePanel({ variant = 'sentero' }: Props) {
     }
   };
 
+  const waitForUpdateResult = async () => {
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+      try {
+        const next = await api.senteroUpdateStatus();
+        setStatus(next);
+        const nextState = next.status || next.state || 'idle';
+        if (nextState === 'success' || nextState === 'completed') return true;
+        if (nextState === 'failed' || nextState === 'error') return false;
+      } catch {
+        // A short connection loss is expected while the appliance container
+        // is replaced. Keep waiting until the new Sentero process is online.
+      }
+    }
+    return null;
+  };
+
   useEffect(() => {
     void load();
   }, []);
@@ -41,11 +59,20 @@ export function UpdatePanel({ variant = 'sentero' }: Props) {
     setBusy('install');
     setError('');
     try {
-      const result = await api.senteroInstallUpdate();
-      setStatus(result);
-      await load();
-    } catch {
-      setError('Das Update konnte nicht vollstaendig installiert werden. Bitte versuchen Sie es erneut oder kontaktieren Sie den Support.');
+      try {
+        const result = await api.senteroInstallUpdate();
+        setStatus(result);
+      } catch {
+        // The appliance updater deliberately restarts this very container, so
+        // the initiating HTTP request may vanish even for a successful update.
+      }
+
+      const outcome = await waitForUpdateResult();
+      if (outcome === false) {
+        setError('Das Update konnte nicht vollstaendig installiert werden. Bitte versuchen Sie es erneut oder kontaktieren Sie den Support.');
+      } else if (outcome === null) {
+        setError('Sentero startet nach dem Update noch neu. Bitte laden Sie die Seite in einem Moment erneut.');
+      }
     } finally {
       setBusy('');
     }

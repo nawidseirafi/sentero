@@ -15,10 +15,10 @@ class HostNetworkClient:
     def available(self) -> bool:
         return os.path.exists(self.socket_path)
 
-    def request(self, action: str, **payload: Any) -> dict[str, Any]:
+    def request(self, action: str, *, timeout: float = 3.0, **payload: Any) -> dict[str, Any]:
         request = {"action": action, **payload}
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(60)
+            client.settimeout(timeout)
             client.connect(self.socket_path)
             client.sendall((json.dumps(request) + "\n").encode("utf-8"))
             chunks: list[bytes] = []

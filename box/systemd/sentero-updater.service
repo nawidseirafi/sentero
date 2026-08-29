@@ -1,15 +1,13 @@
 [Unit]
-Description=Sentero host updater
-Requires=docker.service
+Description=Sentero privileged host updater
 After=docker.service network-online.target
-Wants=network-online.target
+Requires=docker.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/sentero/box
 ExecStart=/usr/bin/python3 /opt/sentero/box/sentero-updater/sentero_updater.py
-Restart=always
-RestartSec=5
+Restart=on-failure
+RestartSec=2
 RuntimeDirectory=sentero-updater
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes

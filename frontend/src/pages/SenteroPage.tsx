@@ -1166,7 +1166,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
              <div className="sc-section-title">
             <h2>Netzwerk</h2>
              </div>
-            <p>Prüfen Sie die Internetverbindung der Sentero-Box und richten Sie sie bei Bedarf neu ein.</p>
+            <p>Prüfen Sie die lokale Netzwerk- und Internetverbindung der Sentero-Box oder richten Sie WLAN bei Bedarf neu ein.</p>
           </div>
           <div className="sc-network-sections">
             <div className="sc-network-card">
@@ -1180,12 +1180,19 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                 </span>
               </div>
               <div className="sc-network-facts">
-                <span>Internet: {boxNetworkStatus?.network_ready ? 'Verbunden' : 'Nicht verbunden'}</span>
                 <span>Verbindung: {networkLabel(boxNetworkStatus)}</span>
-                <span>Einrichtung: {boxNetworkStatus?.setup_ap_active ? 'vorübergehend aktiv' : 'geschlossen'}</span>
+                <span>Lokales Netzwerk: {boxNetworkStatus?.network_ready ? 'Verbunden' : 'Nicht verbunden'}</span>
+                <span>Internet: {boxNetworkStatus?.internet_reachable ? 'Verbunden' : 'Nicht erreichbar'}</span>
+                <span>Setup-WLAN: {boxNetworkStatus?.setup_ap_active ? 'Aktiv' : 'Aus'}</span>
               </div>
+              {boxNetworkStatus?.network_ready && !boxNetworkStatus?.internet_reachable && (
+                <p className="sc-network-note">Die Box ist im lokalen Netzwerk erreichbar und arbeitet lokal weiter. Internetdienste und Benachrichtigungen stehen wieder zur Verfügung, sobald die Internetverbindung zurückkehrt.</p>
+              )}
               {!boxNetworkStatus?.network_ready && (
-                <p className="sc-network-note">Sentero überwacht weiterhin lokal. Benachrichtigungen werden versendet, sobald die Verbindung wieder verfügbar ist.</p>
+                <p className="sc-network-note">Keine lokale Netzwerkverbindung. Über „Netzwerk neu einrichten“ kann das Sentero-Setup-WLAN gestartet werden.</p>
+              )}
+              {boxNetworkStatus?.ethernet_active && (
+                <p className="sc-network-note">LAN ist aktiv. Eine WLAN-Konfiguration ist optional und kann als Fallback gespeichert werden.</p>
               )}
               <div className="sc-form-grid">
                 <label>
@@ -1200,7 +1207,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
               <footer className="sc-account-actions">
                 <button className="sc-soft-action primary" type="button" onClick={() => void saveBoxNetwork()}><Save size={18} /> Verbinden</button>
-                <button className="sc-soft-action" type="button" onClick={() => void startNetworkRecovery()}><Wifi size={18} /> Netzwerk neu einrichten</button>
+                {!boxNetworkStatus?.network_ready && (
+                  <button className="sc-soft-action" type="button" onClick={() => void startNetworkRecovery()}><Wifi size={18} /> Setup-WLAN starten</button>
+                )}
               </footer>
             </div>
           </div>
@@ -2687,10 +2696,10 @@ function channelAvailability(channels: SenteroNotificationChannel[]) {
 
 function networkLabel(status: BoxNetworkStatus | null) {
   if (!status?.network_ready) return 'Offline';
-  const value = String((status as unknown as { active_connection?: string }).active_connection || '');
+  const value = String(status.active_connection || '');
   if (value === 'cellular') return 'Mobilfunk';
   if (value === 'wifi') return 'WLAN';
-  if (value === 'ethernet') return 'Ethernet';
+  if (value === 'ethernet') return 'LAN';
   return 'Verbunden';
 }
 

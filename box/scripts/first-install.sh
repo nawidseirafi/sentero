@@ -181,6 +181,9 @@ docker run --rm \
   -v "$PWD/mosquitto/config:/mosquitto/config" \
   eclipse-mosquitto:2 \
   mosquitto_passwd -b -c /mosquitto/config/passwords "$SENTERO_MQTT_USERNAME" "$SENTERO_MQTT_PASSWORD"
+MOSQ_UID="$(docker run --rm --entrypoint sh eclipse-mosquitto:2 -c 'id -u mosquitto')"
+MOSQ_GID="$(docker run --rm --entrypoint sh eclipse-mosquitto:2 -c 'id -g mosquitto')"
+chown "${MOSQ_UID}:${MOSQ_GID}" mosquitto/config/passwords
 chmod 600 mosquitto/config/passwords
 
 echo "[7/10] Host-Dienste installieren ..."
@@ -214,23 +217,64 @@ set_env SENTERO_BOX_HOSTNAME sentero
 set_env SENTERO_NETWORK_SOCKET /run/sentero-network/network.sock
 
 echo "[8/10] Sentero starten ..."
-CONNECTIVITY="$(nmcli -t networking connectivity check 2>/dev/null || true)"
-if [ "$CONNECTIVITY" = "full" ]; then
+export LC_ALL=C
+export LANG=C
+device_global_ipv4() {
+  local dev="$1" ip
+  # Kernel address state is authoritative. NetworkManager may call a perfectly
+  # usable installer-managed Ethernet link "connected (externally)".
+  ip="$(ip -o -4 addr show dev "$dev" scope global 2>/dev/null | awk '$3 == "inet" {split($4,a,"/"); if (a[1] !~ /^169\.254\./) {print a[1]; exit}}')"
+  if [ -n "$ip" ]; then
+    printf '%s\n' "$ip"
+    return 0
+  fi
+  ip="$(nmcli -g IP4.ADDRESS device show "$dev" 2>/dev/null | head -n1 | cut -d/ -f1 || true)"
+  [ -n "$ip" ] && [[ "$ip" != 169.254.* ]] && printf '%s\n' "$ip"
+}
+
+local_network_state() {
+  local dev typ state conn ip
+  while IFS=: read -r dev typ state conn; do
+    [ -n "${dev:-}" ] || continue
+    [ "$conn" != "sentero-setup-ap" ] || continue
+    case "$typ" in
+      ethernet|wifi)
+        ip="$(device_global_ipv4 "$dev" || true)"
+        if [ -n "$ip" ]; then
+          printf '%s|%s|%s\n' "$typ" "$dev" "$ip"
+          return 0
+        fi
+        ;;
+    esac
+  done < <(nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null || true)
+  return 1
+}
+
+NETWORK_STATE=""
+for _ in $(seq 1 20); do
+  NETWORK_STATE="$(local_network_state || true)"
+  [ -n "$NETWORK_STATE" ] && break
+  sleep 1
+done
+
+if [ -n "$NETWORK_STATE" ]; then
+  IFS='|' read -r NETWORK_TYPE NETWORK_DEVICE NETWORK_IP <<<"$NETWORK_STATE"
+  nmcli connection down sentero-setup-ap >/dev/null 2>&1 || true
+  echo "Lokales Netzwerk aktiv (${NETWORK_TYPE}, ${NETWORK_IP}). Setup-WLAN bleibt aus."
   docker compose up -d
 else
-  echo "Noch kein Internet: starte zunächst nur die Sentero-App für die WLAN-Einrichtung."
+  echo "Kein LAN/WLAN mit lokaler IPv4-Adresse: starte zunächst nur die Sentero-App für die Provisionierung."
   docker compose up -d --no-deps sentero
 fi
 
 echo "[9/10] Netzwerk-Onboarding pruefen ..."
-# The backend starts Sentero-Setup-XXXX automatically in setup mode. Give it a
-# few seconds so the final installer output can tell the customer what to do.
+# Only boxes without a usable local LAN/Wi-Fi path should expose the setup AP.
 for _ in $(seq 1 20); do
   AP_SSID="$(nmcli -g 802-11-wireless.ssid connection show sentero-setup-ap 2>/dev/null | head -n1 || true)"
+  [ -n "$NETWORK_STATE" ] && break
   [ -n "$AP_SSID" ] && break
-  [ "$CONNECTIVITY" = "full" ] && break
   sleep 1
- done
+done
 
 echo "[10/10] Healthcheck ..."
 for _ in $(seq 1 60); do
@@ -246,9 +290,10 @@ for _ in $(seq 1 60); do
     else
       echo " Zigbee:   nicht angeschlossen (optional)"
     fi
-    if [ "$CONNECTIVITY" = "full" ]; then
+    if [ -n "$NETWORK_STATE" ]; then
+      echo " Netzwerk: ${NETWORK_TYPE} (${NETWORK_IP})"
       echo " Web:      http://sentero.local:${SENTERO_HTTP_PORT:-8080}"
-      echo " Fallback: http://${IP}:${SENTERO_HTTP_PORT:-8080}"
+      echo " Fallback: http://${NETWORK_IP}:${SENTERO_HTTP_PORT:-8080}"
     else
       AP_SSID="${AP_SSID:-$(nmcli -g 802-11-wireless.ssid connection show sentero-setup-ap 2>/dev/null | head -n1 || true)}"
       echo " Setup-WLAN: ${AP_SSID:-Sentero-Setup-XXXX} (offen, nur waehrend Einrichtung)"

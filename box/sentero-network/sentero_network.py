@@ -17,10 +17,16 @@ SOCKET_PATH = Path("/run/sentero-network/network.sock")
 BOX_DIR = Path("/opt/sentero/box")
 AP_CONNECTION = "sentero-setup-ap"
 AP_ADDRESS = "192.168.50.1/24"
+_WIFI_AP_CACHE: dict[str, Any] = {"device": None, "supported": False, "checked_at": 0.0}
 
 
 def run(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+    env = os.environ.copy()
+    # nmcli state strings are parsed below. Force stable English output even on
+    # German customer systems.
+    env["LC_ALL"] = "C"
+    env["LANG"] = "C"
+    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False, env=env)
 
 
 def wifi_device() -> str | None:
@@ -51,46 +57,123 @@ def connection_rows() -> list[tuple[str, str, str, str]]:
     return rows
 
 
+def device_ipv4(device: str) -> str | None:
+    # Prefer the kernel's actual address state. Debian/NetworkManager may report
+    # installer- or systemd-networkd-managed Ethernet as "connected (externally)".
+    # Such a link is fully usable and must count as local-network readiness even
+    # when NetworkManager does not own the connection profile.
+    result = run(["ip", "-o", "-4", "addr", "show", "dev", device, "scope", "global"], 5)
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        try:
+            idx = parts.index("inet")
+            value = parts[idx + 1]
+        except (ValueError, IndexError):
+            continue
+        ip = value.split("/", 1)[0].strip()
+        if ip and not ip.startswith("169.254."):
+            return ip
+
+    # Fallback for systems where `ip` output is unexpectedly unavailable.
+    result = run(["nmcli", "-g", "IP4.ADDRESS", "device", "show", device], 8)
+    for value in (result.stdout or "").splitlines():
+        value = value.strip()
+        if value:
+            ip = value.split("/", 1)[0]
+            if ip and not ip.startswith("169.254."):
+                return ip
+    return None
+
+
 def connectivity() -> str:
-    result = run(["nmcli", "-t", "networking", "connectivity", "check"], 15)
+    # Do not force NetworkManager's active connectivity probe here. `check` can
+    # block for many seconds when DNS/Internet is slow and this endpoint is read
+    # during normal page navigation. The cached NM connectivity state is enough
+    # for the informational Internet badge and returns immediately.
+    result = run(["nmcli", "-t", "networking", "connectivity"], 3)
     return (result.stdout or "").strip().lower()
+
+
+def wifi_ap_supported(device: str | None) -> bool:
+    if not device:
+        return False
+    now = time.monotonic()
+    if _WIFI_AP_CACHE["device"] == device and now - float(_WIFI_AP_CACHE["checked_at"]) < 300:
+        return bool(_WIFI_AP_CACHE["supported"])
+    iw = run(["iw", "list"], 5)
+    supported = iw.returncode == 0 and "* AP" in iw.stdout
+    _WIFI_AP_CACHE.update({"device": device, "supported": supported, "checked_at": now})
+    return supported
 
 
 def status() -> dict[str, Any]:
     rows = connection_rows()
-    ethernet_active = any(t == "ethernet" and s in {"connected", "connecting"} for _, t, s, _ in rows)
-    wifi_active = any(t == "wifi" and s == "connected" and c != AP_CONNECTION for _, t, s, c in rows)
-    ap_active = any(t == "wifi" and s == "connected" and c == AP_CONNECTION for _, t, s, c in rows)
+
+    ethernet_ip: str | None = None
+    wifi_ip: str | None = None
+    ethernet_device: str | None = None
+    wifi_client_device: str | None = None
+    ap_active = False
+
+    for dev, typ, state, conn in rows:
+        # The setup AP is identified by its dedicated connection name. Do not
+        # depend on the localized/extended NetworkManager state string here.
+        if typ == "wifi" and conn == AP_CONNECTION:
+            if device_ipv4(dev):
+                ap_active = True
+            continue
+
+        # A real global IPv4 address is authoritative. NetworkManager can label
+        # valid installer-managed Ethernet as "connected (externally)", which
+        # previously caused LAN to be ignored because state != "connected".
+        if typ == "ethernet" and ethernet_ip is None:
+            ip = device_ipv4(dev)
+            if ip:
+                ethernet_ip = ip
+                ethernet_device = dev
+        elif typ == "wifi" and wifi_ip is None:
+            ip = device_ipv4(dev)
+            if ip:
+                wifi_ip = ip
+                wifi_client_device = dev
+
+    # Ethernet is deliberately preferred whenever it has a usable local IPv4
+    # address. Wi-Fi may stay configured as a fallback, but onboarding is not
+    # needed while LAN is usable.
+    if ethernet_ip:
+        active = "ethernet"
+        ip = ethernet_ip
+    elif wifi_ip:
+        active = "wifi"
+        ip = wifi_ip
+    else:
+        active = "none"
+        ip = None
+
     con = connectivity()
     internet = con == "full"
-    active = "ethernet" if ethernet_active else "wifi" if wifi_active else "none"
-    ip = None
-    for dev, typ, state, conn in rows:
-        if state == "connected" and ((typ == "ethernet" and ethernet_active) or (typ == "wifi" and wifi_active)):
-            r = run(["nmcli", "-g", "IP4.ADDRESS", "device", "show", dev], 8)
-            value = (r.stdout or "").strip().splitlines()
-            if value:
-                ip = value[0].split("/", 1)[0]
-                break
-    dev = wifi_device()
-    wifi_ap = False
-    if dev:
-        iw = run(["iw", "list"], 8)
-        wifi_ap = iw.returncode == 0 and "* AP" in iw.stdout
+    # Reuse the already-read device rows instead of spawning another nmcli
+    # process for every status request. AP capability is effectively static and
+    # therefore cached for five minutes.
+    dev = next((row[0] for row in rows if row[1] == "wifi"), None)
+    wifi_ap = wifi_ap_supported(dev)
+
     return {
         "ok": True,
         "active_connection": active,
-        # Local network readiness and Internet reachability are deliberately
-        # separate. A valid DHCP/local-LAN connection must never be torn down
-        # merely because NetworkManager's Internet probe is slow, blocked or
-        # reports limited/portal/unknown.
-        "network_ready": active != "none",
+        # A local IPv4 address is the readiness criterion. Internet is a
+        # separate informational state and must never trigger onboarding.
+        "network_ready": ip is not None,
         "internet_reachable": internet,
-        "ethernet_active": ethernet_active,
-        "wifi_active": wifi_active,
+        "ethernet_active": ethernet_ip is not None,
+        "wifi_active": wifi_ip is not None,
         "setup_ap_active": ap_active,
         "setup_ap_ssid": setup_ssid(),
         "ip_address": ip,
+        "ethernet_ip_address": ethernet_ip,
+        "wifi_ip_address": wifi_ip,
+        "ethernet_device": ethernet_device,
+        "wifi_device": wifi_client_device or dev,
         "connectivity": con,
         "capabilities": {"ethernet": True, "wifi": bool(dev), "wifi_ap": bool(dev) and wifi_ap, "cellular": False},
     }
@@ -100,9 +183,6 @@ def scan_wifi() -> dict[str, Any]:
     dev = wifi_device()
     if not dev:
         return {"ok": False, "networks": [], "message": "Kein WLAN-Adapter gefunden."}
-    # Scanning can fail on adapters that cannot scan while operating as AP.
-    # NetworkManager still often returns its cached list, which is sufficient
-    # for onboarding and avoids dropping the setup AP.
     result = run(["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list", "ifname", dev], 20)
     networks: dict[str, dict[str, Any]] = {}
     for row in csv.reader(io.StringIO(result.stdout), delimiter=":", escapechar="\\"):
@@ -123,7 +203,6 @@ def scan_wifi() -> dict[str, Any]:
 
 def stop_setup_ap() -> dict[str, Any]:
     result = run(["nmcli", "connection", "down", AP_CONNECTION], 15)
-    # code 10 / unknown connection is harmless: AP is already down.
     return {"ok": result.returncode in {0, 10}, "active": False, "message": "Setup-WLAN beendet."}
 
 
@@ -141,7 +220,6 @@ def start_setup_ap() -> dict[str, Any]:
     ], 20)
     if result.returncode != 0:
         return {"ok": False, "active": False, "message": "Setup-WLAN konnte nicht konfiguriert werden."}
-    # Temporary open AP: no label/password is required for first onboarding.
     run(["nmcli", "connection", "modify", AP_CONNECTION, "802-11-wireless-security.key-mgmt", ""], 10)
     result = run(["nmcli", "connection", "up", AP_CONNECTION], 30)
     return {
@@ -154,8 +232,6 @@ def start_setup_ap() -> dict[str, Any]:
 
 
 def post_connect_stack() -> None:
-    # After onboarding the box has Internet. Pull/start the remaining appliance
-    # containers without making the browser request wait for large downloads.
     try:
         subprocess.Popen(
             ["/usr/bin/docker", "compose", "up", "-d"],
@@ -174,37 +250,41 @@ def connect_wifi(ssid: str, password: str) -> dict[str, Any]:
     if not dev:
         return {"ok": False, "message": "Kein WLAN-Adapter gefunden."}
 
-    # A single-radio box usually cannot keep AP and client mode active at the
-    # same time. Stop AP only for the connection attempt and restore it when
-    # authentication fails, so the customer is never locked out.
+    # If LAN is already usable, Wi-Fi may still be configured from Settings,
+    # but the box remains reachable over Ethernet while the Wi-Fi profile is
+    # created. The setup AP itself is stopped because the single radio cannot
+    # normally be AP and client at once.
     stop_setup_ap()
     args = ["nmcli", "device", "wifi", "connect", ssid, "ifname", dev]
     if password:
         args.extend(["password", password])
     result = run(args, 60)
     if result.returncode != 0:
-        start_setup_ap()
-        return {"ok": False, "message": "WLAN konnte nicht verbunden werden. Bitte prüfen Sie das Passwort.", "active": False}
+        # Restore onboarding only when no other local path (especially LAN)
+        # keeps the box reachable.
+        current = status()
+        if not current.get("network_ready"):
+            start_setup_ap()
+        return {"ok": False, "message": "WLAN konnte nicht verbunden werden. Bitte prüfen Sie das Passwort.", "active": False, "status": current}
 
-    # Wait only for a real local Wi-Fi connection + DHCP address. Internet
-    # reachability is informational and may legitimately be limited/unknown.
     deadline = time.time() + 30
     current = status()
     while time.time() < deadline:
-        if current.get("wifi_active") and current.get("ip_address"):
+        if current.get("wifi_active") and current.get("wifi_ip_address"):
             break
         time.sleep(1)
         current = status()
 
-    if not (current.get("wifi_active") and current.get("ip_address")):
-        # Authentication/DHCP really failed. Restore the setup AP so the user
-        # can correct SSID/password instead of being locked out.
+    if not (current.get("wifi_active") and current.get("wifi_ip_address")):
         run(["nmcli", "connection", "down", ssid], 10)
-        start_setup_ap()
-        return {"ok": False, "message": "WLAN-Verbindung konnte nicht vollständig hergestellt werden. Das Setup-WLAN wurde wieder gestartet.", "active": False}
+        current = status()
+        if not current.get("network_ready"):
+            start_setup_ap()
+            current = status()
+        return {"ok": False, "message": "WLAN-Verbindung konnte nicht vollständig hergestellt werden.", "active": False, "status": current}
 
     threading.Thread(target=post_connect_stack, daemon=True).start()
-    message = "WLAN ist verbunden." if current.get("internet_reachable") else "WLAN ist verbunden. Internet ist derzeit noch nicht erreichbar."
+    message = "WLAN ist verbunden." if current.get("internet_reachable") else "WLAN ist lokal verbunden. Internet ist derzeit noch nicht erreichbar."
     return {"ok": True, "message": message, "active": True, "status": current}
 
 
