@@ -34,7 +34,7 @@ Während der Setup-AP aktiv ist:
 http://192.168.50.1/setup-wifi-qr.svg
 ```
 
-Die Setup-Oberfläche zeigt den QR-Code dezent unterhalb der WLAN-Eingabe an. Er eignet sich besonders für ein zweites Gerät oder zum Drucken eines Setup-Aufklebers.
+Der QR-Endpunkt bleibt für Diagnose/Support verfügbar. Ab V19 wird der kundenseitige QR primär als individueller physischer Aufkleber beim Installieren erzeugt.
 
 ## Installer
 

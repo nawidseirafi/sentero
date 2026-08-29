@@ -765,8 +765,31 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
     return {"ok": False, "message": f"Unbekannte Aktion: {action}"}
 
 
+def _ensure_physical_setup_label() -> None:
+    """Generate the per-box print label when V19+ host files are present.
+
+    This also runs after normal appliance updates because the host updater
+    restarts sentero-network. It therefore covers existing boxes where
+    first-install.sh is not executed again.
+    """
+    generator = BOX_DIR / "scripts" / "generate-setup-label.py"
+    if not generator.exists():
+        return
+    try:
+        subprocess.run(
+            ["python3", str(generator)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def serve() -> None:
     SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_physical_setup_label()
     _ensure_captive_http_server()
     threading.Thread(target=_captive_maintenance_loop, name="sentero-captive-maintenance", daemon=True).start()
     try:

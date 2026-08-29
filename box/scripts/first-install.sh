@@ -267,6 +267,16 @@ else
   docker compose up -d --no-deps sentero
 fi
 
+echo "[9/10] Setup-Etikett erzeugen ..."
+LABEL_OUTPUT="$(python3 "$BOX_DIR/scripts/generate-setup-label.py" 2>&1 || true)"
+if printf '%s\n' "$LABEL_OUTPUT" | grep -q '^LABEL='; then
+  SETUP_LABEL_PATH="$(printf '%s\n' "$LABEL_OUTPUT" | sed -n 's/^LABEL=//p' | tail -n1)"
+  SETUP_LABEL_SSID="$(printf '%s\n' "$LABEL_OUTPUT" | sed -n 's/^SSID=//p' | tail -n1)"
+  echo "Setup-Aufkleber: ${SETUP_LABEL_PATH} (${SETUP_LABEL_SSID})"
+else
+  echo "WARNUNG: Setup-Aufkleber konnte nicht erzeugt werden: ${LABEL_OUTPUT}" >&2
+fi
+
 echo "[9/10] Netzwerk-Onboarding pruefen ..."
 # Only boxes without a usable local LAN/Wi-Fi path should expose the setup AP.
 for _ in $(seq 1 20); do
@@ -299,7 +309,9 @@ for _ in $(seq 1 60); do
       echo " Setup-WLAN: ${AP_SSID:-Sentero-Setup-XXXX} (offen, nur waehrend Einrichtung)"
       echo " Setup:      http://192.168.50.1:${SENTERO_HTTP_PORT:-8080}"
       echo " Portal:     oeffnet sich auf Handy/Mac normalerweise automatisch"
-      echo " WLAN-QR:    http://192.168.50.1/setup-wifi-qr.svg"
+      if [ -n "${SETUP_LABEL_PATH:-}" ]; then
+        echo " QR-Aufkleber: ${SETUP_LABEL_PATH}"
+      fi
       echo " Danach:     http://sentero.local:${SENTERO_HTTP_PORT:-8080}"
     fi
     echo "============================================================"
