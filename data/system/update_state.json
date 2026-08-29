@@ -1,38 +1,48 @@
 {
   "product": "Sentero",
-  "current_version": "0.1.0",
-  "latest_version": "0.1.1",
-  "status": "check_failed",
-  "state": "check_failed",
-  "last_checked": "2026-08-24T13:42:00+00:00",
+  "current_version": "0.2.8",
+  "latest_version": "0.2.8",
+  "status": "idle",
+  "state": "idle",
+  "last_checked": "2026-08-29T06:21:06+00:00",
   "release_notes": [
-    "Sentero 0.1.1 deployment build."
+    "Sentero Box Update 0.2.8"
   ],
   "steps": [],
-  "message": "Update-Pruefung fehlgeschlagen.",
+  "message": "Ihre Installation ist auf dem neuesten Stand.",
   "version": {
     "edition": "sentero",
-    "app_version": "0.1.0",
-    "version": "0.1.0",
-    "build": "appliance-v2",
-    "commit": "local",
+    "app_version": "0.2.8",
+    "version": "0.2.8",
+    "build": "2026.08.29",
+    "commit": "0d205c4",
     "channel": "stable",
-    "updated_at": null
+    "updated_at": "2026-08-29T05:43:34+00:00"
   },
   "channel": "stable",
   "execution_mode": "appliance",
   "update_server_url": "https://sentero.de/sentero/stable/latest.json",
   "latest": {
-    "latest_version": "0.1.1",
-    "download_url": "https://sentero.de/sentero/stable/releases/sentero-0.1.1.zip",
+    "latest_version": "0.2.8",
+    "download_url": "https://sentero.de/sentero/stable/releases/sentero-box-0.2.8.zip",
+    "sha256": "82e596b69046b3e04b899c13724cbc50595746aa6c04f3869c0d62c43ec4e31b",
+    "size_bytes": 64750465,
     "mandatory": false,
     "release_notes": [
-      "Sentero 0.1.1 deployment build."
+      "Sentero Box Update 0.2.8"
     ],
     "channel": "stable",
     "layers": [
       "application"
-    ]
+    ],
+    "appliance": {
+      "bundle_url": "https://sentero.de/sentero/stable/releases/sentero-box-0.2.8.zip",
+      "sha256": "82e596b69046b3e04b899c13724cbc50595746aa6c04f3869c0d62c43ec4e31b",
+      "size_bytes": 64750465,
+      "format": 1,
+      "image": "sentero/app:0.2.8",
+      "platform": "linux/amd64"
+    }
   },
   "update_available": false,
   "install": {
@@ -43,6 +53,6 @@
     "status": "idle",
     "available": false
   },
-  "last_error": "Expecting value: line 1 column 1 (char 0)",
+  "last_error": null,
   "dev_mode": false
 }
