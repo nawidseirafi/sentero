@@ -93,8 +93,15 @@ const styles = `
   .sp-message { min-height: 18px; margin: 10px 2px 0; color: var(--sp-muted); font-size: 13px; line-height: 1.45; white-space: pre-line; }
   .sp-message.error { color: var(--sp-danger); }
   .sp-message.ok { color: var(--sp-ok); }
+  .sp-quickjoin { display: flex; align-items: center; gap: 14px; margin: 14px 0 2px; padding: 12px; border: 1px solid var(--sp-line); border-radius: var(--sp-radius-sm); background: rgba(255,255,255,.035); }
+  .sp-quickjoin img { width: 74px; height: 74px; border-radius: 9px; background: #fff; padding: 5px; flex-shrink: 0; }
+  .sp-quickjoin-copy { min-width: 0; }
+  .sp-quickjoin-title { margin: 0 0 4px; font-size: 13px; font-weight: 700; color: var(--sp-ink); }
+  .sp-quickjoin-text { margin: 0; font-size: 12px; line-height: 1.45; color: var(--sp-muted); }
+  .sp-quickjoin-ssid { display: block; margin-top: 4px; font-weight: 600; color: var(--sp-accent); overflow-wrap: anywhere; }
   .sp-meta { display: flex; justify-content: space-between; gap: 10px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--sp-line); font-size: 11.5px; color: #6f7b6d; }
   .sp-meta span:last-child { text-align: right; overflow-wrap: anywhere; }
+  @media (max-width: 420px) { .sp-quickjoin img { width: 68px; height: 68px; } }
 `;
 
 function Signal({ value }: { value: number }) {
@@ -318,6 +325,17 @@ export function BoxNetworkSetup({ initialStatus = null, onReady }: Props) {
               {message || status?.message || 'Nach der Einrichtung erreichst du Sentero unter sentero.local:8080.'}
             </p>
           </form>
+
+          {status?.setup_ap_active ? (
+            <div className="sp-quickjoin">
+              <img src="http://192.168.50.1/setup-wifi-qr.svg" alt={`QR-Code für ${apName}`} />
+              <div className="sp-quickjoin-copy">
+                <p className="sp-quickjoin-title">Mit einem weiteren Gerät verbinden</p>
+                <p className="sp-quickjoin-text">QR-Code mit der Kamera scannen. Das Sentero-Setup-WLAN ist offen und benötigt kein Passwort.</p>
+                <span className="sp-quickjoin-ssid">{apName}</span>
+              </div>
+            </div>
+          ) : null}
 
           <div className="sp-meta">
             <span>Sentero Box</span>

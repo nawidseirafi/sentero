@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import http.server
 import io
 import json
 import os
+import shutil
 import socket
 import subprocess
 import threading
@@ -17,6 +19,16 @@ SOCKET_PATH = Path("/run/sentero-network/network.sock")
 BOX_DIR = Path("/opt/sentero/box")
 AP_CONNECTION = "sentero-setup-ap"
 AP_ADDRESS = "192.168.50.1/24"
+AP_IP = "192.168.50.1"
+CAPTIVE_HTTP_PORT = 18080
+CAPTIVE_NFT_TABLE = "sentero_captive"
+CAPTIVE_DNS_DIR = Path("/etc/NetworkManager/dnsmasq-shared.d")
+CAPTIVE_DNS_FILE = CAPTIVE_DNS_DIR / "90-sentero-captive.conf"
+_CAPTIVE_SERVER: http.server.ThreadingHTTPServer | None = None
+_CAPTIVE_THREAD: threading.Thread | None = None
+_CAPTIVE_REDIRECT_DEVICE: str | None = None
+_DIRECT_CAPTIVE_SERVER: http.server.ThreadingHTTPServer | None = None
+_DIRECT_CAPTIVE_THREAD: threading.Thread | None = None
 _WIFI_AP_CACHE: dict[str, Any] = {"device": None, "supported": False, "checked_at": 0.0}
 
 
@@ -169,6 +181,8 @@ def status() -> dict[str, Any]:
         "wifi_active": wifi_ip is not None,
         "setup_ap_active": ap_active,
         "setup_ap_ssid": setup_ssid(),
+        "setup_portal_url": f"http://{AP_IP}:8080",
+        "setup_wifi_qr_url": f"http://{AP_IP}/setup-wifi-qr.svg",
         "ip_address": ip,
         "ethernet_ip_address": ethernet_ip,
         "wifi_ip_address": wifi_ip,
@@ -178,6 +192,316 @@ def status() -> dict[str, Any]:
         "capabilities": {"ethernet": True, "wifi": bool(dev), "wifi_ap": bool(dev) and wifi_ap, "cellular": False},
     }
 
+
+
+def _qr_matrix_v4_l(text: str) -> list[list[bool]]:
+    """Create a standards-compliant QR Code (Version 4, ECC L, byte mode).
+
+    Version 4-L carries up to 80 data codewords, which is far more than the
+    deterministic Sentero setup-WiFi payload. Keeping the encoder fixed makes
+    it small, dependency-free and available even when the box has no Internet.
+    """
+    version = 4
+    size = 17 + version * 4
+    data_codewords = 80
+    ecc_codewords = 20
+
+    raw = text.encode("utf-8")
+    if len(raw) > 78:
+        raise ValueError("QR payload too large")
+
+    bits: list[int] = []
+    def append_bits(value: int, length: int) -> None:
+        for i in range(length - 1, -1, -1):
+            bits.append((value >> i) & 1)
+
+    append_bits(0b0100, 4)  # byte mode
+    append_bits(len(raw), 8)
+    for byte in raw:
+        append_bits(byte, 8)
+    capacity = data_codewords * 8
+    for _ in range(min(4, capacity - len(bits))):
+        bits.append(0)
+    while len(bits) % 8:
+        bits.append(0)
+    data = [sum(bits[i + j] << (7 - j) for j in range(8)) for i in range(0, len(bits), 8)]
+    pad = [0xEC, 0x11]
+    while len(data) < data_codewords:
+        data.append(pad[(len(data) - ((len(bits) + 7) // 8)) & 1])
+
+    # Reed-Solomon over GF(256), primitive polynomial 0x11D.
+    def gf_mul(x: int, y: int) -> int:
+        z = 0
+        for i in range(7, -1, -1):
+            z = (z << 1) ^ ((z >> 7) * 0x11D)
+            if (y >> i) & 1:
+                z ^= x
+        return z & 0xFF
+
+    divisor = [0] * (ecc_codewords - 1) + [1]
+    root = 1
+    for i in range(ecc_codewords):
+        for j in range(ecc_codewords):
+            divisor[j] = gf_mul(divisor[j], root)
+            if j + 1 < ecc_codewords:
+                divisor[j] ^= divisor[j + 1]
+        root = gf_mul(root, 0x02)
+    rem = [0] * ecc_codewords
+    for byte in data:
+        factor = byte ^ rem.pop(0)
+        rem.append(0)
+        for i, coefficient in enumerate(divisor):
+            rem[i] ^= gf_mul(coefficient, factor)
+    codewords = data + rem
+    data_bits = [(byte >> i) & 1 for byte in codewords for i in range(7, -1, -1)]
+
+    modules = [[False] * size for _ in range(size)]
+    function = [[False] * size for _ in range(size)]
+
+    def set_function(row: int, col: int, dark: bool) -> None:
+        if 0 <= row < size and 0 <= col < size:
+            modules[row][col] = dark
+            function[row][col] = True
+
+    def finder(center_row: int, center_col: int) -> None:
+        for dr in range(-4, 5):
+            for dc in range(-4, 5):
+                row, col = center_row + dr, center_col + dc
+                if 0 <= row < size and 0 <= col < size:
+                    dist = max(abs(dr), abs(dc))
+                    set_function(row, col, dist != 2 and dist != 4)
+
+    finder(3, 3)
+    finder(3, size - 4)
+    finder(size - 4, 3)
+    for i in range(8, size - 8):
+        set_function(6, i, i % 2 == 0)
+        set_function(i, 6, i % 2 == 0)
+
+    # Version 4 has alignment centers [6, 26]; only (26,26) is not occupied.
+    for dr in range(-2, 3):
+        for dc in range(-2, 3):
+            set_function(26 + dr, 26 + dc, max(abs(dr), abs(dc)) != 1)
+
+    def format_bits(mask: int) -> None:
+        # Error correction level L is binary 01 in the QR format field.
+        value = (0b01 << 3) | mask
+        remv = value
+        for _ in range(10):
+            remv = (remv << 1) ^ ((remv >> 9) * 0x537)
+        value = ((value << 10) | remv) ^ 0x5412
+        bit = lambda i: ((value >> i) & 1) != 0
+        for i in range(6):
+            set_function(i, 8, bit(i))
+        set_function(7, 8, bit(6))
+        set_function(8, 8, bit(7))
+        set_function(8, 7, bit(8))
+        for i in range(9, 15):
+            set_function(8, 14 - i, bit(i))
+        for i in range(8):
+            set_function(8, size - 1 - i, bit(i))
+        for i in range(8, 15):
+            set_function(size - 15 + i, 8, bit(i))
+        set_function(size - 8, 8, True)
+
+    format_bits(0)
+
+    bit_index = 0
+    upward = True
+    col = size - 1
+    while col >= 1:
+        if col == 6:
+            col -= 1
+        rows = range(size - 1, -1, -1) if upward else range(size)
+        for row in rows:
+            for current_col in (col, col - 1):
+                if function[row][current_col]:
+                    continue
+                dark = bit_index < len(data_bits) and data_bits[bit_index] == 1
+                bit_index += 1
+                # Mask pattern 0.
+                if (row + current_col) % 2 == 0:
+                    dark = not dark
+                modules[row][current_col] = dark
+        upward = not upward
+        col -= 2
+    return modules
+
+
+def setup_wifi_qr_svg() -> bytes:
+    payload = f"WIFI:T:nopass;S:{setup_ssid()};;"
+    matrix = _qr_matrix_v4_l(payload)
+    border = 4
+    size = len(matrix) + border * 2
+    path_parts: list[str] = []
+    for row, line in enumerate(matrix):
+        for col, dark in enumerate(line):
+            if dark:
+                path_parts.append(f"M{col + border},{row + border}h1v1h-1z")
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" '
+        'shape-rendering="crispEdges" role="img" aria-label="Sentero Setup WLAN QR-Code">'
+        '<rect width="100%" height="100%" fill="white"/>'
+        f'<path d="{"".join(path_parts)}" fill="black"/></svg>'
+    )
+    return svg.encode("utf-8")
+
+
+class _CaptiveHandler(http.server.BaseHTTPRequestHandler):
+    server_version = "SenteroCaptive/1.0"
+
+    def do_HEAD(self) -> None:
+        self._respond(send_body=False)
+
+    def do_GET(self) -> None:
+        self._respond(send_body=True)
+
+    def _respond(self, send_body: bool) -> None:
+        path = self.path.split("?", 1)[0]
+        if path == "/setup-wifi-qr.svg":
+            body = setup_wifi_qr_svg()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if send_body:
+                self.wfile.write(body)
+            return
+
+        # Any ordinary HTTP request (including Apple/Android/Windows captive
+        # probes) is deliberately redirected to the existing Sentero setup UI.
+        location = f"http://{AP_IP}:8080/"
+        body = b"Sentero Setup"
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if send_body:
+            self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        return
+
+
+def _ensure_captive_http_server() -> bool:
+    global _CAPTIVE_SERVER, _CAPTIVE_THREAD
+    if _CAPTIVE_SERVER is not None:
+        return True
+    try:
+        server = http.server.ThreadingHTTPServer(("0.0.0.0", CAPTIVE_HTTP_PORT), _CaptiveHandler)
+        server.daemon_threads = True
+    except OSError:
+        return False
+    _CAPTIVE_SERVER = server
+    _CAPTIVE_THREAD = threading.Thread(target=server.serve_forever, name="sentero-captive-http", daemon=True)
+    _CAPTIVE_THREAD.start()
+    return True
+
+
+def _ensure_direct_captive_server() -> bool:
+    """Fallback for systems without nftables: listen directly on AP port 80."""
+    global _DIRECT_CAPTIVE_SERVER, _DIRECT_CAPTIVE_THREAD
+    if _DIRECT_CAPTIVE_SERVER is not None:
+        return True
+    try:
+        server = http.server.ThreadingHTTPServer((AP_IP, 80), _CaptiveHandler)
+        server.daemon_threads = True
+    except OSError:
+        return False
+    _DIRECT_CAPTIVE_SERVER = server
+    _DIRECT_CAPTIVE_THREAD = threading.Thread(target=server.serve_forever, name="sentero-captive-http80", daemon=True)
+    _DIRECT_CAPTIVE_THREAD.start()
+    return True
+
+
+def _stop_direct_captive_server() -> None:
+    global _DIRECT_CAPTIVE_SERVER, _DIRECT_CAPTIVE_THREAD
+    server = _DIRECT_CAPTIVE_SERVER
+    _DIRECT_CAPTIVE_SERVER = None
+    _DIRECT_CAPTIVE_THREAD = None
+    if server is not None:
+        try:
+            server.shutdown()
+            server.server_close()
+        except OSError:
+            pass
+
+
+def _write_captive_dns_config() -> bool:
+    """Make NetworkManager's shared dnsmasq resolve every name to the setup box."""
+    try:
+        CAPTIVE_DNS_DIR.mkdir(parents=True, exist_ok=True)
+        desired = (
+            "# Sentero captive portal; used only by NetworkManager shared connections.\n"
+            f"address=/#/{AP_IP}\n"
+            f"dhcp-option=option:dns-server,{AP_IP}\n"
+        )
+        if not CAPTIVE_DNS_FILE.exists() or CAPTIVE_DNS_FILE.read_text(encoding="utf-8") != desired:
+            CAPTIVE_DNS_FILE.write_text(desired, encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def _remove_captive_dns_config() -> None:
+    try:
+        CAPTIVE_DNS_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _disable_captive_redirect() -> None:
+    global _CAPTIVE_REDIRECT_DEVICE
+    if shutil.which("nft"):
+        run(["nft", "delete", "table", "inet", CAPTIVE_NFT_TABLE], 5)
+    _CAPTIVE_REDIRECT_DEVICE = None
+
+
+def _enable_captive_redirect(device: str) -> bool:
+    """Intercept HTTP only on the setup Wi-Fi and hand it to our redirector."""
+    global _CAPTIVE_REDIRECT_DEVICE
+    if not shutil.which("nft"):
+        return False
+    if _CAPTIVE_REDIRECT_DEVICE == device:
+        return True
+    _disable_captive_redirect()
+    commands = [
+        ["nft", "add", "table", "inet", CAPTIVE_NFT_TABLE],
+        ["nft", "add", "chain", "inet", CAPTIVE_NFT_TABLE, "prerouting",
+         "{", "type", "nat", "hook", "prerouting", "priority", "dstnat", ";", "policy", "accept", ";", "}"],
+        ["nft", "add", "rule", "inet", CAPTIVE_NFT_TABLE, "prerouting",
+         "iifname", device, "tcp", "dport", "80", "redirect", "to", f":{CAPTIVE_HTTP_PORT}"],
+    ]
+    ok = all(run(command, 5).returncode == 0 for command in commands)
+    if ok:
+        _CAPTIVE_REDIRECT_DEVICE = device
+    return ok
+
+
+def _sync_captive_portal() -> None:
+    current = status()
+    if current.get("setup_ap_active"):
+        dev = str(current.get("wifi_device") or wifi_device() or "")
+        _ensure_captive_http_server()
+        if dev:
+            if _enable_captive_redirect(dev):
+                _stop_direct_captive_server()
+            else:
+                _ensure_direct_captive_server()
+    else:
+        _disable_captive_redirect()
+        _stop_direct_captive_server()
+
+
+def _captive_maintenance_loop() -> None:
+    while True:
+        try:
+            _sync_captive_portal()
+        except Exception:
+            pass
+        time.sleep(10)
 
 def scan_wifi() -> dict[str, Any]:
     dev = wifi_device()
@@ -202,6 +526,9 @@ def scan_wifi() -> dict[str, Any]:
 
 
 def stop_setup_ap() -> dict[str, Any]:
+    _disable_captive_redirect()
+    _stop_direct_captive_server()
+    _remove_captive_dns_config()
     result = run(["nmcli", "connection", "down", AP_CONNECTION], 15)
     return {"ok": result.returncode in {0, 10}, "active": False, "message": "Setup-WLAN beendet."}
 
@@ -210,6 +537,12 @@ def start_setup_ap() -> dict[str, Any]:
     dev = wifi_device()
     if not dev:
         return {"ok": False, "active": False, "message": "Kein WLAN-Adapter gefunden."}
+    # The shared-mode dnsmasq reads this directory when the AP is brought up.
+    # Wildcard DNS plus HTTP interception makes Apple/Android/Windows detect a
+    # captive portal and open the setup page automatically.
+    _write_captive_dns_config()
+    _ensure_captive_http_server()
+    _disable_captive_redirect()
     run(["nmcli", "connection", "delete", AP_CONNECTION], 10)
     result = run([
         "nmcli", "connection", "add", "type", "wifi", "ifname", dev,
@@ -222,11 +555,18 @@ def start_setup_ap() -> dict[str, Any]:
         return {"ok": False, "active": False, "message": "Setup-WLAN konnte nicht konfiguriert werden."}
     run(["nmcli", "connection", "modify", AP_CONNECTION, "802-11-wireless-security.key-mgmt", ""], 10)
     result = run(["nmcli", "connection", "up", AP_CONNECTION], 30)
+    captive = False
+    if result.returncode == 0:
+        captive = _enable_captive_redirect(dev)
+        if not captive:
+            captive = _ensure_direct_captive_server()
     return {
         "ok": result.returncode == 0,
         "active": result.returncode == 0,
         "ssid": setup_ssid(),
-        "local_ip_url": "http://192.168.50.1:8080",
+        "local_ip_url": f"http://{AP_IP}:8080",
+        "captive_portal": captive,
+        "wifi_qr_url": f"http://{AP_IP}/setup-wifi-qr.svg",
         "message": "Setup-WLAN gestartet." if result.returncode == 0 else "Setup-WLAN konnte nicht gestartet werden.",
     }
 
@@ -427,6 +767,8 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
 
 def serve() -> None:
     SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_captive_http_server()
+    threading.Thread(target=_captive_maintenance_loop, name="sentero-captive-maintenance", daemon=True).start()
     try:
         SOCKET_PATH.unlink()
     except FileNotFoundError:

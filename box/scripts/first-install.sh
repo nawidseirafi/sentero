@@ -40,7 +40,7 @@ echo "[3/10] Host-Netzwerk, Hotspot und sentero.local vorbereiten ..."
 # NetworkManager owns WiFi/AP changes on the Debian host. The application in
 # Docker talks to a small privileged Unix-socket service instead of running
 # nmcli inside the container.
-NEEDED_PACKAGES=(network-manager iw dnsmasq-base avahi-daemon gettext-base python3)
+NEEDED_PACKAGES=(network-manager iw dnsmasq-base nftables avahi-daemon gettext-base python3)
 MISSING=()
 for pkg in "${NEEDED_PACKAGES[@]}"; do
   dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || MISSING+=("$pkg")
@@ -298,6 +298,8 @@ for _ in $(seq 1 60); do
       AP_SSID="${AP_SSID:-$(nmcli -g 802-11-wireless.ssid connection show sentero-setup-ap 2>/dev/null | head -n1 || true)}"
       echo " Setup-WLAN: ${AP_SSID:-Sentero-Setup-XXXX} (offen, nur waehrend Einrichtung)"
       echo " Setup:      http://192.168.50.1:${SENTERO_HTTP_PORT:-8080}"
+      echo " Portal:     oeffnet sich auf Handy/Mac normalerweise automatisch"
+      echo " WLAN-QR:    http://192.168.50.1/setup-wifi-qr.svg"
       echo " Danach:     http://sentero.local:${SENTERO_HTTP_PORT:-8080}"
     fi
     echo "============================================================"
