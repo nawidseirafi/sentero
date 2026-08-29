@@ -12,6 +12,7 @@ Restart=always
 RestartSec=5
 RuntimeDirectory=sentero-updater
 RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
 
 [Install]
 WantedBy=multi-user.target

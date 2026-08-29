@@ -1,0 +1,40 @@
+SENTERO BOX - EINFACHE ERSTINSTALLATION
+=======================================
+
+Build auf dem Mac:
+  python3 deployment_build.py --version 0.2.9 --base-url https://sentero.de/sentero --channel stable
+
+Der Builder erzeugt danach ein selbststaendiges Kundenpaket:
+  build/sentero-box/
+
+Wichtig: Darin liegt jetzt automatisch:
+  build/sentero-box/sentero-image.tar
+
+Kompletten Ordner auf die frisch installierte Debian-13-amd64-Box kopieren:
+  scp -r build/sentero-box root@BOX-IP:/root/
+
+Dann auf der Box nur noch:
+  cd /root/sentero-box
+  ./scripts/first-install.sh
+
+Das Skript:
+- kopiert sich nach /opt/sentero/box
+- installiert Docker bei Bedarf
+- erzeugt .env
+- erzeugt ein MQTT-Passwort
+- erkennt den Zigbee-Adapter soweit moeglich
+- laedt sentero-image.tar
+- prueft linux/amd64
+- installiert Host-Updater und systemd-Dienste
+- startet Docker Compose
+- wartet auf den Sentero-Healthcheck
+
+Hinweis:
+Der Standard-Zigbee-Typ ist "ember". Bei anderer Hardware in .env vor dem erneuten Lauf
+ZIGBEE_ADAPTER_TYPE entsprechend anpassen.
+
+mDNS / sentero.local:
+- first-install.sh installiert und aktiviert avahi-daemon.
+- Der Hostname wird auf "sentero" gesetzt.
+- Danach ist die Weboberflaeche im LAN unter http://sentero.local:8080 erreichbar.
+- Die IP-Adresse bleibt als Fallback nutzbar.

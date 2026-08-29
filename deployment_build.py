@@ -176,6 +176,8 @@ def main() -> int:
     print(f"Target platform: {platform}")
     if not args.no_box:
         print(f"Initial box:     {BOX_TARGET_DIR}")
+        if not args.no_update and not args.skip_docker_save:
+            print(f"Initial image:   {BOX_TARGET_DIR / 'sentero-image.tar'}")
     if not args.no_update:
         channel_dir = BUILD_DIR / "updates" / "sentero" / args.channel
         print(f"Update files:    {channel_dir}")
@@ -249,7 +251,6 @@ def validate_docker_image_platform(image: str, expected_platform: str) -> None:
         purpose="Docker image platform validation",
         capture_output=True,
     ).strip().lower()
-
     if actual != expected_platform:
         raise SystemExit(
             f"Docker image {image} has platform {actual!r}, "
@@ -358,7 +359,14 @@ def create_appliance_update(
             image_tar=image_tar,
         )
 
-        # Temporary files are not needed after the self-contained ZIP exists.
+        # The initial customer box must be self-contained. A freshly installed
+        # Debian box can therefore be provisioned with only build/sentero-box.
+        if BOX_TARGET_DIR.exists():
+            shutil.copy2(image_tar, BOX_TARGET_DIR / "sentero-image.tar")
+            shutil.copy2(release_json, BOX_TARGET_DIR / "release.json")
+
+        # Temporary release files are not needed after the ZIP and initial box
+        # package have been created.
         release_json.unlink(missing_ok=True)
         image_tar.unlink(missing_ok=True)
 
@@ -563,8 +571,10 @@ def run(
             f"{command[0]!r} is not installed or not in PATH."
         ) from exc
     except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip() if capture_output else ""
+        suffix = f"\n{detail}" if detail else ""
         raise SystemExit(
-            f"{purpose} failed with exit code {exc.returncode}."
+            f"{purpose} failed with exit code {exc.returncode}.{suffix}"
         ) from exc
 
     return result.stdout if capture_output else ""

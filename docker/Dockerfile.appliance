@@ -28,7 +28,13 @@ COPY config ./config
 COPY version.json ./version.json
 COPY --from=frontend-build /src/frontend/dist ./frontend/dist
 
-RUN mkdir -p /app/data \
+# Normalize source permissions inside the Linux image. This prevents restrictive
+# macOS host permissions (for example 0600) from making Python modules unreadable
+# by the unprivileged Sentero runtime user.
+RUN find /app/backend /app/config /app/frontend -type d -exec chmod 755 {} + \
+    && find /app/backend /app/config /app/frontend -type f -exec chmod 644 {} + \
+    && chmod 644 /app/version.json \
+    && mkdir -p /app/data \
     && chown -R 10001:10001 /app/data
 
 USER 10001:10001
