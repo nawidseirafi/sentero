@@ -302,7 +302,7 @@ def overview_page(number: int) -> Image.Image:
         MARGIN_X,
         y,
         "Sicherheitsmeldungen",
-        "Direkte Sicherheitsmeldungen, zum Beispiel ein von einem Rauchmelder gemeldeter Alarm, werden unabhängig von der Verhaltensanalyse behandelt.",
+        "Direkte Sicherheitsmeldungen, zum Beispiel ein von einem Rauchmelder gemeldeter Alarm, werden unabhängig von der Verhaltensanalyse behandelt. Sentero verarbeitet solche Meldungen, ersetzt aber keinen zertifizierten Rauchwarnmelder.",
         W - 2 * MARGIN_X,
     )
     y += 10
@@ -526,7 +526,7 @@ def alerts_page(number: int) -> Image.Image:
     draw_wrapped(
         draw,
         (MARGIN_X + 42, y + 98),
-        "Ein Rauchalarm wird nicht als normale Verhaltensauffälligkeit erklärt. Wenn ein eingerichteter Rauchmelder Rauch meldet, behandelt Sentero diese Meldung als Sicherheitsalarm.",
+        "Ein Rauchalarm wird nicht als normale Verhaltensauffälligkeit erklärt. Wenn ein eingerichteter Rauchmelder Rauch meldet, behandelt Sentero diese Meldung als Sicherheitsalarm. Sentero ersetzt keinen zertifizierten Rauchwarnmelder und keinen Notrufdienst.",
         font(31),
         MUTED,
         W - 2 * MARGIN_X - 84,
