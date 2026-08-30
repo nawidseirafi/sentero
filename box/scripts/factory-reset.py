@@ -192,7 +192,7 @@ def perform_reset() -> None:
                 "completed",
                 finished_at=utc_now(),
                 phase="reboot",
-                preserved=["software", "version", "box_identity", "ethernet", "mqtt_internal_credentials", "qr_label", "ollama_models"],
+                preserved=["software", "version", "box_identity", "device_identity", "ethernet", "mqtt_internal_credentials", "qr_label", "ollama_models"],
                 reset=["sentero_data", "users", "sensors", "automations", "notifications", "zigbee_runtime", "mqtt_runtime", "saved_wifi", "backups"],
             )
         except Exception:

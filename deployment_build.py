@@ -57,6 +57,7 @@ NEVER_COPY_NAMES = {
     ".pytest_cache",
     ".DS_Store",
     "data",
+    "device",
     "backups",
     "build",
     "ollama",
@@ -299,7 +300,9 @@ def create_initial_box(*, version: str, image: str, save_image: bool) -> None:
 
     # Archive/extraction tools do not always preserve executable bits. Make the
     # generated customer package self-contained and directly runnable.
-    for script in (BOX_TARGET_DIR / "scripts").glob("*.sh"):
+    for script in (BOX_TARGET_DIR / "scripts").glob("*"):
+        if script.suffix not in {".sh", ".py"}:
+            continue
         script.chmod(script.stat().st_mode | 0o111)
     for directory in ("sentero-updater", "sentero-network"):
         for script in (BOX_TARGET_DIR / directory).glob("*.py"):
@@ -481,7 +484,7 @@ def create_host_update_payload(target_dir: Path) -> list[dict[str, Any]]:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_file, destination)
             mode = source_file.stat().st_mode & 0o777
-            if rel.parts and rel.parts[0] == "scripts" and source_file.suffix == ".sh":
+            if rel.parts and rel.parts[0] == "scripts" and source_file.suffix in {".sh", ".py"}:
                 mode |= 0o111
                 destination.chmod(mode)
             if rel.parts and rel.parts[0] in {"sentero-network", "sentero-updater"} and source_file.suffix == ".py":

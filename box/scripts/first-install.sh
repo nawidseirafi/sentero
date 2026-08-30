@@ -4,7 +4,7 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Sentero Box one-command first installer.
 # Run as root from the copied build/sentero-box directory:
-#   ./scripts/first-install.sh
+#   ./scripts/first-install.sh --serial STB-00001234
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Bitte als root ausfuehren: sudo ./scripts/first-install.sh" >&2
@@ -13,6 +13,33 @@ fi
 
 SOURCE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET_DIR="/opt/sentero/box"
+SERIAL_NUMBER=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --serial)
+      if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+        echo "FEHLER: --serial benötigt eine Seriennummer im Format STB-XXXXXXXX." >&2
+        exit 2
+      fi
+      SERIAL_NUMBER="$2"
+      shift 2
+      ;;
+    --serial=*)
+      SERIAL_NUMBER="${1#--serial=}"
+      shift
+      ;;
+    -h|--help)
+      echo "Nutzung: sudo ./scripts/first-install.sh [--serial STB-XXXXXXXX]"
+      exit 0
+      ;;
+    *)
+      echo "FEHLER: Unbekannter Parameter: $1" >&2
+      echo "Nutzung: sudo ./scripts/first-install.sh [--serial STB-XXXXXXXX]" >&2
+      exit 2
+      ;;
+  esac
+done
 
 # Make /opt/sentero/box the canonical installation directory. When this script
 # is started from /root/sentero-box or a USB stick, copy the complete package
@@ -20,15 +47,59 @@ TARGET_DIR="/opt/sentero/box"
 if [ "$SOURCE_DIR" != "$TARGET_DIR" ]; then
   echo "[1/10] Sentero nach $TARGET_DIR installieren ..."
   mkdir -p /opt/sentero
+  DEVICE_PRESERVE_DIR=""
+  if [ -d "$TARGET_DIR/device" ]; then
+    DEVICE_PRESERVE_DIR="/opt/sentero/.sentero-device-preserve.$$"
+    rm -rf "$DEVICE_PRESERVE_DIR"
+    cp -a "$TARGET_DIR/device" "$DEVICE_PRESERVE_DIR"
+  fi
   rm -rf "$TARGET_DIR"
   cp -a "$SOURCE_DIR" "$TARGET_DIR"
+  if [ -n "$DEVICE_PRESERVE_DIR" ] && [ -d "$DEVICE_PRESERVE_DIR" ]; then
+    rm -rf "$TARGET_DIR/device"
+    mv "$DEVICE_PRESERVE_DIR" "$TARGET_DIR/device"
+  fi
   find "$TARGET_DIR/scripts" -type f -name "*.sh" -exec chmod +x {} +
+  chmod +x "$TARGET_DIR"/scripts/*.py 2>/dev/null || true
   chmod +x "$TARGET_DIR"/sentero-updater/*.py 2>/dev/null || true
   chmod +x "$TARGET_DIR"/sentero-network/*.py 2>/dev/null || true
+  if [ -n "$SERIAL_NUMBER" ]; then
+    exec "$TARGET_DIR/scripts/first-install.sh" --serial "$SERIAL_NUMBER"
+  fi
   exec "$TARGET_DIR/scripts/first-install.sh"
 fi
 
 cd "$TARGET_DIR"
+
+echo "[1/10] Geräteidentität prüfen ..."
+chmod +x scripts/*.py 2>/dev/null || true
+if [ -n "$SERIAL_NUMBER" ]; then
+  if ! python3 scripts/set-device-identity.py --serial "$SERIAL_NUMBER"; then
+    exit 1
+  fi
+else
+  IDENTITY_CHECK_STATUS=0
+  python3 scripts/sentero_device_identity.py --check-provisioned >/tmp/sentero-identity-check.log 2>&1 || IDENTITY_CHECK_STATUS=$?
+  if [ "$IDENTITY_CHECK_STATUS" -eq 0 ]; then
+    echo "Vorhandene Geräteidentität wird verwendet."
+  elif [ "$IDENTITY_CHECK_STATUS" -eq 1 ]; then
+    echo "FEHLER: Geräteidentität beschädigt." >&2
+    cat /tmp/sentero-identity-check.log >&2 || true
+    exit 1
+  elif [ -t 0 ]; then
+    echo
+    echo "Sentero Box Installation"
+    printf "Seriennummer: "
+    read -r SERIAL_NUMBER
+    if ! python3 scripts/set-device-identity.py --serial "$SERIAL_NUMBER"; then
+      exit 1
+    fi
+  else
+    echo "FEHLER: --serial STB-XXXXXXXX ist erforderlich." >&2
+    echo "Beispiel: sudo ./scripts/first-install.sh --serial STB-00001234" >&2
+    exit 2
+  fi
+fi
 
 echo "[2/10] Docker und Systempakete pruefen ..."
 if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then

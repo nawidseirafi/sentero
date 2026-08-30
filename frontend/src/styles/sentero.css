@@ -6592,11 +6592,83 @@ button:disabled {
 .sc-system-query-note p span { color: var(--sc-text-muted, #7a828d); font-size: .82rem; }
 .sc-system-query-note code { font-family: inherit; font-weight: 650; padding: 1px 5px; border-radius: 5px; background: rgba(120, 128, 140, .08); }
 .sc-system-status-placeholder { grid-column: 1 / -1; padding: 24px; text-align: center; color: var(--sc-text-muted, #7a828d); }
+.sc-device-identity {
+  border-top: 1px solid rgba(120, 128, 140, .12);
+  padding: 12px 0 0;
+  margin: -2px 0 14px;
+}
+.sc-device-identity h3 {
+  margin: 0;
+  color: var(--sc-text-muted, #7a828d);
+  font-size: .78rem;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+.sc-device-identity-grid {
+  display: grid;
+  grid-template-columns: minmax(112px, .65fr) minmax(0, 2fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 8px;
+}
+.sc-device-identity-grid p {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  min-width: 0;
+}
+.sc-device-identity-grid span,
+.sc-device-identity-legacy {
+  color: var(--sc-text-muted, #7a828d);
+  font-size: .76rem;
+}
+.sc-device-identity-grid strong {
+  font-size: .86rem;
+  font-weight: 620;
+  min-width: 0;
+}
+.sc-device-identity-grid p:first-child strong {
+  font-size: .94rem;
+  font-weight: 760;
+}
+.sc-device-id-value {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+.sc-device-copy-button {
+  min-height: 28px;
+  border: 1px solid rgba(120, 128, 140, .16);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--sc-text-muted, #7a828d);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: center;
+  padding: 0 8px;
+  font-size: .76rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+.sc-device-copy-button:hover { background: rgba(120, 128, 140, .08); }
+.sc-device-copy-button:focus-visible {
+  outline: 2px solid rgba(47, 166, 106, .42);
+  outline-offset: 2px;
+}
+.sc-device-identity-error {
+  margin: 8px 0 0;
+  color: #a63d3d;
+  font-size: .8rem;
+  font-weight: 650;
+}
+.sc-device-identity-legacy { margin: 8px 0 0; }
 @media (max-width: 760px) {
   .sc-system-heading { flex-direction: column; }
   .sc-system-summary { white-space: normal; }
   .sc-service-status-grid { grid-template-columns: 1fr; }
   .sc-system-soft-facts { grid-template-columns: 1fr; }
+  .sc-device-identity-grid { grid-template-columns: 1fr; align-items: stretch; }
+  .sc-device-copy-button { justify-self: start; max-width: 100%; }
 }
 
 /* v17: compact system health accordion */

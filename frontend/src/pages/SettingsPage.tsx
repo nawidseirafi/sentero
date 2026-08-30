@@ -62,6 +62,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [systemStatus, setSystemStatus] = useState<SenteroSystemStatus | null>(null);
   const [systemStatusLoading, setSystemStatusLoading] = useState(false);
   const [systemHealthOpen, setSystemHealthOpen] = useState(false);
+  const [deviceIdCopied, setDeviceIdCopied] = useState(false);
   const [sensors, setSensors] = useState<SenteroSensorRole[]>([]);
   const [saved, setSaved] = useState('');
   const [error, setError] = useState('');
@@ -652,6 +653,19 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       toast('Token kopiert');
     } catch {
       setError('Token konnte nicht automatisch kopiert werden.');
+    }
+  }
+
+  async function copyDeviceId(deviceId?: string | null) {
+    if (!deviceId) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard_unavailable');
+      await navigator.clipboard.writeText(deviceId);
+      setDeviceIdCopied(true);
+      window.setTimeout(() => setDeviceIdCopied(false), 1800);
+    } catch {
+      setDeviceIdCopied(false);
+      setError('Geräte-ID konnte nicht automatisch kopiert werden.');
     }
   }
 
@@ -1659,6 +1673,37 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                   <p><span>Letzte Prüfung</span><strong>{formatDateTime(systemStatus?.checked_at || status?.updated_at)}</strong></p>
                 </div>
 
+                <div className="sc-device-identity">
+                  <h3>Geräteidentität</h3>
+                  {systemStatus?.device?.identity_error && (
+                    <p className="sc-device-identity-error">Geräteidentität beschädigt: {systemStatus.device.identity_error}</p>
+                  )}
+                  <div className="sc-device-identity-grid">
+                    <p>
+                      <span>Seriennummer</span>
+                      <strong>{systemStatus?.device?.serial_number || 'Nicht provisioniert'}</strong>
+                    </p>
+                    <p>
+                      <span>Geräte-ID</span>
+                      <strong className="sc-device-id-value">{systemStatus?.device?.device_id || 'Nicht provisioniert'}</strong>
+                    </p>
+                    {systemStatus?.device?.device_id && (
+                      <button
+                        type="button"
+                        className="sc-device-copy-button"
+                        aria-label="Geräte-ID kopieren"
+                        onClick={() => void copyDeviceId(systemStatus.device?.device_id)}
+                      >
+                        <Copy size={14} aria-hidden="true" />
+                        {deviceIdCopied ? 'Kopiert' : 'Kopieren'}
+                      </button>
+                    )}
+                  </div>
+                  {!systemStatus?.device?.identity_provisioned && systemStatus?.device?.legacy_box_id && (
+                    <p className="sc-device-identity-legacy">Legacy-ID: {systemStatus.device.legacy_box_id}</p>
+                  )}
+                </div>
+
                 <div className="sc-system-query-note">
                   <div>
                     <Mail size={18} />
@@ -1673,7 +1718,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
           <UpdatePanel />
           <div className="sc-danger-zone">
             <h3><ShieldAlert size={22} /> Werkseinstellungen</h3>
-            <p>Setzt Kundendaten, Benutzer, Sensoren, Benachrichtigungen, Zigbee-Kopplungen und gespeicherte WLANs zurück. Sentero-Version, Box-ID und Systemsoftware bleiben erhalten.</p>
+            <p>Setzt Kundendaten, Benutzer, Sensoren, Benachrichtigungen, Zigbee-Kopplungen und gespeicherte WLANs zurück. Sentero-Version, Seriennummer, Geräte-ID und Systemsoftware bleiben erhalten.</p>
             <p>Zum Zurücksetzen bitte <strong>ZURÜCKSETZEN</strong> eingeben.</p>
             <input
               value={resetText}

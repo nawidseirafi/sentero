@@ -489,6 +489,15 @@ export type SenteroSystemStatus = {
   summary: string;
   checked_at?: string;
   services: SenteroSystemServiceStatus[];
+  device?: {
+    identity_provisioned?: boolean;
+    serial_number?: string | null;
+    device_id?: string | null;
+    created_at?: string | null;
+    setup_ssid?: string | null;
+    legacy_box_id?: string | null;
+    identity_error?: string | null;
+  };
   network?: {
     active_connection?: string | null;
     ip_address?: string | null;

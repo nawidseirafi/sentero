@@ -23,8 +23,10 @@ class DeploymentBuildTests(unittest.TestCase):
             root = Path(tmpdir)
             release_json = root / "release.json"
             image_tar = root / "sentero-image.tar"
+            host_payload_dir = root / "host-files"
             bundle = root / "sentero-box-0.2.0.zip"
 
+            host_payload_dir.mkdir()
             release_json.write_text(json.dumps({
                 "format": 1,
                 "product": "Sentero Box",
@@ -38,6 +40,7 @@ class DeploymentBuildTests(unittest.TestCase):
                 bundle_path=bundle,
                 release_json=release_json,
                 image_tar=image_tar,
+                host_payload_dir=host_payload_dir,
             )
 
             with zipfile.ZipFile(bundle) as archive:
@@ -51,6 +54,25 @@ class DeploymentBuildTests(unittest.TestCase):
                 expected_version="0.2.0",
                 expected_image="sentero/app:0.2.0",
             )
+
+    def test_device_directory_is_not_packaged_as_host_update_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            original_source = deployment_build.BOX_SOURCE_DIR
+            try:
+                deployment_build.BOX_SOURCE_DIR = root / "box"
+                (deployment_build.BOX_SOURCE_DIR / "scripts").mkdir(parents=True)
+                (deployment_build.BOX_SOURCE_DIR / "device").mkdir(parents=True)
+                (deployment_build.BOX_SOURCE_DIR / "scripts" / "sentero_device_identity.py").write_text("# helper\n", encoding="utf-8")
+                (deployment_build.BOX_SOURCE_DIR / "device" / "identity.json").write_text("{}", encoding="utf-8")
+
+                files = deployment_build.create_host_update_payload(root / "payload")
+
+                paths = {item["path"] for item in files}
+                self.assertIn("scripts/sentero_device_identity.py", paths)
+                self.assertNotIn("device/identity.json", paths)
+            finally:
+                deployment_build.BOX_SOURCE_DIR = original_source
 
     def test_file_sha256_is_stable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

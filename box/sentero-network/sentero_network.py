@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import http.server
 import io
 import json
@@ -10,6 +9,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -31,6 +31,13 @@ _DIRECT_CAPTIVE_SERVER: http.server.ThreadingHTTPServer | None = None
 _DIRECT_CAPTIVE_THREAD: threading.Thread | None = None
 _WIFI_AP_CACHE: dict[str, Any] = {"device": None, "supported": False, "checked_at": 0.0}
 
+sys.path.insert(0, str(BOX_DIR / "scripts"))
+try:
+    from sentero_device_identity import get_setup_ssid, identity_status
+except Exception:
+    get_setup_ssid = None  # type: ignore[assignment]
+    identity_status = None  # type: ignore[assignment]
+
 
 def run(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
@@ -51,12 +58,36 @@ def wifi_device() -> str | None:
 
 
 def setup_ssid() -> str:
+    if get_setup_ssid is not None:
+        return str(get_setup_ssid())
     try:
+        import hashlib
+
         ident = Path("/etc/machine-id").read_text(encoding="utf-8").strip()
     except OSError:
         ident = socket.gethostname()
     suffix = hashlib.sha256((ident or "sentero").encode()).hexdigest()[:4].upper()
     return f"Sentero-Setup-{suffix}"
+
+
+def device_identity_status() -> dict[str, Any]:
+    if identity_status is None:
+        return {
+            "identity_provisioned": False,
+            "serial_number": None,
+            "device_id": None,
+            "setup_ssid": setup_ssid(),
+        }
+    try:
+        return dict(identity_status())
+    except Exception as exc:
+        return {
+            "identity_provisioned": False,
+            "serial_number": None,
+            "device_id": None,
+            "setup_ssid": setup_ssid(),
+            "identity_error": str(exc),
+        }
 
 
 def connection_rows() -> list[tuple[str, str, str, str]]:
@@ -674,6 +705,7 @@ def _env_value(name: str) -> str:
 
 def system_status() -> dict[str, Any]:
     net = status()
+    device = device_identity_status()
     profiles = {item.strip() for item in _env_value("COMPOSE_PROFILES").split(",") if item.strip()}
     zigbee_enabled = "zigbee" in profiles
     zigbee_path = _env_value("ZIGBEE_ADAPTER_HOST")
@@ -718,8 +750,10 @@ def system_status() -> dict[str, Any]:
         item("updater", "Updates", "ok" if updater_ok else "warning", "Bereit" if updater_ok else "Wird geprüft"),
         item("mdns", "sentero.local", "ok" if mdns_ok else "warning", "Aktiv" if mdns_ok else "Nicht aktiv"),
     ])
+    if device.get("identity_error"):
+        services.append(item("identity", "Geräteidentität", "error", "Beschädigt"))
 
-    core_states = [row["state"] for row in services if row["key"] in {"sentero", "network", "mqtt", "zigbee", "updater"} and row["state"] != "inactive"]
+    core_states = [row["state"] for row in services if row["key"] in {"sentero", "network", "mqtt", "zigbee", "updater", "identity"} and row["state"] != "inactive"]
     if "error" in core_states:
         overall = "error"
         summary = "Ein Bereich benötigt Aufmerksamkeit."
@@ -741,6 +775,7 @@ def system_status() -> dict[str, Any]:
             "ip_address": net.get("ip_address"),
             "internet_reachable": net.get("internet_reachable"),
         },
+        "device": device,
     }
 
 

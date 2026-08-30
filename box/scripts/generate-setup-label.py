@@ -2,21 +2,12 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import html
-import socket
 from pathlib import Path
 
+from sentero_device_identity import IdentityNotProvisioned, InvalidIdentityError, get_setup_ssid, load_device_identity
+
 DEFAULT_OUTPUT_DIR = Path('/opt/sentero/box/generated')
-
-
-def setup_ssid() -> str:
-    try:
-        ident = Path('/etc/machine-id').read_text(encoding='utf-8').strip()
-    except OSError:
-        ident = socket.gethostname()
-    suffix = hashlib.sha256((ident or 'sentero').encode()).hexdigest()[:4].upper()
-    return f'Sentero-Setup-{suffix}'
 
 
 def wifi_payload(ssid: str) -> str:
@@ -178,7 +169,16 @@ def plain_qr_svg(ssid: str) -> str:
     )
 
 
-def label_svg(ssid: str) -> str:
+def provisioned_serial_number() -> str | None:
+    try:
+        return load_device_identity().serial_number
+    except IdentityNotProvisioned:
+        return None
+    except InvalidIdentityError as exc:
+        raise RuntimeError(f'Geräteidentität beschädigt: {exc}') from exc
+
+
+def label_svg(ssid: str, serial_number: str | None) -> str:
     """50 x 30 mm print label, vector-only and label-printer friendly."""
     matrix = qr_matrix_v4_l(wifi_payload(ssid))
     # The QR occupies 26 mm square including the 4-module quiet zone.
@@ -187,13 +187,19 @@ def label_svg(ssid: str) -> str:
     module = qr_mm / total_modules
     path = qr_path(matrix, qr_x, qr_y, module, 4)
     safe_ssid = html.escape(ssid)
+    safe_serial = html.escape(serial_number or '')
+    serial_line = (
+        f'  <text x="30" y="12" font-family="Arial, Helvetica, sans-serif" font-size="2.55" font-weight="700" fill="#111">{safe_serial}</text>\n'
+        if serial_number else
+        '  <text x="30" y="12" font-family="Arial, Helvetica, sans-serif" font-size="2.1" font-weight="600" fill="#555">Nicht provisioniert</text>\n'
+    )
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="50mm" height="30mm" viewBox="0 0 50 30" role="img" aria-label="Sentero Setup Etikett">
   <rect width="50" height="30" rx="2" fill="white"/>
   <path d="{path}" fill="black" shape-rendering="crispEdges"/>
   <text x="30" y="7" font-family="Arial, Helvetica, sans-serif" font-size="3.2" font-weight="700" fill="#111">Sentero Setup</text>
-  <text x="30" y="12" font-family="Arial, Helvetica, sans-serif" font-size="2.35" font-weight="600" fill="#111">Scannen zum Einrichten</text>
-  <text x="30" y="17" font-family="Arial, Helvetica, sans-serif" font-size="1.85" fill="#444">WLAN wird automatisch</text>
-  <text x="30" y="20" font-family="Arial, Helvetica, sans-serif" font-size="1.85" fill="#444">verbunden.</text>
+{serial_line.rstrip()}
+  <text x="30" y="16.2" font-family="Arial, Helvetica, sans-serif" font-size="2.05" font-weight="600" fill="#111">Scannen zum Einrichten</text>
+  <text x="30" y="20" font-family="Arial, Helvetica, sans-serif" font-size="1.75" fill="#444">WLAN wird automatisch verbunden.</text>
   <text x="30" y="25.2" font-family="Arial, Helvetica, sans-serif" font-size="1.7" font-weight="700" fill="#111">{safe_ssid}</text>
   <text x="30" y="28" font-family="Arial, Helvetica, sans-serif" font-size="1.45" fill="#666">setup.sentero.local</text>
 </svg>\n'''
@@ -205,7 +211,8 @@ def main() -> int:
     parser.add_argument('--output-dir', type=Path, default=DEFAULT_OUTPUT_DIR)
     args = parser.parse_args()
 
-    ssid = (args.ssid or setup_ssid()).strip()
+    serial_number = provisioned_serial_number()
+    ssid = (args.ssid or get_setup_ssid()).strip()
     if not ssid:
         parser.error('SSID must not be empty')
 
@@ -215,9 +222,9 @@ def main() -> int:
     info_file = args.output_dir / 'sentero-setup-label.txt'
 
     qr_file.write_text(plain_qr_svg(ssid), encoding='utf-8')
-    label_file.write_text(label_svg(ssid), encoding='utf-8')
+    label_file.write_text(label_svg(ssid, serial_number), encoding='utf-8')
     info_file.write_text(
-        f'Sentero Setup WLAN\nSSID: {ssid}\nQR payload: {wifi_payload(ssid)}\nLabel: {label_file}\n',
+        f'Sentero Setup WLAN\nSeriennummer: {serial_number or "Nicht provisioniert"}\nSSID: {ssid}\nQR payload: {wifi_payload(ssid)}\nLabel: {label_file}\n',
         encoding='utf-8',
     )
     qr_file.chmod(0o644)
