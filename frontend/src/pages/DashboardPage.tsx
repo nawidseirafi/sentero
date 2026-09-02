@@ -3,7 +3,14 @@ import type { ReactNode } from 'react';
 import { AlarmClock, House, Activity } from 'lucide-react';
 import { api, type SenteroBehaviorAssessment, type SenteroBehaviorLearning, type SenteroSensorRole, type SenteroSetupStatus } from '@shared/api/client';
 
-type BehaviorEvent = { event_time: string; room?: string | null; role?: string | null; state?: string | null };
+type BehaviorEvent = {
+  event_time: string;
+  room?: string | null;
+  role?: string | null;
+  state?: string | null;
+  device_class?: string | null;
+  entity_id?: string | null;
+};
 
 export function DashboardPage() {
   const [status, setStatus] = useState<SenteroSetupStatus | null>(null);
@@ -17,14 +24,19 @@ export function DashboardPage() {
     let active = true;
     async function load() {
       try {
-        const [next, latestBehavior, timeline] = await Promise.all([
+        const [next, liveRoles, latestBehavior, timeline] = await Promise.all([
           api.senteroSetupStatus(),
+          api.senteroSensorRoles(true).catch(() => ({ sensor_roles: [] })),
           api.senteroBehaviorLatest().catch(() => ({ assessment: null, learning: undefined })),
           api.senteroBehaviorTimeline().catch(() => ({ events: [], assessment: null })),
         ]);
         if (active) {
           setStatus(next);
-          setRoles(next.sensor_roles || []);
+          // The setup status intentionally contains configuration data. Current
+          // presence must come from the live sensor-role endpoint; deriving it
+          // from the behavior timeline makes an old "off" event look like the
+          // current room state.
+          setRoles(liveRoles.sensor_roles?.length ? liveRoles.sensor_roles : (next.sensor_roles || []));
           setBehavior(latestBehavior.assessment);
           setLearning(latestBehavior.learning || null);
           setTimelineEvents(timeline.events || []);
@@ -34,27 +46,63 @@ export function DashboardPage() {
         if (active) setError(err instanceof Error ? err.message : 'Sentero konnte nicht geladen werden.');
       }
     }
+    async function loadLiveRoles() {
+      try {
+        const nextRoles = await api.senteroSensorRoles(true);
+        if (active && nextRoles.sensor_roles?.length) setRoles(nextRoles.sensor_roles);
+      } catch {
+        // Keep the last known live roles. A temporary request failure must not
+        // turn an occupied room into "Nicht im Haus".
+      }
+    }
+
     void load();
     const timer = window.setInterval(() => void load(), 30000);
+    const liveTimer = window.setInterval(() => void loadLiveRoles(), 3000);
     return () => {
       active = false;
       window.clearInterval(timer);
+      window.clearInterval(liveTimer);
     };
   }, []);
 
   const configuredRoles = roles.filter((role) => role.configured);
   const hasSensors = configuredRoles.length > 0;
+  const hasSensorIssue = configuredRoles.some((role) => role.reachable === false);
   const latestTimeline = useMemo(() => latestActivityEvent(timelineEvents), [timelineEvents]);
-  const currentPresence = useMemo(() => activePresenceEvent(timelineEvents), [timelineEvents]);
+  const latestMovement = useMemo(() => latestMovementEvent(timelineEvents), [timelineEvents]);
+  // Current location is a live state, not a historical event. A person may sit
+  // still for a long time while presence remains true.
+  const currentPresence = useMemo(() => currentPresenceRole(roles), [roles]);
   const personName = status?.profile?.name?.trim() || 'Person';
   const activitySlots = useMemo(() => activitySlotsFromTimeline(timelineEvents, roles), [timelineEvents, roles]);
   const hasActivity = activitySlots.some((slot) => slot.active);
-  const firstActivity = firstActivityEvent(timelineEvents, roles);
-  const lastEventTime = latestTimeline?.event_time;
-  const lastSeen = lastEventTime ? movementLabel(lastEventTime, latestTimeline?.room) : 'Noch keine Bewegung erkannt';
+  const firstActivity = firstWakeActivityEvent(timelineEvents, roles);
+  // Primary source is the persisted behavior timeline. As a live fallback, use
+  // a currently active motion state so a fresh ZG-204ZH large/small report is
+  // visible immediately even before the timeline request refreshes.
+  const liveMovement = useMemo(() => latestLiveMovementRole(roles), [roles]);
+  // "Letzte Bewegung" must only use actual motion events. Presence-on is
+  // useful for occupancy/wakeup, but it is not movement. Prefer the newest
+  // persisted motion event, unless a currently active live motion report is
+  // newer and has not reached the timeline yet.
+  const persistedMovementTime = latestMovement?.event_time || '';
+  const liveMovementTime = liveMovement?.time || '';
+  const useLiveMovement = timestamp(liveMovementTime) > timestamp(persistedMovementTime);
+  const lastEventTime = useLiveMovement ? liveMovementTime : persistedMovementTime;
+  const lastEventRoom = useLiveMovement ? liveMovement?.room : latestMovement?.room;
+  const lastSeen = lastEventTime ? movementLabel(lastEventTime, lastEventRoom) : 'Noch keine Bewegung erkannt';
   const morning = firstActivity ? formatTime(new Date(timestamp(firstActivity.time))) : '';
   const currentRoomValue = currentPresence ? roomLocationLabel(currentPresence.room) : 'Nicht im Haus';
-  const dashboardState = getDashboardState({ error, hasSensors, latest: Boolean(latestTimeline), currentPresence: Boolean(currentPresence), behavior });
+  const dashboardState = getDashboardState({
+    error,
+    hasSensors,
+    hasSensorIssue,
+    latest: Boolean(latestTimeline || liveMovement),
+    currentPresence: Boolean(currentPresence),
+    behavior,
+    learning,
+  });
   const currentLocation = currentPresence ? roomLocationLabel(currentPresence.room) : 'Nicht im Haus';
 
   return (
@@ -109,7 +157,9 @@ function BehaviorOverviewCard({
   const headline = !hasSensors ? 'Noch offen' : meta.label;
   const summary = !hasSensors
     ? 'Verbinden Sie zuerst Sensoren, damit Sentero den Alltag kennenlernen kann.'
-    : behavior?.summary || 'Sentero baut ein persönliches Normalverhalten auf.';
+    : behavior?.summary || (learning?.completed
+      ? 'Sentero kennt den gewohnten Tagesablauf.'
+      : 'Sentero baut ein persönliches Normalverhalten auf.');
   const learningProgress = learning ? learningProgressLabel(learning) : 'Lernphase';
   const learningHint = learning?.completed
     ? 'Sentero kennt den gewohnten Tagesablauf.'
@@ -180,7 +230,15 @@ function MetricCard({ icon, label, value, highlight, muted }: { icon: ReactNode;
   );
 }
 
-function getDashboardState({ error, hasSensors, latest, currentPresence, behavior }: { error: string; hasSensors: boolean; latest: boolean; currentPresence: boolean; behavior: SenteroBehaviorAssessment | null }) {
+function getDashboardState({ error, hasSensors, hasSensorIssue, latest, currentPresence, behavior, learning }: {
+  error: string;
+  hasSensors: boolean;
+  hasSensorIssue: boolean;
+  latest: boolean;
+  currentPresence: boolean;
+  behavior: SenteroBehaviorAssessment | null;
+  learning: SenteroBehaviorLearning | null;
+}) {
   if (error) {
     return {
       tone: 'error',
@@ -197,12 +255,35 @@ function getDashboardState({ error, hasSensors, latest, currentPresence, behavio
       copy: 'Verbinden Sie zuerst Sensoren, damit Sentero den Tagesablauf zuverlässig bewerten kann.',
     };
   }
+  if (hasSensorIssue) {
+    return {
+      tone: 'error',
+      kicker: 'Sensor prüfen',
+      headline: 'Sensor prüfen.',
+      copy: 'Mindestens ein Sensor meldet aktuell keine neuen Daten.',
+    };
+  }
   if (!latest) {
+    if (learning?.completed) {
+      return currentPresence
+        ? {
+            tone: behavior?.status || 'ok',
+            kicker: 'Präsenz erkannt',
+            headline: 'Alles in Ordnung.',
+            copy: behavior?.summary || 'Aktuell wird Anwesenheit erkannt. Heute wurde noch keine Bewegung erfasst.',
+          }
+        : {
+            tone: behavior?.status || 'ok',
+            kicker: 'Heute',
+            headline: 'Noch keine Aktivität heute.',
+            copy: behavior?.summary || 'Die Lernphase ist abgeschlossen. Heute wurde bislang noch keine Bewegung erkannt.',
+          };
+    }
     return {
       tone: 'learning',
       kicker: 'Sensoren verbunden',
       headline: 'Sentero lernt.',
-      copy: 'Sensoren sind eingerichtet, aber heute wurde noch keine verwertbare Aktivität erkannt.',
+      copy: 'Sentero baut noch das persönliche Normalverhalten auf.',
     };
   }
   if (!currentPresence) {
@@ -230,36 +311,65 @@ function isPresenceRole(role: SenteroSensorRole) {
   return role.role.endsWith('presence') || ['motion', 'occupancy', 'presence'].includes(String(role.device_class || ''));
 }
 
-function activePresenceEvent(events: BehaviorEvent[]) {
-  const latestByRole = new Map<string, BehaviorEvent>();
-  for (const event of events) {
-    const role = String(event.role || '').trim();
-    if (!isPresenceEventRole(role)) continue;
-    const value = timestamp(event.event_time);
-    if (!value) continue;
-    const current = latestByRole.get(role);
-    if (!current || value > timestamp(current.event_time)) latestByRole.set(role, event);
-  }
-  return Array.from(latestByRole.values())
-    .filter((event) => isActivityEvent(event))
-    .sort((a, b) => timestamp(b.event_time) - timestamp(a.event_time))[0];
+function currentPresenceRole(roles: SenteroSensorRole[]) {
+  return roles
+    .filter((role) => role.configured && role.reachable !== false && isPresenceRole(role) && roleSignalsPresence(role))
+    .sort((a, b) => roleStateTimestamp(b) - roleStateTimestamp(a))[0];
 }
 
-function isPresenceEventRole(role: string) {
-  const value = role.toLowerCase();
-  return value.endsWith('_presence') || value.endsWith('_motion') || value.endsWith('presence') || value.endsWith('motion');
+function roleSignalsPresence(role: SenteroSensorRole) {
+  if (role.presence === true) return true;
+
+  // Combined mmWave/PIR devices sometimes publish a contradictory presence=false
+  // together with a motion state that still explicitly means a person is in the
+  // room. Keep this frontend guard in addition to the backend resolver so the
+  // dashboard never converts "still/static/moving" into "Nicht im Haus".
+  const motion = normalizeState(role.motion_state || role.motion);
+  return ['moving', 'move', 'movement', 'motion', 'active', 'detected', 'large', 'small', 'static', 'static_target', 'still', 'stationary', 'standstill', 'present', 'presence'].includes(motion);
 }
 
-function firstActivityEvent(events: BehaviorEvent[], roles: SenteroSensorRole[]) {
-  const todayEvents = todayActivityEvents(events)
+function latestLiveMovementRole(roles: SenteroSensorRole[]) {
+  return roles
+    .filter((role) => role.configured && role.reachable !== false && roleSignalsMovement(role))
+    .map((role) => ({
+      time: role.last_changed || role.last_updated || role.updated_at || '',
+      room: role.room,
+    }))
+    .filter((item) => timestamp(item.time))
+    .sort((a, b) => timestamp(b.time) - timestamp(a.time))[0];
+}
+
+function roleSignalsMovement(role: SenteroSensorRole) {
+  if (isSmokeRole(role)) return false;
+  const motion = normalizeState(role.motion_state || role.motion || role.state);
+  return ['large', 'small', 'moving', 'move', 'movement', 'motion', 'active', 'detected', 'on', 'true', '1'].includes(motion);
+}
+
+function roleStateTimestamp(role: SenteroSensorRole) {
+  return timestamp(role.last_updated || role.last_changed || role.updated_at);
+}
+
+function firstWakeActivityEvent(events: BehaviorEvent[], roles: SenteroSensorRole[]) {
+  // Prefer the first real movement of the day. If there is no motion event, a
+  // presence transition to on is an acceptable fallback for "Aufgestanden".
+  // This keeps wakeup and last-movement semantics separate.
+  const movementEvents = todayMovementEvents(events)
     .map((event) => ({ time: event.event_time, room: event.room }))
     .filter((event) => timestamp(event.time));
-  if (todayEvents.length > 0) {
-    return todayEvents.sort((a, b) => timestamp(a.time) - timestamp(b.time))[0];
+  if (movementEvents.length > 0) {
+    return movementEvents.sort((a, b) => timestamp(a.time) - timestamp(b.time))[0];
   }
+
+  const presenceEvents = todayPresenceOnEvents(events)
+    .map((event) => ({ time: event.event_time, room: event.room }))
+    .filter((event) => timestamp(event.time));
+  if (presenceEvents.length > 0) {
+    return presenceEvents.sort((a, b) => timestamp(a.time) - timestamp(b.time))[0];
+  }
+
   const today = new Date();
   return roles
-    .filter((role) => role.configured && role.reachable !== false && isPresenceRole(role) && isRoleActive(role))
+    .filter((role) => role.configured && role.reachable !== false && isPresenceRole(role) && roleSignalsPresence(role))
     .map((role) => ({ time: role.last_changed || role.last_updated || role.updated_at || '', room: role.room }))
     .filter((event) => {
       const value = timestamp(event.time);
@@ -278,6 +388,47 @@ function roomLocationLabel(room?: string | null) {
     entrance: 'Am Eingang',
   };
   return room ? labels[room] || room : 'Raum unbekannt';
+}
+
+function latestMovementEvent(events: BehaviorEvent[]) {
+  return todayMovementEvents(events)
+    .sort((a, b) => timestamp(b.event_time) - timestamp(a.event_time))[0];
+}
+
+function todayMovementEvents(events: BehaviorEvent[]) {
+  const today = new Date();
+  return events.filter((event) => {
+    if (!isMotionEvent(event)) return false;
+    if (!activeMotionStates.has(normalizeState(event.state))) return false;
+    const value = timestamp(event.event_time);
+    return Boolean(value) && new Date(value).toDateString() === today.toDateString();
+  });
+}
+
+function todayPresenceOnEvents(events: BehaviorEvent[]) {
+  const today = new Date();
+  return events.filter((event) => {
+    if (!isPresenceEvent(event)) return false;
+    if (!activeStates.has(normalizeState(event.state))) return false;
+    const value = timestamp(event.event_time);
+    return Boolean(value) && new Date(value).toDateString() === today.toDateString();
+  });
+}
+
+function isMotionEvent(event: BehaviorEvent) {
+  const role = String(event.role || '').toLowerCase();
+  const deviceClass = String(event.device_class || '').toLowerCase();
+  const entityId = String(event.entity_id || '').toLowerCase();
+  if (isSmokeText(`${role} ${deviceClass} ${entityId}`)) return false;
+  return role.endsWith('_motion') || deviceClass === 'motion' || entityId.endsWith('#motion');
+}
+
+function isPresenceEvent(event: BehaviorEvent) {
+  const role = String(event.role || '').toLowerCase();
+  const deviceClass = String(event.device_class || '').toLowerCase();
+  const entityId = String(event.entity_id || '').toLowerCase();
+  if (isSmokeText(`${role} ${deviceClass} ${entityId}`)) return false;
+  return !isMotionEvent(event) && (role.endsWith('presence') || deviceClass === 'presence' || entityId.endsWith('#presence'));
 }
 
 function latestActivityEvent(events: BehaviorEvent[]) {
@@ -299,6 +450,9 @@ function isActivityEvent(event: BehaviorEvent) {
   const state = normalizeState(event.state);
   if (inactiveStates.has(state)) return false;
   const role = String(event.role || '').toLowerCase();
+  const deviceClass = String(event.device_class || '').toLowerCase();
+  const entityId = String(event.entity_id || '').toLowerCase();
+  if (isSmokeText(`${role} ${deviceClass} ${entityId}`)) return false;
   if (role.endsWith('_motion')) return activeMotionStates.has(state);
   return activeStates.has(state);
 }
@@ -324,10 +478,11 @@ function activitySlotsFromTimeline(events: BehaviorEvent[], roles: SenteroSensor
 }
 
 const activeStates = new Set(['active', 'on', 'open', 'opening', 'detected', 'true', '1', 'yes', 'present', 'presence']);
-const activeMotionStates = new Set(['active', 'motion', 'moving', 'detected', 'on', 'true', '1', 'yes']);
+const activeMotionStates = new Set(['active', 'motion', 'moving', 'large', 'small', 'detected', 'on', 'true', '1', 'yes']);
 const inactiveStates = new Set(['', 'unknown', 'unavailable', 'none', 'off', 'false', '0', 'no', 'inactive', 'still', 'not_ready', 'nicht bereit', 'lesefehler', 'ok', 'closed', 'closing', 'clear']);
 
 function isRoleActive(role: SenteroSensorRole) {
+  if (isSmokeRole(role)) return false;
   if (role.presence != null) return Boolean(role.presence);
   const state = normalizeState(role.state);
   if (inactiveStates.has(state)) return false;
@@ -335,6 +490,15 @@ function isRoleActive(role: SenteroSensorRole) {
   const motion = normalizeState(role.motion);
   if (role.role.endsWith('_motion') || String(role.device_class || '').toLowerCase() === 'motion') return activeMotionStates.has(motion || state);
   return false;
+}
+
+function isSmokeRole(role: SenteroSensorRole) {
+  return isSmokeText(`${role.role || ''} ${role.device_class || ''}`);
+}
+
+function isSmokeText(value: string) {
+  const text = value.toLowerCase();
+  return text.includes('smoke') || text.includes('rauch');
 }
 
 function normalizeState(value?: string | null) {

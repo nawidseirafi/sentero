@@ -1,0 +1,25 @@
+{
+  "removed_files": [
+    "test_esp32_discovery.py",
+    "test_esp32_provisioning.py"
+  ],
+  "removed_mqtt_test_methods": [
+    "test_delete_esp32_presence_sensor_local_only_skips_factory_reset",
+    "test_delete_esp32_presence_sensor_offline_blocks_external_reset",
+    "test_delete_esp32_presence_sensor_publish_error_keeps_local_mapping",
+    "test_delete_esp32_presence_sensor_sends_factory_reset_before_local_delete",
+    "test_delete_esp32_presence_sensor_timeout_keeps_local_mapping",
+    "test_presence_sensor_discovery_is_blocked_for_esp32_provisioning"
+  ],
+  "removed_onboarding_test_methods": [
+    "test_esp32_dataset_remains_compatible",
+    "test_presence_transport_env_selects_wifi_setup",
+    "test_v1_sensor_wizard_hides_wifi_qr_by_default",
+    "test_wifi_feature_flag_defaults_off"
+  ],
+  "kept_direct_mqtt_esp32_tests": true,
+  "added_tests": [
+    "test_human_activity_score.py"
+  ],
+  "architecture": "Zigbee -> Zigbee2MQTT -> MQTT -> Sentero; generic ESP32 -> MQTT -> Sentero"
+}

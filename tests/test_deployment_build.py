@@ -1,63 +1,87 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
-from deployment_build import deployment_manifest, file_sha256, latest_manifest
+import deployment_build
 
 
 class DeploymentBuildTests(unittest.TestCase):
-    def test_latest_manifest_uses_public_download_url(self) -> None:
+    def test_version_validation_accepts_release_versions(self) -> None:
+        self.assertEqual(deployment_build.validate_version("0.2.0"), "0.2.0")
+        self.assertEqual(deployment_build.validate_version("0.3.0-beta1"), "0.3.0-beta1")
+
+    def test_version_validation_rejects_unsafe_values(self) -> None:
+        with self.assertRaises(SystemExit):
+            deployment_build.validate_version("../0.2.0")
+
+    def test_release_zip_contains_only_release_metadata_and_docker_image(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive = Path(tmpdir) / "sentero-0.1.1.zip"
-            archive.write_bytes(b"sentero release")
-            manifest = latest_manifest(
-                version="0.1.1",
-                zip_path=archive,
-                base_url="https://seirafi.de/robotersteve/sentero/",
+            root = Path(tmpdir)
+            release_json = root / "release.json"
+            image_tar = root / "sentero-image.tar"
+            host_payload_dir = root / "host-files"
+            bundle = root / "sentero-box-0.2.0.zip"
+
+            host_payload_dir.mkdir()
+            release_json.write_text(json.dumps({
+                "format": 1,
+                "product": "Sentero Box",
+                "version": "0.2.0",
+                "image": "sentero/app:0.2.0",
+                "image_tar": "sentero-image.tar",
+            }))
+            image_tar.write_bytes(b"docker image placeholder")
+
+            deployment_build.create_release_zip(
+                bundle_path=bundle,
+                release_json=release_json,
+                image_tar=image_tar,
+                host_payload_dir=host_payload_dir,
             )
 
-        stable = manifest["channels"]["stable"]
-        self.assertEqual(stable["download_url"], "https://seirafi.de/robotersteve/sentero/stable/releases/sentero-0.1.1.zip")
-        self.assertIn("sha256", stable)
-        self.assertIn("size_bytes", stable)
-        self.assertNotIn("/Users/", stable["download_url"])
+            with zipfile.ZipFile(bundle) as archive:
+                self.assertEqual(
+                    set(archive.namelist()),
+                    {"release.json", "sentero-image.tar"},
+                )
 
-    def test_deployment_manifest_keeps_artifact_relative_and_url_public(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            archive = Path(tmpdir) / "sentero-0.1.1.zip"
-            archive.write_bytes(b"sentero release")
-            expected_hash = file_sha256(archive)
-            expected_size = archive.stat().st_size
-            manifest = deployment_manifest(
-                version="0.1.1",
-                zip_path=archive,
-                base_url="https://seirafi.de/robotersteve/sentero",
+            deployment_build.validate_bundle(
+                bundle,
+                expected_version="0.2.0",
+                expected_image="sentero/app:0.2.0",
             )
 
-        self.assertEqual(manifest["artifact"], "releases/sentero-0.1.1.zip")
-        self.assertEqual(manifest["artifact_url"], "https://seirafi.de/robotersteve/sentero/stable/releases/sentero-0.1.1.zip")
-        self.assertEqual(manifest["manifest"], "latest.json")
-        self.assertEqual(manifest["sha256"], expected_hash)
-        self.assertEqual(manifest["size_bytes"], expected_size)
-        self.assertNotIn("/Users/", manifest["artifact"])
-
-    def test_latest_manifest_includes_archive_hash_and_size(self) -> None:
+    def test_device_directory_is_not_packaged_as_host_update_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive = Path(tmpdir) / "sentero-0.1.1.zip"
-            archive.write_bytes(b"sentero release")
-            expected_hash = file_sha256(archive)
-            expected_size = archive.stat().st_size
-            manifest = latest_manifest(
-                version="0.1.1",
-                zip_path=archive,
-                base_url="https://seirafi.de/robotersteve/sentero",
-            )
+            root = Path(tmpdir)
+            original_source = deployment_build.BOX_SOURCE_DIR
+            try:
+                deployment_build.BOX_SOURCE_DIR = root / "box"
+                (deployment_build.BOX_SOURCE_DIR / "scripts").mkdir(parents=True)
+                (deployment_build.BOX_SOURCE_DIR / "device").mkdir(parents=True)
+                (deployment_build.BOX_SOURCE_DIR / "scripts" / "sentero_device_identity.py").write_text("# helper\n", encoding="utf-8")
+                (deployment_build.BOX_SOURCE_DIR / "device" / "identity.json").write_text("{}", encoding="utf-8")
 
-        stable = manifest["channels"]["stable"]
-        self.assertEqual(stable["sha256"], expected_hash)
-        self.assertEqual(stable["size_bytes"], expected_size)
+                files = deployment_build.create_host_update_payload(root / "payload")
+
+                paths = {item["path"] for item in files}
+                self.assertIn("scripts/sentero_device_identity.py", paths)
+                self.assertNotIn("device/identity.json", paths)
+            finally:
+                deployment_build.BOX_SOURCE_DIR = original_source
+
+    def test_file_sha256_is_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = Path(tmpdir) / "artifact.zip"
+            artifact.write_bytes(b"sentero")
+            self.assertEqual(
+                deployment_build.file_sha256(artifact),
+                deployment_build.file_sha256(artifact),
+            )
 
 
 if __name__ == "__main__":

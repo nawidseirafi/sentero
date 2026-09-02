@@ -1,5 +1,7 @@
 # Sentero Migration Report
 
+> Historisches Migrationsdokument. Angaben zu frueheren Sensorquellen beschreiben den Zwischenstand der Extraktion und nicht den aktuellen Laufzeitstand.
+
 ## Copied Files
 
 - `agent-api/backend/agents/sentero/*` -> `sentero/backend/`
@@ -12,7 +14,6 @@
 - `sentero/backend/main.py`
 - `sentero/backend/paths.py`
 - `sentero/backend/config.py`
-- `sentero/backend/services/homeassistant_service.py`
 - `sentero/backend/services/messaging.py`
 - `sentero/backend/services/llm/factory.py`
 - `sentero/backend/sensor_sources/*`
@@ -20,12 +21,12 @@
 - `sentero/config/sentero.yaml`
 - `sentero/docker/Dockerfile`
 - `sentero/docker/mosquitto.conf`
-- `sentero/docker-compose.yml`
 - `sentero/requirements.txt`
 - `sentero/.env.example`
 - `sentero/deployment_build.py`
 - `sentero/README.md`
-- `sentero/docs/SENSOR_ARCHITECTURE.md`
+- `sentero/docs/*`
+- `sentero/etc/esp32/*`
 
 ## Removed Dependencies
 
@@ -43,30 +44,26 @@
 
 ## Sensor Architecture
 
-- Added `SENTERO_SENSOR_SOURCE=homeassistant|mqtt|mixed`.
-- Added Home Assistant adapter for development.
-- Added Zigbee2MQTT/MQTT-oriented production adapter scaffold.
-- Added mixed adapter for transitional deployments.
-- Docker Compose now includes Mosquitto and optional Zigbee2MQTT profile.
+Aktueller Stand:
+- Zigbee laeuft ueber Zigbee2MQTT; ESP32/generische Sensoren laufen direkt ueber denselben MQTT-Broker.
+- Der persistente MQTT-Listener/-Cache bleibt Bestandteil der Sensorpipeline.
+- Die Box-v2-Deployment-Schicht verwendet Docker Compose plus hostseitigen Updater.
 
 ## Open TODOs
 
-- Implement persistent MQTT subscription/event ingestion instead of the current bootstrap scaffold in `backend/sensor_sources/zigbee2mqtt.py`.
 - Add production authentication/TLS configuration for Mosquitto.
 - Add tests for standalone auth, setup, behavior assessment and sensor-source selection.
 - Replace the rule-based local LLM fallback with configurable provider clients if AI assessment is required in production.
 - Add signed manifests before using ZIP updates for unattended production deployments.
+- Add/version the full `box/` deployment tree if initial customer appliance packages should be built from this repository.
 
 ## Remaining RoboterSteve Couplings
 
 - None in runtime imports of the standalone Sentero backend.
 - The standalone frontend has its own local API client and no longer imports RoboterSteve shared code.
-- Development mode may still use Home Assistant by design; this is not required for production.
+- Development und Produktion verwenden die gleiche MQTT-/Zigbee2MQTT-Sensorarchitektur.
 - Historical Sentero references remain in RoboterSteve documentation/update tooling and in unused shared frontend API type/method definitions. They are not part of the active Sentero runtime after extraction, but should be cleaned in a follow-up documentation/build-tools pass if RoboterSteve must contain zero textual Sentero references.
 
 ## Verification
 
-- `PYTHONPYCACHEPREFIX=/tmp/sentero-pycache python3 -m compileall sentero/backend` passed.
-- `PYTHONPATH=/Users/nawid/Projects/roboterSteve/sentero /Users/nawid/Projects/roboterSteve/venv/bin/python -c "import backend.main"` passed.
-- `SenteroUpdateService().check_for_updates()` passed against the local standalone manifest.
-- `cd sentero/frontend && npm install && npm run build` passed.
+- Die Testsuite wird mit `python -W default::ResourceWarning -m unittest discover -s tests -p "test_*.py" -v` ausgefuehrt. Die konkrete Testanzahl ist versionsabhaengig.

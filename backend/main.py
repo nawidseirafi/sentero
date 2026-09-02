@@ -6,6 +6,8 @@ import time
 from contextlib import asynccontextmanager
 from contextlib import suppress
 
+import requests
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -14,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .paths import FRONTEND_DIST
-from backend.api.routes import OPENAPI_TAGS, box_setup_router, router
+from backend.api.routes import OPENAPI_TAGS, box_setup_router, mail_router, router
 from backend.logging_config import configure_logging, get_logger
 from backend.services.container import get_services
 
@@ -44,6 +46,135 @@ async def behavior_snapshot_loop() -> None:
         await asyncio.sleep(interval)
 
 
+async def network_startup_check() -> None:
+    try:
+        await asyncio.to_thread(get_services().network.ensure_first_boot_setup)
+        await asyncio.to_thread(get_services().notification.process_pending_queue)
+    except Exception:
+        logger.exception("Network startup check failed", extra={"component": "network"})
+
+
+async def network_maintenance_loop() -> None:
+    await asyncio.sleep(5)
+    while True:
+        try:
+            services = get_services()
+            result = await asyncio.to_thread(services.network.maintain_once)
+            if result.get("actions"):
+                logger.info("Network maintenance actions applied", extra={"component": "network", "actions": result.get("actions")})
+            await asyncio.to_thread(services.notification.process_pending_queue)
+            await asyncio.to_thread(services.notification.send_daily_summary_if_due)
+            interval = services.network.failover_config().check_interval_seconds
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Network maintenance failed", extra={"component": "network"})
+            interval = 30
+        await asyncio.sleep(interval)
+
+
+async def mail_assistant_loop() -> None:
+    await asyncio.sleep(8)
+    backoff = 1
+    while True:
+        try:
+            services = get_services()
+            assistant = services.mail_assistant
+            if not assistant.enabled():
+                await asyncio.sleep(60)
+                continue
+            result = await asyncio.to_thread(assistant.poll_once)
+            if result.get("processed"):
+                logger.info(
+                    "Mail assistant processed messages",
+                    extra={
+                        "component": "mail_assistant",
+                        "processed": result.get("processed"),
+                        "evaluated": result.get("evaluated"),
+                        "marked_read": result.get("marked_read"),
+                        "skipped_reviewed": result.get("skipped_reviewed"),
+                        "results": result.get("results") or {},
+                    },
+                )
+            backoff = 1
+            await asyncio.sleep(assistant.config.poll_interval_seconds)
+        except asyncio.CancelledError:
+            raise
+        except (OSError, TimeoutError) as exc:
+            logger.warning(
+                "Mail assistant polling unavailable",
+                extra={
+                    "component": "mail_assistant",
+                    "error_type": exc.__class__.__name__,
+                    "error": str(exc),
+                },
+            )
+            await asyncio.sleep(min(300, 5 * backoff))
+            backoff = min(backoff * 2, 60)
+        except Exception:
+            logger.exception("Mail assistant polling failed", extra={"component": "mail_assistant"})
+            await asyncio.sleep(min(300, 5 * backoff))
+            backoff = min(backoff * 2, 60)
+
+
+async def telegram_assistant_loop() -> None:
+    await asyncio.sleep(6)
+    backoff = 1
+    while True:
+        try:
+            services = get_services()
+            assistant = services.telegram_assistant
+            if not assistant.enabled():
+                await asyncio.sleep(60)
+                continue
+            result = await asyncio.to_thread(assistant.poll_once)
+            if result.get("processed"):
+                logger.info("Telegram assistant processed messages", extra={"component": "telegram_assistant", "processed": result.get("processed")})
+            backoff = 1
+            await asyncio.sleep(assistant.config.poll_interval_seconds)
+        except asyncio.CancelledError:
+            raise
+        except requests.exceptions.ReadTimeout:
+            # A Telegram long-poll read timeout is transient and expected from
+            # time to time. Do not emit a full ERROR traceback; retry shortly.
+            logger.warning(
+                "Telegram polling timed out; retrying",
+                extra={"component": "telegram_assistant"},
+            )
+            backoff = 1
+            await asyncio.sleep(2)
+        except requests.exceptions.ConnectionError as exc:
+            # Temporary DNS/TLS/routing failures are network conditions rather
+            # than application failures. Back off, but keep the assistant alive.
+            logger.warning(
+                "Telegram connection failed; retrying",
+                extra={
+                    "component": "telegram_assistant",
+                    "error_type": type(exc).__name__,
+                    "retry_in_seconds": min(60, 5 * backoff),
+                },
+            )
+            await asyncio.sleep(min(60, 5 * backoff))
+            backoff = min(backoff * 2, 12)
+        except requests.exceptions.RequestException as exc:
+            logger.warning(
+                "Telegram API request failed; retrying",
+                extra={
+                    "component": "telegram_assistant",
+                    "error_type": type(exc).__name__,
+                    "retry_in_seconds": min(120, 5 * backoff),
+                },
+            )
+            await asyncio.sleep(min(120, 5 * backoff))
+            backoff = min(backoff * 2, 24)
+        except Exception:
+            # Unexpected programming/service errors remain ERRORs and keep their
+            # traceback because they require investigation.
+            logger.exception("Telegram assistant polling failed", extra={"component": "telegram_assistant"})
+            await asyncio.sleep(min(300, 5 * backoff))
+            backoff = min(backoff * 2, 60)
+
+
 class SPAStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
         try:
@@ -64,13 +195,39 @@ class SPAStaticFiles(StaticFiles):
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     logger.info("Application started", extra={"component": "app"})
+    services = get_services()
+    # Register behavior ingestion before opening the MQTT listener so no motion
+    # message can arrive in the gap between connect and callback registration.
+    services.mapping.mqtt.add_message_listener(services.sentero.behavior.handle_mqtt_message)
+    try:
+        services.mapping.start_mqtt_listener()
+    except Exception:
+        # Keep the API available if the broker is temporarily down. Paho's live
+        # listener retries automatically once it has started; a hard setup error
+        # is logged here and sensor endpoints will report no current state.
+        logger.exception("MQTT live listener startup failed", extra={"component": "mqtt"})
+    await network_startup_check()
     behavior_task = asyncio.create_task(behavior_snapshot_loop())
+    network_task = asyncio.create_task(network_maintenance_loop())
+    mail_task = asyncio.create_task(mail_assistant_loop())
+    telegram_task = asyncio.create_task(telegram_assistant_loop())
     try:
         yield
     finally:
         behavior_task.cancel()
+        network_task.cancel()
+        mail_task.cancel()
+        telegram_task.cancel()
         with suppress(asyncio.CancelledError):
             await behavior_task
+        with suppress(asyncio.CancelledError):
+            await network_task
+        with suppress(asyncio.CancelledError):
+            await mail_task
+        with suppress(asyncio.CancelledError):
+            await telegram_task
+        services.mapping.mqtt.remove_message_listener(services.sentero.behavior.handle_mqtt_message)
+        services.mapping.stop_mqtt_listener()
         logger.info("Application stopped", extra={"component": "app"})
 
 
@@ -97,6 +254,12 @@ PUBLIC_PATHS = {
     "/api/sentero/auth/logout",
     "/api/setup/box-network/status",
     "/api/setup/box-network/wifi",
+    "/api/setup/network/status",
+    "/api/setup/network/wifi/networks",
+    "/api/setup/network/wifi/connect",
+    "/api/setup/network/cellular/connect",
+    "/api/mail/discover",
+    "/api/mail/verify",
 }
 PUBLIC_PREFIXES = (
     "/api/sentero/exchange/",
@@ -148,6 +311,7 @@ async def require_sentero_auth(request, call_next):
 
 app.include_router(router)
 app.include_router(box_setup_router)
+app.include_router(mail_router)
 
 
 def custom_openapi() -> dict:

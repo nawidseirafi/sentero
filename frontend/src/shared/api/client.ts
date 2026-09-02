@@ -58,9 +58,16 @@ export type SenteroSensorRole = {
   last_updated?: string | null;
   battery_level?: number | null;
   power_source?: string | null;
+  temperature?: number | null;
+  humidity?: number | null;
+  illuminance?: number | null;
   presence?: boolean | null;
+  smoke?: boolean | null;
   fall_detected?: boolean | null;
   motion?: string | null;
+  motion_state?: string | null;
+  stale?: boolean | null;
+  stale_seconds?: number | null;
   writable_settings?: string[] | null;
   hp_led?: boolean | null;
   fall_led?: boolean | null;
@@ -92,11 +99,29 @@ export type SenteroTrustedContact = {
   email?: string | null;
   phone?: string | null;
   telegram_chat_id?: string | null;
+  telegram_invite_code?: string | null;
+  telegram_linked_at?: string | null;
+  telegram_linked?: boolean;
   whatsapp_phone_number?: string | null;
   preferred_channels?: string | string[] | null;
   notification_enabled?: number | boolean;
   primary_contact?: number | boolean;
+  email_queries_enabled?: number | boolean;
+  email_permissions?: string[] | string | null;
   active?: number;
+};
+
+export type SenteroMailQueryContact = {
+  id: number;
+  name: string;
+  email?: string | null;
+  email_queries_enabled: boolean;
+  email_permissions: string[];
+};
+
+export type SenteroMailQuerySettings = {
+  enabled: boolean;
+  contacts: SenteroMailQueryContact[];
 };
 
 export type SenteroNotifications = {
@@ -126,6 +151,26 @@ export type SenteroNotificationChannel = {
   configured: boolean;
   config: Record<string, unknown>;
   updated_at?: string | null;
+};
+
+export type SenteroTelegramBotInfo = {
+  id?: number | string | null;
+  username: string;
+  first_name?: string | null;
+  invite_base_url: string;
+};
+
+export type MailConfig = {
+  imap_host: string;
+  imap_port: number;
+  imap_encryption: 'SSL' | 'STARTTLS' | 'NONE' | string;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_encryption: 'SSL' | 'STARTTLS' | 'NONE' | string;
+  auth_method?: string | null;
+  requires_app_password: boolean;
+  app_password_help_url?: string | null;
+  source: 'ispdb' | 'fallback' | 'manual' | string;
 };
 
 export type SenteroConsent = {
@@ -162,7 +207,7 @@ export type SenteroExportToken = {
 
 export type SenteroTransparencyItem = {
   id: string;
-  category: 'export' | 'notification' | 'consent' | 'security' | string;
+  category: 'export' | 'notification' | 'mail_query' | 'consent' | 'security' | string;
   event_type: string;
   status: string;
   summary: string;
@@ -179,7 +224,7 @@ export type SenteroTransparencyItem = {
 
 export type SenteroTransparency = {
   items: SenteroTransparencyItem[];
-  summary: { total: number; exports: number; notifications: number; consents: number; security: number };
+  summary: { total: number; exports: number; notifications: number; mail_queries?: number; consents: number; security: number };
   retention: {
     retention_days: number;
     tables: Array<{ table: string; count: number; oldest?: string | null; newest?: string | null }>;
@@ -197,6 +242,8 @@ export type SenteroContactPayload = {
   preferred_channels?: string[];
   notification_enabled?: boolean;
   primary_contact?: boolean;
+  email_queries_enabled?: boolean;
+  email_permissions?: string[];
 };
 
 export type SenteroCandidate = {
@@ -222,20 +269,37 @@ export type SenteroSensorDiscoveryStart = {
   message: string;
   sensor_type: string;
   room_id?: string | null;
+  transport?: 'zigbee' | 'wifi_esphome' | string;
+  device?: SenteroDiscoveredSensor | null;
+  devices?: SenteroDiscoveredSensor[];
+  expires_in_seconds?: number;
 };
 
 export type SenteroDiscoveredSensor = {
   id: string;
   name: string;
   type: string;
+  detected_type?: string | null;
+  supported?: boolean;
+  manufacturer?: string | null;
+  model?: string | null;
+  lifecycle_status?: string | null;
+  interview_status?: string | null;
   confidence: number;
+  source?: string | null;
+  source_ref?: string | null;
+  entities?: string[];
 };
 
 export type SenteroSensorDiscoveryResult = {
   discovery_id: number;
-  status: 'found' | 'searching' | 'not_found' | string;
+  status: 'found' | 'searching' | 'existing_device_found' | 'wrong_type_found' | 'unsupported_device_found' | 'not_found' | string;
   message: string;
   sensor?: SenteroDiscoveredSensor | null;
+  device?: SenteroDiscoveredSensor | null;
+  devices?: SenteroDiscoveredSensor[];
+  requested_type?: string | null;
+  detected_type?: string | null;
   remaining_seconds?: number;
 };
 
@@ -245,13 +309,44 @@ export type SenteroSensorNetworkSettings = {
   configured: boolean;
 };
 
+export type SenteroEcoTrackerStatus = {
+  enabled: boolean;
+  configured: boolean;
+  host: string;
+  device: string;
+  last_checked_at?: string | null;
+  reading?: SenteroEcoTrackerReading | null;
+};
+
+export type SenteroEcoTrackerReading = {
+  power_w?: number | null;
+  power_avg_w?: number | null;
+  meter_reading_kwh?: number | null;
+  energy_in_kwh?: number | null;
+  energy_out_kwh?: number | null;
+};
+
+export type SenteroSensorManagerStatus = {
+  ready: boolean;
+  mode: string;
+  status_label: string;
+  network: SenteroSensorNetworkSettings;
+  supported_sensor_types: string[];
+  wifi_sensor_setup_enabled?: boolean;
+  presence_sensor_transport?: 'zigbee' | 'wifi_esphome' | string;
+};
+
 export type BoxNetworkStatus = {
   mode: 'disabled' | 'auto' | 'force' | string;
+  status?: 'OFFLINE' | 'LOCAL_ONLY' | 'ONLINE_ETHERNET' | 'ONLINE_WIFI' | 'ONLINE_CELLULAR' | 'DEGRADED' | string;
+  active_connection?: 'ethernet' | 'wifi' | 'cellular' | 'none' | string;
   network_ready: boolean;
   ethernet_active: boolean;
   wifi_active: boolean;
   ip_address?: string | null;
   setup_ap_active: boolean;
+  setup_ap_ssid?: string | null;
+  setup_url?: string | null;
   hostname: string;
   local_url: string;
   message: string;
@@ -265,6 +360,27 @@ export type BoxNetworkWifiResult = {
   mode: string;
   message: string;
   status: BoxNetworkStatus;
+};
+
+export type NetworkStatus = BoxNetworkStatus & {
+  status: 'OFFLINE' | 'LOCAL_ONLY' | 'ONLINE_ETHERNET' | 'ONLINE_WIFI' | 'ONLINE_CELLULAR' | 'DEGRADED' | string;
+  active_connection: 'ethernet' | 'wifi' | 'cellular' | 'none' | string;
+  cellular_active: boolean;
+  capabilities: { ethernet: boolean; wifi: boolean; wifi_ap: boolean; cellular: boolean };
+  cellular: {
+    available: boolean;
+    sim_present: boolean;
+    registered: boolean;
+    provider?: string | null;
+    signal_percent?: number | null;
+    connected: boolean;
+  };
+};
+
+export type WifiNetwork = {
+  ssid: string;
+  signal: number;
+  secured: boolean;
 };
 
 export type SenteroSensorProvisioningStatus = {
@@ -358,6 +474,54 @@ export type UpdateLatest = {
   release_notes: string[] | string;
   channel: string;
   layers: string[];
+};
+
+export type SenteroSystemServiceStatus = {
+  key: string;
+  label: string;
+  state: 'ok' | 'warning' | 'error' | 'inactive' | string;
+  detail?: string;
+};
+
+export type SenteroSystemStatus = {
+  ok: boolean;
+  overall: 'ok' | 'warning' | 'error' | string;
+  summary: string;
+  checked_at?: string;
+  services: SenteroSystemServiceStatus[];
+  device?: {
+    identity_provisioned?: boolean;
+    serial_number?: string | null;
+    device_id?: string | null;
+    created_at?: string | null;
+    setup_ssid?: string | null;
+    legacy_box_id?: string | null;
+    identity_error?: string | null;
+  };
+  network?: {
+    active_connection?: string | null;
+    ip_address?: string | null;
+    internet_reachable?: boolean;
+  };
+};
+
+export type FactoryResetState = {
+  status?: 'accepted' | 'running' | 'completed' | 'failed' | string;
+  phase?: string;
+  message?: string;
+  accepted_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  updated_at?: string;
+  error?: string;
+};
+
+export type FactoryResetResult = {
+  ok: boolean;
+  accepted?: boolean;
+  already_running?: boolean;
+  message?: string;
+  state?: FactoryResetState;
 };
 
 export type UpdateStatus = {
@@ -481,6 +645,10 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   messages: async (_limit = 100) => ({ messages: [] as MessageCenterItem[] }),
+  senteroSystemStatus: () => request<SenteroSystemStatus>('/api/sentero/system/status'),
+  senteroFactoryResetStatus: () => request<FactoryResetResult>('/api/sentero/system/factory-reset/status'),
+  senteroFactoryReset: (confirm: string) =>
+    request<FactoryResetResult>('/api/sentero/system/factory-reset', { method: 'POST', body: JSON.stringify({ confirm }) }),
   senteroUpdateStatus: () => request<UpdateStatus>('/api/sentero/system/update/status'),
   senteroCheckUpdates: () => request<UpdateCheckResult>('/api/sentero/system/update/check'),
   senteroInstallUpdate: () => request<UpdateStatus>('/api/sentero/system/update/install', { method: 'POST', body: JSON.stringify({}) }),
@@ -510,7 +678,7 @@ export const api = {
     request<SenteroPairingStart>('/api/sentero/setup/discovery/start', { method: 'POST', body: JSON.stringify(payload) }),
   startSenteroZigbeePairing: (payload: { role: string; room?: string | null; duration?: number }) =>
     request<SenteroPairingStart>('/api/sentero/setup/pairing/zigbee/start', { method: 'POST', body: JSON.stringify(payload) }),
-  startSenteroSensorDiscovery: (payload: { sensor_type: string; room_id?: string | null; role?: string | null; duration?: number }) =>
+  startSenteroSensorDiscovery: (payload: { sensor_type: string; room_id?: string | null; role?: string | null; transport?: 'zigbee' | 'wifi_esphome' | string; duration?: number }) =>
     request<SenteroSensorDiscoveryStart>('/api/sentero/sensors/start-discovery', { method: 'POST', body: JSON.stringify(payload) }),
   senteroDiscoveredSensors: (discoveryId: number, dev = false) =>
     request<SenteroSensorDiscoveryResult>(`/api/sentero/sensors/discovered?discovery_id=${discoveryId}${dev ? '&dev=true' : ''}`),
@@ -518,13 +686,34 @@ export const api = {
     request<{ ok: boolean; provider?: string; reason?: string }>('/api/sentero/sensors/discovery/cancel', { method: 'POST', body: JSON.stringify({ discovery_id: discoveryId ?? null }) }),
   registerSenteroSensor: (sensorId: string, payload: { discovery_id: number; name?: string | null; room_id?: string | null }, dev = false) =>
     request<{ status: string; sensor: { id: string; name: string; room_id?: string | null; type: string } }>(`/api/sentero/sensors/${encodeURIComponent(sensorId)}/register${dev ? '?dev=true' : ''}`, { method: 'POST', body: JSON.stringify(payload) }),
+  senteroUnassignedSensors: () => request<{ devices: SenteroDiscoveredSensor[] }>('/api/sentero/sensors/unassigned'),
+  assignSenteroUnassignedSensor: (deviceId: string, payload: { sensor_type: string; room_id?: string | null; role?: string | null; name?: string | null }, dev = false) =>
+    request<{ status: string; sensor: { id: string; name: string; room_id?: string | null; type: string } }>(`/api/sentero/sensors/unassigned/${encodeURIComponent(deviceId)}/assign${dev ? '?dev=true' : ''}`, { method: 'POST', body: JSON.stringify(payload) }),
+  ignoreSenteroUnassignedSensor: (deviceId: string) =>
+    request<{ status: string; device?: SenteroDiscoveredSensor }>(`/api/sentero/sensors/unassigned/${encodeURIComponent(deviceId)}/ignore`, { method: 'POST' }),
+  removeSenteroUnassignedSensor: (deviceId: string) =>
+    request<{ deleted: boolean; device_id: string }>(`/api/sentero/sensors/unassigned/${encodeURIComponent(deviceId)}`, { method: 'DELETE' }),
   senteroSensorNetwork: () => request<SenteroSensorNetworkSettings>('/api/sentero/sensors/network'),
   saveSenteroSensorNetwork: (payload: { wifi_ssid?: string; wifi_password?: string }) =>
     request<{ status: string; network: SenteroSensorNetworkSettings }>('/api/sentero/sensors/network', { method: 'POST', body: JSON.stringify(payload) }),
   testSenteroSensorNetwork: () => request<{ ok: boolean; message: string }>('/api/sentero/sensors/network/test', { method: 'POST' }),
+  senteroEcoTrackerStatus: () => request<SenteroEcoTrackerStatus>('/api/sentero/sensors/ecotracker'),
+  testSenteroEcoTracker: (host: string) =>
+    request<{ ok: boolean; message: string; host: string; reading: SenteroEcoTrackerReading }>('/api/sentero/sensors/ecotracker/test', { method: 'POST', body: JSON.stringify({ host }) }),
+  connectSenteroEcoTracker: (host: string) =>
+    request<{ status: string; sensor: { id: string; name: string; room_id?: string | null; type: string }; reading: SenteroEcoTrackerReading }>('/api/sentero/sensors/ecotracker/connect', { method: 'POST', body: JSON.stringify({ host }) }),
   boxNetworkStatus: () => request<BoxNetworkStatus>('/api/setup/box-network/status'),
+  boxNetworkWifiNetworks: () => request<{ networks: WifiNetwork[] }>('/api/setup/network/wifi/networks'),
   saveBoxNetworkWifi: (payload: { ssid: string; password: string }) =>
     request<BoxNetworkWifiResult>('/api/setup/box-network/wifi', { method: 'POST', body: JSON.stringify(payload) }),
+  networkStatus: (diagnostics = false) => request<NetworkStatus>(`/api/sentero/network/status${diagnostics ? '?diagnostics=true' : ''}`),
+  networkWifiNetworks: () => request<{ networks: WifiNetwork[] }>('/api/sentero/network/wifi/networks'),
+  connectNetworkWifi: (payload: { ssid: string; password: string }) =>
+    request<{ ok: boolean; applied: boolean; message: string; status: NetworkStatus }>('/api/sentero/network/wifi/connect', { method: 'POST', body: JSON.stringify(payload) }),
+  testNetworkWifi: () => request<{ ok: boolean; message: string }>('/api/sentero/network/wifi/test', { method: 'POST' }),
+  connectNetworkCellular: (payload: { apn?: string; username?: string; password?: string; pin?: string } = {}) =>
+    request<{ ok: boolean; applied: boolean; message: string; status: NetworkStatus }>('/api/sentero/network/cellular/connect', { method: 'POST', body: JSON.stringify(payload) }),
+  startNetworkSetupAp: () => request<{ ok: boolean; message: string }>('/api/sentero/network/setup-ap/start', { method: 'POST' }),
   senteroSensorProvisioningStatus: () => request<SenteroSensorProvisioningStatus>('/api/sentero/sensors/provisioning/status'),
   startSenteroPresenceDiscovery: () =>
     request<{ ok: boolean; message: string; discovery: SenteroEsp32DiscoveryStatus }>('/api/sentero/sensors/provisioning/esp32/discovery/start', { method: 'POST' }),
@@ -539,6 +728,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ entity_id: entityId, ...(payload || {}) }),
     }),
+  senteroSensorManagerStatus: () => request<SenteroSensorManagerStatus>('/api/sentero/sensors/status'),
   saveSenteroSetupSensors: () => request<SenteroSetupStatus>('/api/sentero/setup/sensors', { method: 'POST' }),
   saveSenteroContact: (payload: SenteroContactPayload) =>
     request<SenteroSetupStatus>('/api/sentero/setup/contact', { method: 'POST', body: JSON.stringify(payload) }),
@@ -546,9 +736,17 @@ export const api = {
     request<SenteroSetupStatus>(`/api/sentero/setup/contact/${encodeURIComponent(String(contactId))}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteSenteroContact: (contactId: number) =>
     request<SenteroSetupStatus>(`/api/sentero/setup/contact/${encodeURIComponent(String(contactId))}`, { method: 'DELETE' }),
+  senteroEmailQuerySettings: () => request<SenteroMailQuerySettings>('/api/sentero/setup/email-queries'),
+  updateSenteroEmailQueryContact: (contactId: number, payload: { email_queries_enabled: boolean; email_permissions: string[] }) =>
+    request<SenteroMailQuerySettings>(`/api/sentero/setup/contact/${encodeURIComponent(String(contactId))}/email-queries`, { method: 'PUT', body: JSON.stringify(payload) }),
+  discoverMailSettings: (email: string) =>
+    request<MailConfig>('/api/mail/discover', { method: 'POST', body: JSON.stringify({ email }) }),
+  verifyMailSettings: (payload: { email: string; password: string; config: MailConfig; imap_username?: string; smtp_username?: string }) =>
+    request<{ ok: boolean; message: string }>('/api/mail/verify', { method: 'POST', body: JSON.stringify(payload) }),
   saveSenteroNotifications: (payload: { anomalies: boolean; critical: boolean; daily_summary: boolean }) =>
     request<SenteroSetupStatus>('/api/sentero/setup/notifications', { method: 'POST', body: JSON.stringify(payload) }),
   senteroNotificationChannels: () => request<{ channels: SenteroNotificationChannel[] }>('/api/sentero/notifications/channels'),
+  senteroTelegramBot: () => request<SenteroTelegramBotInfo>('/api/sentero/notifications/telegram/bot'),
   senteroConsents: () => request<{ consents: SenteroConsent[] }>('/api/sentero/consents'),
   grantSenteroConsent: (payload: { contact_id: number; recipient_type?: string; purpose?: string; data_classes?: string[]; valid_until?: string | null }) =>
     request<{ consents: SenteroConsent[] }>('/api/sentero/consents', { method: 'POST', body: JSON.stringify(payload) }),
@@ -574,7 +772,7 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
   testSenteroSensorRole: (role: string) =>
-    request<{ ok: boolean; mode: string; message: string; entity_id?: string; state?: string }>(`/api/sentero/sensor-roles/${encodeURIComponent(role)}/test`, { method: 'POST' }),
+    request<{ ok: boolean; mode: string; message: string; entity_id?: string; state?: string; stale?: boolean }>(`/api/sentero/sensor-roles/${encodeURIComponent(role)}/test`, { method: 'POST' }),
   commandSenteroSensorRole: (role: string, payload: { command: string; enabled?: boolean; value?: unknown; settings?: Record<string, unknown> }) =>
     request<{ ok: boolean; message: string; hp_led?: boolean | null; fall_led?: boolean | null; led_status?: SenteroSensorRole['led_status']; response?: Record<string, unknown> }>(`/api/sentero/sensor-roles/${encodeURIComponent(role)}/command`, {
       method: 'POST',

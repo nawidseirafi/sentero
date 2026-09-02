@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import os
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
+
+from backend.agents.sentero.mail.discovery import get_mail_settings, verify_mail_credentials
+from backend.agents.sentero.mail.models import MailConfig
 from backend.config import config_str
 from backend.services.container import get_services
 
@@ -36,6 +40,7 @@ OPENAPI_TAGS = [
 
 router = APIRouter(prefix=API_PREFIX)
 box_setup_router = APIRouter(prefix="/api/setup")
+mail_router = APIRouter(prefix="/api/mail")
 
 
 class ProfilePayload(BaseModel):
@@ -65,6 +70,7 @@ class SensorDiscoveryPayload(BaseModel):
     sensor_type: str = "presence_sensor"
     room_id: str | None = None
     role: str | None = None
+    transport: str | None = None
     duration: int | None = None
 
 
@@ -74,6 +80,13 @@ class SensorRegisterPayload(BaseModel):
     room_id: str | None = None
 
 
+class UnassignedSensorAssignPayload(BaseModel):
+    sensor_type: str
+    room_id: str | None = None
+    role: str | None = None
+    name: str | None = None
+
+
 class SensorDiscoveryCancelPayload(BaseModel):
     discovery_id: int | None = None
 
@@ -81,6 +94,10 @@ class SensorDiscoveryCancelPayload(BaseModel):
 class SensorNetworkPayload(BaseModel):
     wifi_ssid: str | None = None
     wifi_password: str | None = None
+
+
+class EcoTrackerPayload(BaseModel):
+    host: str
 
 
 class SensorRoleCommandPayload(BaseModel):
@@ -93,6 +110,22 @@ class SensorRoleCommandPayload(BaseModel):
 class BoxNetworkWifiPayload(BaseModel):
     ssid: str
     password: str
+
+
+class NetworkWifiConnectPayload(BaseModel):
+    ssid: str
+    password: str
+
+
+class NetworkCellularConnectPayload(BaseModel):
+    apn: str | None = None
+    username: str | None = None
+    password: str | None = None
+    pin: str | None = None
+
+
+class FailoverTestPayload(BaseModel):
+    checks: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Esp32ProvisioningStartPayload(BaseModel):
@@ -118,6 +151,13 @@ class ContactPayload(BaseModel):
     preferred_channels: list[str] | None = None
     notification_enabled: bool = True
     primary_contact: bool = False
+    email_queries_enabled: bool | None = None
+    email_permissions: list[str] | None = None
+
+
+class MailContactSettingsPayload(BaseModel):
+    email_queries_enabled: bool
+    email_permissions: list[str] = Field(default_factory=lambda: ["STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT", "TECHNICAL_HEALTH"])
 
 
 class NotificationPayload(BaseModel):
@@ -204,6 +244,22 @@ class UpdateInstallRequest(BaseModel):
     layer: str | None = None
 
 
+class FactoryResetRequest(BaseModel):
+    confirm: str
+
+
+class MailDiscoverPayload(BaseModel):
+    email: str
+
+
+class MailVerifyPayload(BaseModel):
+    email: str
+    password: str = ""
+    config: MailConfig
+    imap_username: str | None = None
+    smtp_username: str | None = None
+
+
 def model_data(model: BaseModel) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump()
@@ -216,6 +272,43 @@ def api_error(exc: Exception) -> HTTPException:
 
 def is_dev_mode(dev: bool = False) -> bool:
     return dev or (config_str("app.dev_mode", "") or os.getenv("SENTERO_DEV_MODE", "")).lower() in {"1", "true", "yes", "on"}
+
+
+@mail_router.post("/discover", response_model=MailConfig, tags=[TAG_SETUP])
+async def discover_mail(payload: MailDiscoverPayload):
+    config = await get_mail_settings(payload.email)
+    if config is None:
+        raise HTTPException(status_code=404, detail="Für diese E-Mail-Domain wurden keine Mailserver-Einstellungen gefunden.")
+    return config
+
+
+@mail_router.post("/verify", tags=[TAG_SETUP])
+async def verify_mail(payload: MailVerifyPayload):
+    password = str(payload.password or "")
+    if not password or _looks_masked_secret(password):
+        stored = get_services().notification.stored_channel_config("email")
+        password = str(stored.get("smtp_password") or stored.get("imap_password") or "")
+
+    if not password:
+        return {
+            "ok": False,
+            "message": "Kein gespeichertes Passwort vorhanden. Bitte geben Sie das Passwort oder App-Passwort erneut ein.",
+        }
+
+    ok, message = await asyncio.to_thread(
+        verify_mail_credentials,
+        payload.config,
+        payload.email,
+        password,
+        payload.imap_username,
+        payload.smtp_username,
+    )
+    return {"ok": ok, "message": message or "Senden und Empfangen funktioniert."}
+
+
+def _looks_masked_secret(value: Any) -> bool:
+    text = str(value or "")
+    return "•" in text or text.startswith("***")
 
 
 @box_setup_router.get("/box-network/status", tags=[TAG_SETUP])
@@ -231,6 +324,91 @@ def box_network_wifi(payload: BoxNetworkWifiPayload):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise api_error(exc) from exc
+
+
+@box_setup_router.get("/network/status", tags=[TAG_SETUP])
+def local_setup_network_status():
+    return get_services().network.status()
+
+
+@box_setup_router.get("/network/wifi/networks", tags=[TAG_SETUP])
+def local_setup_wifi_networks():
+    return get_services().network.wifi_networks()
+
+
+@box_setup_router.post("/network/wifi/connect", tags=[TAG_SETUP])
+def local_setup_wifi_connect(payload: NetworkWifiConnectPayload):
+    try:
+        return get_services().network.connect_wifi(model_data(payload))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@box_setup_router.post("/network/cellular/connect", tags=[TAG_SETUP])
+def local_setup_cellular_connect(payload: NetworkCellularConnectPayload):
+    return get_services().network.connect_cellular(model_data(payload))
+
+
+@router.get("/network/status", tags=[TAG_SYSTEM])
+def network_status(diagnostics: bool = False):
+    return get_services().network.status(diagnostics=diagnostics)
+
+
+@router.get("/network/capabilities", tags=[TAG_SYSTEM])
+def network_capabilities():
+    return get_services().network.capabilities()
+
+
+@router.get("/network/wifi/networks", tags=[TAG_SYSTEM])
+def network_wifi_networks():
+    return get_services().network.wifi_networks()
+
+
+@router.post("/network/wifi/connect", tags=[TAG_SYSTEM])
+def network_wifi_connect(payload: NetworkWifiConnectPayload):
+    try:
+        return get_services().network.connect_wifi(model_data(payload))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.post("/network/wifi/test", tags=[TAG_SYSTEM])
+def network_wifi_test():
+    return get_services().network.test_wifi()
+
+
+@router.get("/network/cellular/status", tags=[TAG_SYSTEM])
+def network_cellular_status():
+    return get_services().network.cellular_status()
+
+
+@router.post("/network/cellular/connect", tags=[TAG_SYSTEM])
+def network_cellular_connect(payload: NetworkCellularConnectPayload):
+    return get_services().network.connect_cellular(model_data(payload))
+
+
+@router.post("/network/cellular/disconnect", tags=[TAG_SYSTEM])
+def network_cellular_disconnect():
+    return get_services().network.disconnect_cellular()
+
+
+@router.post("/network/setup-ap/start", tags=[TAG_SYSTEM])
+def network_setup_ap_start():
+    return get_services().network.start_setup_ap(reason="manual")
+
+
+@router.post("/network/setup-ap/stop", tags=[TAG_SYSTEM])
+def network_setup_ap_stop():
+    return get_services().network.stop_setup_ap()
+
+
+@router.post("/network/failover/test", tags=[TAG_SYSTEM])
+def network_failover_test(payload: FailoverTestPayload):
+    return get_services().network.failover_test(model_data(payload).get("checks") or [])
 
 
 @router.get("/auth/status", tags=[TAG_AUTH])
@@ -276,6 +454,35 @@ def sentero_auth_forgot_password(payload: ForgotPasswordPayload, request: Reques
 @router.post("/auth/reset-password", tags=[TAG_AUTH])
 def sentero_auth_reset_password(payload: ResetPasswordPayload):
     return get_services().auth.reset_password(model_data(payload))
+
+
+@router.get("/system/status", tags=[TAG_SYSTEM])
+def sentero_system_status():
+    return get_services().system_status.status()
+
+
+@router.get("/system/factory-reset/status", tags=[TAG_SYSTEM])
+def sentero_factory_reset_status(request: Request):
+    user = get_services().auth.user_from_request(request, required=True)
+    if str(user.get("role") or "") not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Nur Inhaber und Administratoren dürfen die Werkseinstellungen verwalten.")
+    try:
+        return get_services().factory_reset.status()
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.post("/system/factory-reset", tags=[TAG_SYSTEM])
+def sentero_factory_reset(payload: FactoryResetRequest, request: Request):
+    user = get_services().auth.user_from_request(request, required=True)
+    if str(user.get("role") or "") not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Nur Inhaber und Administratoren dürfen die Box zurücksetzen.")
+    try:
+        return get_services().factory_reset.start(payload.confirm)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
 
 
 @router.get("/system/update/status", tags=[TAG_SYSTEM])
@@ -363,7 +570,8 @@ def sentero_sensor_manager_start_discovery(payload: SensorDiscoveryPayload):
             payload.sensor_type,
             room_id=payload.room_id,
             role=payload.role,
-            duration=payload.duration or 180,
+            duration=payload.duration or 120,
+            transport=payload.transport,
         )
     except Exception as exc:
         raise api_error(exc) from exc
@@ -405,6 +613,49 @@ def sentero_sensor_manager_register(sensor_id: str, payload: SensorRegisterPaylo
         raise api_error(exc) from exc
 
 
+@router.get("/sensors/unassigned", tags=[TAG_SENSORS])
+def sentero_sensor_manager_unassigned():
+    try:
+        return get_services().sensor_manager.unassigned_devices()
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.post("/sensors/unassigned/{device_id}/assign", tags=[TAG_SENSORS])
+def sentero_sensor_manager_assign_unassigned(device_id: str, payload: UnassignedSensorAssignPayload, dev: bool = Query(False)):
+    try:
+        return get_services().sensor_manager.assign_unassigned(
+            device_id,
+            payload.sensor_type,
+            room_id=payload.room_id,
+            role=payload.role,
+            name=payload.name,
+            dev=is_dev_mode(dev),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.post("/sensors/unassigned/{device_id}/ignore", tags=[TAG_SENSORS])
+def sentero_sensor_manager_ignore_unassigned(device_id: str):
+    try:
+        return get_services().sensor_manager.ignore_unassigned(device_id)
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.delete("/sensors/unassigned/{device_id}", tags=[TAG_SENSORS])
+def sentero_sensor_manager_remove_unassigned(device_id: str):
+    try:
+        return get_services().sensor_manager.remove_unassigned(device_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
 @router.post("/sensors/{sensor_id}/assign-room", tags=[TAG_SENSORS])
 def sentero_sensor_manager_assign_room(sensor_id: str, payload: DeviceAssignRoomPayload):
     return get_services().sensor_manager.assign_room(sensor_id, payload.room_id)
@@ -423,6 +674,31 @@ def sentero_sensor_manager_save_network(payload: SensorNetworkPayload):
 @router.post("/sensors/network/test", tags=[TAG_SENSORS])
 def sentero_sensor_manager_test_network():
     return get_services().sensor_manager.test_network_settings()
+
+
+@router.get("/sensors/ecotracker", tags=[TAG_SENSORS])
+def sentero_ecotracker_status():
+    return get_services().sensor_manager.ecotracker_status()
+
+
+@router.post("/sensors/ecotracker/test", tags=[TAG_SENSORS])
+def sentero_ecotracker_test(payload: EcoTrackerPayload):
+    try:
+        return get_services().sensor_manager.test_ecotracker(payload.host)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@router.post("/sensors/ecotracker/connect", tags=[TAG_SENSORS])
+def sentero_ecotracker_connect(payload: EcoTrackerPayload):
+    try:
+        return get_services().sensor_manager.connect_ecotracker(payload.host)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise api_error(exc) from exc
 
 
 @router.get("/sensors/provisioning/status", tags=[TAG_SENSORS])
@@ -556,6 +832,19 @@ def setup_contact_delete(contact_id: int):
     return get_services().setup.delete_contact(contact_id)
 
 
+@router.get("/setup/email-queries", tags=[TAG_SETUP])
+def setup_email_queries():
+    return get_services().mail_assistant_settings.status()
+
+
+@router.put("/setup/contact/{contact_id}/email-queries", tags=[TAG_SETUP])
+def setup_contact_email_queries(contact_id: int, payload: MailContactSettingsPayload):
+    try:
+        return get_services().mail_assistant_settings.update_contact(contact_id, model_data(payload))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/setup/notifications", tags=[TAG_SETUP])
 def setup_notifications(payload: NotificationPayload):
     return get_services().setup.notifications(model_data(payload))
@@ -564,6 +853,14 @@ def setup_notifications(payload: NotificationPayload):
 @router.get("/notifications/channels", tags=[TAG_NOTIFICATIONS])
 def notification_channels():
     return get_services().notification.channels()
+
+
+@router.get("/notifications/telegram/bot", tags=[TAG_NOTIFICATIONS])
+def notification_telegram_bot():
+    try:
+        return get_services().notification.telegram_bot_info()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/notifications/channels/email", tags=[TAG_NOTIFICATIONS])

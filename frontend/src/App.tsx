@@ -8,6 +8,8 @@ import { ContactsPage } from './pages/ContactsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { SetupWizardPage } from './pages/SetupWizardPage';
 import SenteroShell  from './components/SenteroShell';
+import { BoxNetworkSetup } from './components/BoxNetworkSetup';
+import { api, type BoxNetworkStatus } from './shared/api/client';
 import type { SenteroRoute, SenteroRouteName, SenteroSettingsTab } from './routes/routes';
 import { parseSenteroRoute, senteroRouteToPath } from './routes/routes';
 import './styles/sentero.css';
@@ -23,6 +25,23 @@ export function App() {
 function SenteroContent() {
   const { loading, setupRequired, isAuthenticated, logout } = useSenteroAuth();
   const [route, setRoute] = useState<SenteroRoute>(parseSenteroRoute());
+  const [networkLoading, setNetworkLoading] = useState(true);
+  const [networkStatus, setNetworkStatus] = useState<BoxNetworkStatus | null>(null);
+
+  const refreshNetwork = async () => {
+    try {
+      const status = await api.boxNetworkStatus();
+      setNetworkStatus(status);
+    } catch {
+      setNetworkStatus(null);
+    } finally {
+      setNetworkLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshNetwork();
+  }, []);
 
   useEffect(() => {
     const onPop = () => setRoute(parseSenteroRoute());
@@ -36,8 +55,14 @@ function SenteroContent() {
     setRoute(next);
   };
 
-  if (loading) {
+  if (loading || networkLoading) {
     return <main className="sc-login-page"><section className="sc-login-card"><p className="sc-muted-note">Sentero wird geladen...</p></section></main>;
+  }
+
+  // Appliance onboarding always configures the host network before account
+  // creation and the normal Sentero wizard. Development mode stays unchanged.
+  if (networkStatus && networkStatus.mode !== 'disabled' && !networkStatus.network_ready) {
+    return <BoxNetworkSetup initialStatus={networkStatus} onReady={() => void refreshNetwork()} />;
   }
 
   if (setupRequired || !isAuthenticated) {

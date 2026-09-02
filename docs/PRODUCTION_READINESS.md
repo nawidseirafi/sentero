@@ -5,10 +5,13 @@ Diese Liste beschreibt, was noch fehlt, bevor Sentero produktiv bei echten Nutze
 Zielbild fuer Produktion:
 
 - Sentero laeuft als Docker-Stack.
-- Sensorik laeuft ohne Home Assistant ueber Mosquitto, Zigbee2MQTT und MQTT.
-- Updates kommen ueber `UPDATE_BASE_URL=https://seirafi.de/robotersteve/sentero`.
+- Sensorik laeuft ueber Mosquitto, Zigbee2MQTT und MQTT.
+- Updates kommen ueber `UPDATE_BASE_URL=https://sentero.de/sentero`.
 - Runtime-Daten bleiben in `data/` und werden durch Updates nicht ueberschrieben.
 - Vertrauenspersonen erhalten relevante Warnungen zu Verhalten, Sensor-Batterie und Sensor-Erreichbarkeit.
+- Die Box kann ohne vorhandenen Router ueber ein temporaeres geschuetztes Setup-WLAN und optional LTE eingerichtet werden.
+
+Tech-Debt: `notification_logs` wird derzeit aus zwei unabhaengigen Schema-Definitionen erzeugt (`device_mapping_service.py` und `audit_service.py`). Langfristig sollte die Tabelle aus einer einzigen Quelle stammen, idealerweise ueber eine Notification-Service-eigene Migration.
 
 ## Status
 
@@ -21,9 +24,16 @@ Bereits erledigt:
 - Docker ist auf MQTT als Produktionsquelle ausgerichtet.
 - Direkter MQTT-Service fuer Mosquitto Publish/Snapshot ist vorhanden.
 - Zigbee2MQTT-Snapshots werden aus MQTT-Nachrichten erzeugt.
+- Persistenter MQTT-Listener und SQLite-Cache fuer zuletzt bekannte MQTT-Zustaende sind vorhanden.
 - Zigbee Permit-Join laeuft im MQTT-Modus direkt ueber Mosquitto.
+- V1-Sensorwizard verwendet fuer Praesenz- und Tuersensoren einen einheitlichen Such-Flow mit Zigbee als Standardtransport.
+- ESP32-Sensoren werden ueber denselben MQTT-Broker wie andere MQTT-Geraete angebunden; es gibt keinen separaten ESPHome-Provisioningpfad.
+- EcoTracker kann lokal als Strom-/Leistungsquelle angebunden werden.
 - Update-Manifeste werden aus `UPDATE_BASE_URL` generiert.
 - Release-Manifeste enthalten keine lokalen `/Users/...` Download-Pfade mehr.
+- NetworkService als Querschnittsdienst fuer Setup-WLAN, WLAN, Ethernet, LTE-Fallback und Connectivity ist vorhanden.
+- Benachrichtigungen koennen bei Offline-Zeit persistent gepuffert und nach Wiederherstellung versendet werden.
+- SQLite-Connections werden zentral ueber Context Manager geschlossen; Tests laufen ohne `unclosed database` ResourceWarnings.
 
 ## Muss Vor Produktivbetrieb
 
@@ -33,21 +43,26 @@ Offen:
 
 - Docker-Stack mit Sentero, Mosquitto und Zigbee2MQTT starten.
 - Einen echten Zigbee-Sensor anlernen.
-- Pruefen, ob der Sensor im Sentero-Wizard sichtbar wird.
+- Pruefen, ob Praesenz- und Tuersensoren im Sentero-Wizard ueber denselben Sensor-Suchen-Flow sichtbar werden.
 - Sensor bestaetigen und Dashboard-/Statusdaten pruefen.
 - Container neu starten und pruefen, ob Mapping und Status erhalten bleiben.
 
 Abnahmekriterium:
 
-- Ein realer Sensor kann ohne Home Assistant registriert, gespeichert, gelesen und nach Neustart weiter verwendet werden.
+- Ein realer Sensor kann registriert, gespeichert, gelesen und nach Neustart weiter verwendet werden.
 
-### 2. Persistente MQTT-Ereignisverarbeitung
+### 2. MQTT-Ereignisverarbeitung im echten Betrieb pruefen
+
+Erledigt:
+
+- Der MQTT-Service haelt einen persistenten Listener und spiegelt zuletzt bekannte Topic-Zustaende in SQLite.
+- Zigbee2MQTT-Snapshots nutzen den Cache und bootstrappen bei leerem Cache aus retained Messages.
+- Registrierte Rollen koennen ihren Zustand aus Snapshot oder Discovery-/MQTT-Cache aufloesen.
 
 Offen:
 
-- Aktuell liest der Zigbee2MQTT-Adapter Snapshots aus retained MQTT-Nachrichten.
-- Fuer produktive Zuverlaessigkeit sollte ein persistenter MQTT-Subscriber Events laufend aufnehmen und in SQLite speichern.
-- Batterie, Erreichbarkeit, letzte Aktivitaet und Sensorstatus sollten aus diesem lokalen Event-State kommen.
+- Mit realem Mosquitto/Zigbee2MQTT pruefen, ob nicht-retained Bewegungsereignisse dauerhaft genug fuer Dashboard, Mail und Verhaltenserkennung ankommen.
+- Neustart- und Broker-Ausfall-Szenarien mit realen Sensoren testen.
 
 Abnahmekriterium:
 
@@ -71,10 +86,10 @@ Abnahmekriterium:
 
 Offen:
 
-- Release-ZIP auf `https://seirafi.de/robotersteve/sentero/stable/releases/` hochladen.
-- `latest.json` auf `https://seirafi.de/robotersteve/sentero/stable/latest.json` hochladen.
+- Appliance-Bundle `sentero-box-<version>.zip` auf `https://sentero.de/sentero/stable/releases/` hochladen.
+- `latest.json` auf `https://sentero.de/sentero/stable/latest.json` hochladen.
 - Update-Check im laufenden Docker-System testen.
-- Update-Install im ZIP-Modus testen.
+- Update-Install im Appliance-Modus mit Host-Updater testen.
 - Backup-Verhalten pruefen.
 - Rollback nach absichtlich fehlerhaftem Update pruefen.
 
@@ -161,8 +176,9 @@ Offen:
 
 - API-Tests fuer Auth, Setup, Sensor-Wizard, Notifications und Updates.
 - Integrationstest fuer MQTT-Sensorquelle.
-- Test fuer Docker-Default: `.env` mit Home Assistant darf den Container nicht versehentlich auf HA umstellen.
+- Test fuer Docker-Default: Sentero muss im Container ausschliesslich die konfigurierte MQTT-Pipeline verwenden und darf keine alternative Sensorquelle aktivieren.
 - Fehlerfalltests fuer Update-Install, kaputtes ZIP, fehlende Manifestfelder und Rollback.
+- Testlauf mit `-W default::ResourceWarning` beibehalten, damit offene SQLite-Verbindungen auffallen.
 
 Abnahmekriterium:
 
@@ -216,9 +232,10 @@ Offen:
 
 - Versionierung festlegen.
 - Release-Checkliste einfuehren.
-- Build-Befehl dokumentieren.
+- Build-Befehl dokumentieren: `python3 deployment_build.py --version <version> --base-url <url>`.
 - Upload-Ziel dokumentieren.
 - Nach jedem Build Manifestwerte pruefen.
+- Vollstaendige `box/`-Deployment-Schicht versionieren, falls initiale Appliance-Installationspakete aus diesem Repo gebaut werden sollen.
 
 Abnahmekriterium:
 
@@ -226,12 +243,14 @@ Abnahmekriterium:
 
 ## Kann Nachgelagert Werden
 
-### 15. Matter/ZHA Pfade Aufraeumen
+### 15. Sensorquellen-Cleanup
 
-Offen:
+Status: umgesetzt.
 
-- Wenn Produktion wirklich nur MQTT/Zigbee2MQTT nutzt, koennen Matter/ZHA/HA-Pfade klar als Development/Optional markiert werden.
-- UI sollte in Produktion keine HA-spezifischen Begriffe zeigen.
+- Die aktive Sensorarchitektur verwendet eine einheitliche MQTT-/Zigbee2MQTT-Pipeline.
+- Produktion und Entwicklung verwenden dieselbe MQTT-/Zigbee2MQTT-Pipeline.
+- Normale UI-Texte zeigen keine transportinternen Spezialbegriffe.
+
 
 ### 16. LLM/Verhaltensanalyse Produktivstrategie
 
@@ -252,7 +271,7 @@ Offen:
 
 1. Docker-Stack mit echtem Mosquitto/Zigbee2MQTT starten.
 2. Einen echten Sensor ueber Sentero registrieren.
-3. Persistenten MQTT-Event-State implementieren.
+3. Persistenten MQTT-Event-State im echten Betrieb mit nicht-retained Events validieren.
 4. Systemwarnungs-Scheduler einbauen.
 5. Update-Flow mit echter Veroeffentlichung end-to-end testen.
 6. Mosquitto Auth aktivieren.

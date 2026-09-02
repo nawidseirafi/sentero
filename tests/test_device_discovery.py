@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from backend.services.device_mapping_service import score_candidates
+from backend.services.device_mapping_service import role_candidate_matches, score_candidates
 
 
 class DeviceDiscoveryTests(unittest.TestCase):
@@ -36,6 +36,42 @@ class DeviceDiscoveryTests(unittest.TestCase):
         self.assertGreaterEqual(len(scored), 1)
         self.assertEqual(scored[0]["entity_id"], "binary_sensor.wohnzimmer_bewegung")
         self.assertNotIn("sensor.wohnzimmer_bewegung_battery", {item["entity_id"] for item in scored})
+
+    def test_battery_alone_is_not_smoke_detector_candidate(self) -> None:
+        started_at = "2026-06-25T08:00:00+00:00"
+        current = [{
+            "entity_id": "sensor.kueche_rauchmelder_battery",
+            "device_id": "zigbee-device-2",
+            "domain": "sensor",
+            "device_class": "battery",
+            "friendly_name": "Küche Rauchmelder Batterie",
+            "payload_key": "battery",
+            "state": "100",
+            "last_changed": "2026-06-25T08:01:00+00:00",
+            "last_updated": "2026-06-25T08:01:00+00:00",
+        }]
+
+        scored = score_candidates([], current, "kitchen_smoke", "kitchen", started_at)
+
+        self.assertEqual(scored, [])
+
+    def test_smoke_detector_candidate_matches_smoke_role_only(self) -> None:
+        item = {
+            "entity_id": "binary_sensor.kueche_rauchmelder",
+            "device_id": "zigbee-device-2",
+            "domain": "binary_sensor",
+            "device_class": "smoke",
+            "friendly_name": "Küche Rauchmelder",
+            "payload_key": "smoke",
+            "state": "off",
+            "smoke": False,
+            "last_changed": "2026-06-25T08:01:00+00:00",
+            "last_updated": "2026-06-25T08:01:00+00:00",
+        }
+
+        self.assertTrue(role_candidate_matches("kitchen_smoke", item))
+        self.assertFalse(role_candidate_matches("kitchen_door", item))
+        self.assertFalse(role_candidate_matches("kitchen_presence", item))
 
 
 if __name__ == "__main__":

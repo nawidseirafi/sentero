@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, HeartHandshake, Mail, Plus, ShieldCheck, Trash2, UserRound, X } from 'lucide-react';
-import { api, type SenteroEsp32DiscoverySensor, type SenteroSensorRole } from '@shared/api/client';
+import { ArrowLeft, ArrowRight, Cable, CheckCircle2, HeartHandshake, Mail, Plus, ShieldCheck, Smartphone, Trash2, UserRound, Wifi, X } from 'lucide-react';
+import { api, type NetworkStatus, type SenteroDiscoveredSensor, type SenteroEsp32DiscoverySensor, type SenteroSensorRole, type WifiNetwork } from '@shared/api/client';
 import { SensorWizard, type SensorBinding, type SensorDiscoveryState } from './SensorWizard';
+import { createId } from "../utils/id"
 
 type Profile = {
   name: string;
@@ -25,10 +26,10 @@ type NotificationPreferences = {
   daily_summary: boolean;
 };
 
-type SensorPlan = { motion: boolean; door: boolean; electricity: boolean; water: boolean; gas: boolean };
+type SensorPlan = { motion: boolean; door: boolean; smoke: boolean; electricity: boolean; water: boolean; gas: boolean };
 
-const steps = ['Willkommen', 'Profil', 'Räume', 'Sensoren', 'Vertraute Personen', 'Benachrichtigungen', 'Abschluss'];
-const ZIGBEE_DISCOVERY_SECONDS = 180;
+const steps = ['Willkommen', 'Internetverbindung', 'Profil', 'Räume', 'Sensoren', 'Vertraute Personen', 'Benachrichtigungen', 'Abschluss'];
+const SENSOR_DISCOVERY_SECONDS = 120;
 const PRESENCE_DISCOVERY_TIMEOUT_MS = 8000;
 
 const roomOptions = [
@@ -58,9 +59,16 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
   const [notification, setNotification] = useState<NotificationPreferences>({ anomalies: true, critical: true, daily_summary: false });
   const [confirmed, setConfirmed] = useState(false);
   const [emailSetupRequired, setEmailSetupRequired] = useState(false);
+  const [networkStatus, setNetworkStatus] = useState<NetworkStatus | null>(null);
+  const [wifiNetworks, setWifiNetworks] = useState<WifiNetwork[]>([]);
+  const [networkChoice, setNetworkChoice] = useState<'wifi' | 'cellular' | 'ethernet'>('wifi');
+  const [wifiForm, setWifiForm] = useState({ ssid: '', password: '' });
+  const [networkMessage, setNetworkMessage] = useState('');
+  const [networkBusy, setNetworkBusy] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [sensorBindings, setSensorBindings] = useState<SensorBinding[]>([]);
   const [discovery, setDiscovery] = useState<Record<string, SensorDiscoveryState>>({});
+  const [presenceTransport, setPresenceTransport] = useState<'zigbee' | 'wifi_esphome'>('zigbee');
   const timers = useRef<Record<string, number>>({});
   const activeDiscoverySessions = useRef<Set<number>>(new Set());
   const devMode = new URLSearchParams(window.location.search).get('dev') === '1';
@@ -105,6 +113,14 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
         })));
       }
     }).catch(() => undefined);
+    void api.senteroSensorManagerStatus().then((status) => {
+      setPresenceTransport(status.presence_sensor_transport === 'wifi_esphome' ? 'wifi_esphome' : 'zigbee');
+    }).catch(() => undefined);
+    void api.senteroEcoTrackerStatus().then((status) => {
+      if (!status.host) return;
+      setSensorBindings((current) => current.map((sensor) => sensor.type === 'electricity_meter' ? { ...sensor, sensorId: status.host } : sensor));
+    }).catch(() => undefined);
+    void refreshNetwork();
     return () => {
       Object.values(timers.current).forEach((timer) => window.clearTimeout(timer));
       activeDiscoverySessions.current.forEach((sessionId) => {
@@ -129,14 +145,18 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
       await safeBackend(() => api.startSenteroSetup());
     }
     if (step === 1) {
-      await safeBackend(() => api.saveSenteroProfile({ name: profile.name.trim(), birth_year: Number.parseInt(profile.birthYear, 10), age: calculatedAge, notes: profile.notes }));
+      const ok = await saveNetworkStep();
+      if (!ok) return;
     }
     if (step === 2) {
+      await safeBackend(() => api.saveSenteroProfile({ name: profile.name.trim(), birth_year: Number.parseInt(profile.birthYear, 10), age: calculatedAge, notes: profile.notes }));
+    }
+    if (step === 3) {
       const roomsWithSensors = selectedRoomsWithSensors(selectedRooms, sensorPlan);
       setSelectedRooms(roomsWithSensors);
       await safeBackend(() => api.saveSenteroSetupRooms(roomsWithSensors));
     }
-    if (step === 4 && contacts.length) {
+    if (step === 5 && contacts.length) {
       await safeBackend(() => Promise.all(
         contacts.map((contact) => {
           const email = normalizeEmail(contact.email);
@@ -151,7 +171,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
         }),
       ));
     }
-    if (step === 5) {
+    if (step === 6) {
       await safeBackend(() => api.saveSenteroNotifications(notification));
     }
     if (step === steps.length - 1) {
@@ -168,14 +188,68 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
   }
 
   function validateStep() {
-    if (step === 1 && !profile.name.trim()) return ['Bitte geben Sie den Namen ein.'];
-    if (step === 1 && !validBirthYear(profile.birthYear)) return ['Bitte geben Sie ein gültiges Geburtsjahr ein.'];
-    if (step === 2 && selectedRooms.length === 0) return ['Bitte wählen Sie mindestens einen Raum aus.'];
-    if (step === 2 && selectedRoomsWithSensors(selectedRooms, sensorPlan).length === 0) return ['Bitte wählen Sie mindestens einen Raum mit Sensor aus.'];
-    if (step === 4 && contacts.length === 0) return ['Bitte fügen Sie mindestens eine vertraute Person hinzu.'];
-    if (step === 4 && !contacts.some((contact) => isValidEmail(normalizeEmail(contact.email)))) return ['Bitte hinterlegen Sie mindestens eine gültige E-Mail-Adresse.'];
-    if (step === 6 && !confirmed) return ['Bitte bestätigen Sie die Zusammenfassung.'];
+    if (step === 1 && !networkStatus?.network_ready && networkChoice === 'wifi' && !wifiForm.ssid.trim()) return ['Bitte wählen Sie ein WLAN aus.'];
+    if (step === 1 && !networkStatus?.network_ready && networkChoice === 'wifi' && !wifiForm.password) return ['Bitte geben Sie das WLAN-Passwort ein.'];
+    if (step === 2 && !profile.name.trim()) return ['Bitte geben Sie den Namen ein.'];
+    if (step === 2 && !validBirthYear(profile.birthYear)) return ['Bitte geben Sie ein gültiges Geburtsjahr ein.'];
+    if (step === 3 && selectedRooms.length === 0) return ['Bitte wählen Sie mindestens einen Raum aus.'];
+    if (step === 3 && selectedRoomsWithSensors(selectedRooms, sensorPlan).length === 0) return ['Bitte wählen Sie mindestens einen Raum mit Sensor aus.'];
+    if (step === 5 && contacts.length === 0) return ['Bitte fügen Sie mindestens eine vertraute Person hinzu.'];
+    if (step === 5 && !contacts.some((contact) => isValidEmail(normalizeEmail(contact.email)))) return ['Bitte hinterlegen Sie mindestens eine gültige E-Mail-Adresse.'];
+    if (step === 7 && !confirmed) return ['Bitte bestätigen Sie die Zusammenfassung.'];
     return [];
+  }
+
+  async function refreshNetwork() {
+    try {
+      const status = await api.networkStatus();
+      setNetworkStatus(status);
+      if (status.active_connection === 'wifi' || status.active_connection === 'ethernet' || status.active_connection === 'cellular') {
+        setNetworkChoice(status.active_connection);
+      }
+      if (status.capabilities.wifi) {
+        const scan = await api.networkWifiNetworks();
+        setWifiNetworks(scan.networks);
+      }
+    } catch {
+      // Network setup remains optional in development.
+    }
+  }
+
+  async function saveNetworkStep() {
+    setNetworkBusy(true);
+    setNetworkMessage('');
+    try {
+      if (networkStatus?.network_ready) {
+        return true;
+      }
+      if (networkChoice === 'ethernet') {
+        const status = await api.networkStatus();
+        setNetworkStatus(status);
+        if (!status.internet_reachable) {
+          setNetworkMessage('Sentero erkennt noch keine Internetverbindung. Sie können fortfahren, Benachrichtigungen werden später versendet.');
+        }
+        return true;
+      }
+      if (networkChoice === 'cellular') {
+        const result = await api.connectNetworkCellular();
+        setNetworkStatus(result.status);
+        setNetworkMessage(result.message);
+        return result.ok;
+      }
+      const result = await api.connectNetworkWifi(wifiForm);
+      setNetworkStatus(result.status);
+      setNetworkMessage(result.message);
+      if (!result.ok) setErrors([result.message || 'WLAN konnte nicht verbunden werden.']);
+      return result.ok;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internetverbindung konnte nicht eingerichtet werden.';
+      setNetworkMessage(message);
+      setErrors([message]);
+      return false;
+    } finally {
+      setNetworkBusy(false);
+    }
   }
 
   async function completeSetup() {
@@ -207,7 +281,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     if (selectedRooms.includes(roomId) && roomHasLockedSensor(lockedSensorPlan, roomId)) return;
     setSelectedRooms((current) => {
       if (current.includes(roomId)) return current.filter((id) => id !== roomId);
-      setSensorPlan((plans) => ({ ...plans, [roomId]: plans[roomId] || defaultSensorPlan(roomId) }));
+      setSensorPlan((plans) => ({ ...plans, [roomId]: plans[roomId] || emptySensorPlan() }));
       return [...current, roomId];
     });
   }
@@ -218,7 +292,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     const id = label;
     setCustomRooms((current) => ({ ...current, [id]: label }));
     setSelectedRooms((current) => current.includes(id) ? current : [...current, id]);
-    setSensorPlan((current) => ({ ...current, [id]: current[id] || { motion: true, door: false } }));
+    setSensorPlan((current) => ({ ...current, [id]: current[id] || emptySensorPlan() }));
     setCustomRoom('');
   }
 
@@ -229,7 +303,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
   function toggleSensorType(roomId: string, type: keyof SensorPlan) {
     if (lockedSensorPlan[roomId]?.[type]) return;
     setSensorPlan((current) => {
-      const fallback = defaultSensorPlan(roomId);
+      const fallback = emptySensorPlan();
       const next = { ...(current[roomId] || fallback), [type]: !(current[roomId] || fallback)[type] };
       return { ...current, [roomId]: next };
     });
@@ -241,26 +315,14 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
 
   async function searchSensor(sensor: SensorBinding) {
     updateSensor(sensor.id, { status: 'searching' });
-    setDiscovery((current) => ({ ...current, [sensor.id]: { remainingSeconds: ZIGBEE_DISCOVERY_SECONDS } }));
-    if (isPresenceBinding(sensor)) {
-      try {
-        const name = sensor.name || `${roomLabel(sensor.roomId)} Präsenzsensor`;
-        await api.startSenteroPresenceDiscovery();
-        const discovered = await waitForPresenceSensor();
-        setDiscovery((current) => ({
-          ...current,
-          [sensor.id]: {
-            sensor: { id: discovered.id, name: discovered.name, type: discovered.type, confidence: 100 },
-            remainingSeconds: Math.ceil(PRESENCE_DISCOVERY_TIMEOUT_MS / 1000),
-          },
-        }));
-        const result = await api.startSenteroPresenceProvisioning({ room_id: sensor.roomId, display_name: name, device_id: discovered.id });
-        updateSensor(sensor.id, { status: 'connected', score: 100, sensorManagerId: result.device.id, name: result.device.name });
-        setDiscovery((current) => ({ ...current, [sensor.id]: { sensor: { id: result.device.id, name: result.device.name, type: result.device.type, confidence: 100 }, remainingSeconds: 0 } }));
-      } catch (err) {
-        updateSensor(sensor.id, { status: 'missing' });
-        setDiscovery((current) => ({ ...current, [sensor.id]: { error: err instanceof Error ? err.message : 'Präsenzsensor konnte nicht verbunden werden.' } }));
-      }
+    setDiscovery((current) => ({ ...current, [sensor.id]: { remainingSeconds: SENSOR_DISCOVERY_SECONDS } }));
+    if (sensor.type === 'electricity_meter') {
+      await connectEcoTracker(sensor);
+      return;
+    }
+    const activePresenceTransport = isPresenceBinding(sensor) ? await loadPresenceTransport() : presenceTransport;
+    if (isPresenceBinding(sensor) && activePresenceTransport === 'wifi_esphome') {
+      await searchWifiPresenceSensor(sensor);
       return;
     }
     try {
@@ -268,18 +330,83 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
         sensor_type: sensorTypeForDiscovery(sensor.type),
         room_id: sensor.roomId,
         role: sensor.id,
-        duration: ZIGBEE_DISCOVERY_SECONDS,
+        transport: isPresenceBinding(sensor) ? activePresenceTransport : 'zigbee',
+        duration: SENSOR_DISCOVERY_SECONDS,
       });
       if (result.status === 'manual_action') {
         throw new Error(result.message || 'Die Sensor-Einrichtung ist noch nicht bereit.');
       }
+      if (result.status === 'existing_device_found') {
+        updateSensor(sensor.id, { status: 'idle' });
+        setDiscovery((current) => ({
+          ...current,
+          [sensor.id]: {
+            status: result.status,
+            device: result.device || result.devices?.[0] || null,
+            devices: result.devices || [],
+            remainingSeconds: 0,
+          },
+        }));
+        return;
+      }
       activeDiscoverySessions.current.add(result.discovery_id);
       updateSensor(sensor.id, { sessionId: result.discovery_id });
-      setDiscovery((current) => ({ ...current, [sensor.id]: { ...(current[sensor.id] || {}), remainingSeconds: ZIGBEE_DISCOVERY_SECONDS } }));
+      setDiscovery((current) => ({ ...current, [sensor.id]: { ...(current[sensor.id] || {}), remainingSeconds: result.expires_in_seconds || SENSOR_DISCOVERY_SECONDS } }));
       pollSensor(sensor.id, result.discovery_id, Date.now(), sensor.name, sensor.roomId);
     } catch (err) {
       updateSensor(sensor.id, { status: 'missing' });
-      setDiscovery((current) => ({ ...current, [sensor.id]: { error: err instanceof Error ? err.message : 'Sensor nicht gefunden.' } }));
+      setDiscovery((current) => ({ ...current, [sensor.id]: { error: userFacingSensorError(err) } }));
+    }
+  }
+
+  async function connectEcoTracker(sensor: SensorBinding) {
+    const host = sensor.sensorId.trim();
+    if (!host) {
+      updateSensor(sensor.id, { status: 'missing' });
+      setDiscovery((current) => ({ ...current, [sensor.id]: { error: 'Bitte geben Sie die IP-Adresse des EcoTrackers ein.' } }));
+      return;
+    }
+    try {
+      const result = await api.connectSenteroEcoTracker(host);
+      const test = await api.testSenteroSensorRole(sensor.id);
+      if (!test.ok) throw new Error(test.message || 'EcoTracker ist aktuell nicht erreichbar.');
+      updateSensor(sensor.id, { status: 'connected', score: 100, sensorManagerId: result.sensor.id, name: result.sensor.name, sensorId: host });
+      setDiscovery((current) => ({ ...current, [sensor.id]: { sensor: { id: result.sensor.id, name: result.sensor.name, type: result.sensor.type, confidence: 100 }, remainingSeconds: 0 } }));
+    } catch (err) {
+      updateSensor(sensor.id, { status: 'missing' });
+      setDiscovery((current) => ({ ...current, [sensor.id]: { error: err instanceof Error ? err.message : 'EcoTracker konnte nicht verbunden werden.' } }));
+    }
+  }
+
+  async function loadPresenceTransport() {
+    try {
+      const status = await api.senteroSensorManagerStatus();
+      const nextTransport = status.presence_sensor_transport === 'wifi_esphome' ? 'wifi_esphome' : 'zigbee';
+      setPresenceTransport(nextTransport);
+      return nextTransport;
+    } catch {
+      return presenceTransport;
+    }
+  }
+
+  async function searchWifiPresenceSensor(sensor: SensorBinding) {
+    try {
+      const name = sensor.name || `${roomLabel(sensor.roomId)} Präsenzsensor`;
+      await api.startSenteroPresenceDiscovery();
+      const discovered = await waitForPresenceSensor();
+      setDiscovery((current) => ({
+        ...current,
+        [sensor.id]: {
+          sensor: { id: discovered.id, name: discovered.name, type: discovered.type, confidence: 100 },
+          remainingSeconds: Math.ceil(PRESENCE_DISCOVERY_TIMEOUT_MS / 1000),
+        },
+      }));
+      const result = await api.startSenteroPresenceProvisioning({ room_id: sensor.roomId, display_name: name, device_id: discovered.id });
+      updateSensor(sensor.id, { status: 'connected', score: 100, sensorManagerId: result.device.id, name: result.device.name });
+      setDiscovery((current) => ({ ...current, [sensor.id]: { sensor: { id: result.device.id, name: result.device.name, type: result.device.type, confidence: 100 }, remainingSeconds: 0 } }));
+    } catch (err) {
+      updateSensor(sensor.id, { status: 'missing' });
+      setDiscovery((current) => ({ ...current, [sensor.id]: { error: userFacingSensorError(err) } }));
     }
   }
 
@@ -289,7 +416,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
       try {
         const result = await api.senteroDiscoveredSensors(sessionId, devMode);
         const done = await applyCandidate(sensorId, sessionId, result, sensorName, roomId);
-        if (!done && Date.now() - startedAt < ZIGBEE_DISCOVERY_SECONDS * 1000) {
+        if (!done && Date.now() - startedAt < SENSOR_DISCOVERY_SECONDS * 1000) {
           pollSensor(sensorId, sessionId, startedAt, sensorName, roomId);
         }
       } catch (err) {
@@ -301,22 +428,29 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     }, 2000);
   }
 
-  async function applyCandidate(sensorId: string, sessionId: number, result: { status: string; sensor?: { id: string; name: string; type: string; confidence: number } | null; remaining_seconds?: number }, sensorName: string, roomId: string) {
+  async function applyCandidate(sensorId: string, sessionId: number, result: { status: string; sensor?: SenteroDiscoveredSensor | null; device?: SenteroDiscoveredSensor | null; devices?: SenteroDiscoveredSensor[]; requested_type?: string | null; detected_type?: string | null; remaining_seconds?: number }, sensorName: string, roomId: string) {
     const score = result.sensor?.confidence || 0;
     const found = Boolean(result.sensor && result.status === 'found' && score >= 50);
     const timedOut = result.remaining_seconds === 0 || result.status === 'not_found';
-    setDiscovery((current) => ({ ...current, [sensorId]: { sensor: result.sensor || null, remainingSeconds: result.remaining_seconds } }));
+    setDiscovery((current) => ({ ...current, [sensorId]: { sensor: result.sensor || null, device: result.device || null, devices: result.devices || [], status: result.status, detectedType: result.detected_type, requestedType: result.requested_type, remainingSeconds: result.remaining_seconds } }));
+    if (result.status === 'wrong_type_found' || result.status === 'unsupported_device_found') {
+      activeDiscoverySessions.current.delete(sessionId);
+      updateSensor(sensorId, { status: 'idle', sessionId: undefined });
+      return true;
+    }
     if (found && result.sensor) {
       const name = sensorName || result.sensor.name || 'Sensor';
       try {
         await api.registerSenteroSensor(result.sensor.id, { discovery_id: sessionId, name, room_id: roomId }, devMode);
         activeDiscoverySessions.current.delete(sessionId);
         updateSensor(sensorId, { status: 'connected', sessionId, score, sensorManagerId: result.sensor.id, name });
+        setDiscovery((current) => ({ ...current, [sensorId]: { sensor: result.sensor || null, remainingSeconds: 0 } }));
+        void api.testSenteroSensorRole(sensorId).catch(() => undefined);
       } catch (err) {
         activeDiscoverySessions.current.delete(sessionId);
         void api.cancelSenteroSensorDiscovery(sessionId).catch(() => undefined);
         updateSensor(sensorId, { status: 'missing' });
-        setDiscovery((current) => ({ ...current, [sensorId]: { ...(current[sensorId] || {}), error: err instanceof Error ? err.message : 'Sensor konnte nicht gespeichert werden.' } }));
+        setDiscovery((current) => ({ ...current, [sensorId]: { ...(current[sensorId] || {}), error: userFacingSensorError(err) } }));
       }
       return true;
     }
@@ -329,6 +463,52 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     return false;
   }
 
+  async function useUnassignedDevice(sensor: SensorBinding, device: SenteroDiscoveredSensor, overrideType?: string | null) {
+    const sensorType = overrideType || sensorTypeForDiscovery(sensor.type);
+    const role = roleForSensor(sensorType, sensor.roomId);
+    const name = defaultSensorName(roomLabel(sensor.roomId), bindingTypeFromDiscovery(sensorType));
+    try {
+      const result = await api.assignSenteroUnassignedSensor(device.id, {
+        sensor_type: sensorType,
+        room_id: sensor.roomId,
+        role,
+        name,
+      }, devMode);
+      const targetId = result.sensor.id;
+      updateSensor(sensor.id, { status: sensor.id === targetId ? 'connected' : 'idle', score: 100, sensorManagerId: result.sensor.id });
+      if (sensor.id !== targetId) {
+        setSensorPlan((current) => ({ ...current, [sensor.roomId]: { ...(current[sensor.roomId] || emptySensorPlan()), [sensorPlanKey(bindingTypeFromDiscovery(sensorType))]: true } }));
+        setSensorBindings((current) => mergeExistingSensorBindings(current, [{
+          role: targetId,
+          room: sensor.roomId,
+          label: result.sensor.name,
+          configured: true,
+        } as SenteroSensorRole], customRooms));
+      }
+      setDiscovery((current) => ({ ...current, [sensor.id]: { sensor: { id: result.sensor.id, name: result.sensor.name, type: result.sensor.type, confidence: 100 }, status: 'found', remainingSeconds: 0 } }));
+    } catch (err) {
+      setDiscovery((current) => ({ ...current, [sensor.id]: { ...(current[sensor.id] || {}), error: userFacingSensorError(err) } }));
+    }
+  }
+
+  async function ignoreDevice(sensor: SensorBinding, device: SenteroDiscoveredSensor) {
+    if (discovery[sensor.id]?.status === 'wrong_type_found') {
+      setDiscovery((current) => ({ ...current, [sensor.id]: {} }));
+      return;
+    }
+    await api.ignoreSenteroUnassignedSensor(device.id).catch(() => undefined);
+    setDiscovery((current) => ({ ...current, [sensor.id]: {} }));
+  }
+
+  async function removeDevice(sensor: SensorBinding, device: SenteroDiscoveredSensor) {
+    try {
+      await api.removeSenteroUnassignedSensor(device.id);
+      setDiscovery((current) => ({ ...current, [sensor.id]: {} }));
+    } catch (err) {
+      setDiscovery((current) => ({ ...current, [sensor.id]: { ...(current[sensor.id] || {}), error: err instanceof Error ? err.message : 'Gerät konnte nicht entfernt werden.' } }));
+    }
+  }
+
   function skipSensor(sensor: SensorBinding) {
     if (sensor.sessionId) {
       activeDiscoverySessions.current.delete(sensor.sessionId);
@@ -336,6 +516,42 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
       void api.cancelSenteroSensorDiscovery(sensor.sessionId).catch(() => undefined);
     }
     updateSensor(sensor.id, { status: 'skipped' });
+  }
+
+  async function deleteSensor(sensor: SensorBinding) {
+    if (sensor.sessionId) {
+      activeDiscoverySessions.current.delete(sensor.sessionId);
+      window.clearTimeout(timers.current[sensor.id]);
+      void api.cancelSenteroSensorDiscovery(sensor.sessionId).catch(() => undefined);
+    }
+    const message = isPresenceBinding(sensor)
+      ? 'Präsenzsensor wirklich entfernen?\n\nWenn der Sensor erreichbar ist, wird er zurückgesetzt. Falls das nicht möglich ist, kann er nur aus Sentero entfernt werden.'
+      : 'Sensor aus Sentero entfernen?';
+    if (!window.confirm(message)) return;
+    try {
+      await deleteSensorRoleWithLocalFallback(sensor);
+      updateSensor(sensor.id, { status: 'idle', sessionId: undefined, score: undefined, sensorManagerId: undefined });
+      setDiscovery((current) => ({ ...current, [sensor.id]: {} }));
+      setLockedSensorPlan((current) => unlockSensorPlan(current, sensor));
+    } catch (err) {
+      setDiscovery((current) => ({
+        ...current,
+        [sensor.id]: { ...(current[sensor.id] || {}), error: err instanceof Error ? err.message : 'Sensor konnte nicht entfernt werden.' },
+      }));
+    }
+  }
+
+  async function deleteSensorRoleWithLocalFallback(sensor: SensorBinding) {
+    try {
+      return await api.deleteSenteroSensorRole(sensor.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Sensor konnte nicht entfernt werden.';
+      const localOnly = window.confirm(
+        `${message}\n\nNur aus Sentero entfernen?\n\nDer Sensor bleibt dann im Sensornetzwerk erhalten und muss bei Bedarf separat zurückgesetzt oder entfernt werden.`,
+      );
+      if (!localOnly) throw err;
+      return api.deleteSenteroSensorRole(sensor.id, { localOnly: true });
+    }
   }
 
   function addContact() {
@@ -352,7 +568,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
     setContacts((current) => {
       const primary = contactForm.primary || current.length === 0;
       const existing = primary ? current.map((contact) => ({ ...contact, primary: false })) : current;
-      return [...existing, { ...contactForm, email, channels: ['E-Mail'], primary, id: crypto.randomUUID() }];
+      return [...existing, { ...contactForm, email, channels: ['E-Mail'], primary, id: createId() }];
     });
     setContactForm({ id: '', name: '', relation: 'Tochter', phone: '', email: '', channels: ['E-Mail'], primary: false });
     setContactFormOpen(false);
@@ -365,22 +581,23 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
       {errors.length > 0 && <div className="sc-form-errors" role="alert">{errors.map((error) => <p key={error}>{error}</p>)}</div>}
       <div className="sc-wizard-card">
         {step === 0 && <WelcomeStep />}
-        {step === 1 && <ProfileStep profile={profile} calculatedAge={calculatedAge} onChange={setProfile} />}
-        {step === 2 && <RoomsStep selected={selectedRooms} customRooms={customRooms} sensorPlan={sensorPlan} lockedSensorPlan={lockedSensorPlan} customRoom={customRoom} onToggle={toggleRoom} onCustomChange={setCustomRoom} onCustomAdd={addCustomRoom} onToggleSensorType={toggleSensorType} />}
-        {step === 3 && <SensorWizard sensors={sensorBindings} discovery={discovery} roomLabel={roomLabel} devMode={devMode} connected={connectedSensors} total={sensorBindings.length} onChange={updateSensor} onSearch={searchSensor} onSkip={skipSensor} />}
-        {step === 4 && <ContactsStep contacts={contacts} form={contactForm} formOpen={contactFormOpen} onOpen={() => setContactFormOpen(true)} onClose={() => setContactFormOpen(false)} onFormChange={setContactForm} onAdd={addContact} onDelete={(id) => setContacts((current) => {
+        {step === 1 && <NetworkStep status={networkStatus} choice={networkChoice} networks={wifiNetworks} wifiForm={wifiForm} busy={networkBusy} message={networkMessage} onChoice={setNetworkChoice} onWifiForm={setWifiForm} onRefresh={() => void refreshNetwork()} />}
+        {step === 2 && <ProfileStep profile={profile} calculatedAge={calculatedAge} onChange={setProfile} />}
+        {step === 3 && <RoomsStep selected={selectedRooms} customRooms={customRooms} sensorPlan={sensorPlan} lockedSensorPlan={lockedSensorPlan} customRoom={customRoom} onToggle={toggleRoom} onCustomChange={setCustomRoom} onCustomAdd={addCustomRoom} onToggleSensorType={toggleSensorType} />}
+        {step === 4 && <SensorWizard sensors={sensorBindings} discovery={discovery} roomLabel={roomLabel} devMode={devMode} connected={connectedSensors} total={sensorBindings.length} presenceTransport={presenceTransport} onChange={updateSensor} onSearch={searchSensor} onDelete={(sensor) => void deleteSensor(sensor)} onSkip={skipSensor} onUseDevice={(sensor, device) => void useUnassignedDevice(sensor, device)} onUseAsDetected={(sensor, device) => void useUnassignedDevice(sensor, device, device.detected_type || device.type)} onIgnoreDevice={(sensor, device) => void ignoreDevice(sensor, device)} onRemoveDevice={(sensor, device) => void removeDevice(sensor, device)} />}
+        {step === 5 && <ContactsStep contacts={contacts} form={contactForm} formOpen={contactFormOpen} onOpen={() => setContactFormOpen(true)} onClose={() => setContactFormOpen(false)} onFormChange={setContactForm} onAdd={addContact} onDelete={(id) => setContacts((current) => {
           const nextContacts = current.filter((contact) => contact.id !== id);
           if (nextContacts.length && !nextContacts.some((contact) => contact.primary)) {
             return nextContacts.map((contact, index) => ({ ...contact, primary: index === 0 }));
           }
           return nextContacts;
         })} />}
-        {step === 5 && <NotificationStep value={notification} onChange={setNotification} />}
-        {step === 6 && <SummaryStep profile={profile} age={calculatedAge} rooms={selectedRooms} roomLabel={roomLabel} contacts={contacts} sensors={connectedSensors} totalSensors={sensorBindings.length} notification={notification} confirmed={confirmed} onConfirm={setConfirmed} emailSetupRequired={emailSetupRequired} />}
+        {step === 6 && <NotificationStep value={notification} onChange={setNotification} />}
+        {step === 7 && <SummaryStep profile={profile} age={calculatedAge} rooms={selectedRooms} roomLabel={roomLabel} contacts={contacts} sensors={connectedSensors} totalSensors={sensorBindings.length} notification={notification} confirmed={confirmed} onConfirm={setConfirmed} emailSetupRequired={emailSetupRequired} />}
       </div>
       <footer className="sc-wizard-actions">
         <button type="button" onClick={back} disabled={step === 0}><ArrowLeft size={20} /> Zurück</button>
-        <button className="primary" type="button" onClick={() => void next()}>
+        <button className="primary" type="button" onClick={() => void next()} disabled={networkBusy}>
           {step === 0 ? 'Einrichtung starten' : step === steps.length - 1 ? 'Einrichtung abschließen' : 'Weiter'}
           <ArrowRight size={20} />
         </button>
@@ -423,6 +640,101 @@ function WelcomeStep() {
   );
 }
 
+function NetworkStep({ status, choice, networks, wifiForm, busy, message, onChoice, onWifiForm, onRefresh }: {
+  status: NetworkStatus | null;
+  choice: 'wifi' | 'cellular' | 'ethernet';
+  networks: WifiNetwork[];
+  wifiForm: { ssid: string; password: string };
+  busy: boolean;
+  message: string;
+  onChoice: (choice: 'wifi' | 'cellular' | 'ethernet') => void;
+  onWifiForm: (value: { ssid: string; password: string }) => void;
+  onRefresh: () => void;
+}) {
+  const capabilities = status?.capabilities || { ethernet: true, wifi: true, cellular: false, wifi_ap: false };
+  const isConnected = Boolean(status?.network_ready);
+  const connectionLabel = status?.active_connection === 'wifi'
+    ? 'WLAN'
+    : status?.active_connection === 'ethernet'
+      ? 'Ethernet'
+      : status?.active_connection === 'cellular'
+        ? 'Mobilfunk'
+        : 'Internet';
+  return (
+    <section className="sc-network-step">
+      <div className="sc-wizard-section-copy">
+        <h3>Internetverbindung</h3>
+        <p>Sentero benötigt eine Internetverbindung, um Benachrichtigungen und Updates zu senden. Ihre Sensordaten bleiben weiterhin lokal auf der Sentero-Box.</p>
+      </div>
+      {isConnected && (
+        <div className="sc-network-ready-card">
+          <CheckCircle2 size={28} />
+          <div>
+            <strong>Internet ist bereits verbunden</strong>
+            <span>{connectionLabel}{status?.ip_address ? ` · ${status.ip_address}` : ''}</span>
+          </div>
+        </div>
+      )}
+      <div className="sc-network-choice-grid">
+        {capabilities.wifi && (
+          <button type="button" className={choice === 'wifi' ? 'active' : ''} onClick={() => onChoice('wifi')}>
+            <Wifi size={22} /><strong>WLAN verwenden</strong>
+          </button>
+        )}
+        {capabilities.cellular && (
+          <button type="button" className={choice === 'cellular' ? 'active' : ''} onClick={() => onChoice('cellular')}>
+            <Smartphone size={22} /><strong>Mobilfunk verwenden</strong>
+          </button>
+        )}
+        {capabilities.ethernet && (
+          <button type="button" className={choice === 'ethernet' ? 'active' : ''} onClick={() => onChoice('ethernet')}>
+            <Cable size={22} /><strong>Ethernet verbunden</strong>
+          </button>
+        )}
+      </div>
+      {choice === 'wifi' && !isConnected && (
+        <div className="sc-network-wifi-form">
+          <div className="sc-network-card-head">
+            <div>
+              <h3>WLAN auswählen</h3>
+              <p>Wählen Sie das Netzwerk der Wohnung aus.</p>
+            </div>
+            <button type="button" onClick={onRefresh} disabled={busy}>Aktualisieren</button>
+          </div>
+          <div className="sc-wifi-list">
+            {networks.map((network) => (
+              <button key={network.ssid} type="button" className={wifiForm.ssid === network.ssid ? 'active' : ''} onClick={() => onWifiForm({ ...wifiForm, ssid: network.ssid })}>
+                <span>{network.ssid}</span>
+                <small>{network.signal}% {network.secured ? 'gesichert' : ''}</small>
+              </button>
+            ))}
+            {networks.length === 0 && <p className="sc-muted-note">Noch keine WLAN-Netze gefunden.</p>}
+          </div>
+          <label>
+            WLAN-Name
+            <input value={wifiForm.ssid} onChange={(event) => onWifiForm({ ...wifiForm, ssid: event.target.value })} placeholder="WLAN-Name eingeben" />
+          </label>
+          <label>
+            WLAN-Passwort
+            <input type="password" value={wifiForm.password} onChange={(event) => onWifiForm({ ...wifiForm, password: event.target.value })} placeholder="Passwort eingeben" />
+          </label>
+        </div>
+      )}
+      {choice === 'wifi' && isConnected && (
+        <p className="sc-network-note">Wenn Sie das WLAN ändern möchten, trennen Sie die aktuelle Verbindung oder aktualisieren Sie die Netzwerkeinstellungen später in den Einstellungen.</p>
+      )}
+      {choice === 'cellular' && !isConnected && (
+        <p className="sc-network-note">Sentero verwendet die Mobilfunkverbindung nur für die Box. Die Box wird dadurch kein WLAN-Router für andere Geräte.</p>
+      )}
+      {choice === 'ethernet' && !isConnected && (
+        <p className="sc-network-note">Wenn das Netzwerkkabel verbunden ist, prüft Sentero die Internetverbindung automatisch.</p>
+      )}
+      {message && <p className="sc-network-note">{message}</p>}
+      {status && <p className="sc-muted-note">{status.message}</p>}
+    </section>
+  );
+}
+
 function ProfileStep({ profile, calculatedAge, onChange }: { profile: Profile; calculatedAge: number | null; onChange: (profile: Profile) => void }) {
   return (
     <section className="sc-form-grid">
@@ -456,11 +768,12 @@ function RoomsStep({ selected, customRooms, sensorPlan, lockedSensorPlan, custom
   return (
     <section className="sc-room-select">
       <p>Wählen Sie die Räume in der Wohnung.</p>
+      <small className="sc-muted-note">Aktive Sensoren werden in diesem Raum verwendet.</small>
       <div className="sc-room-choice-grid">
         {visibleRooms.map((room) => {
           const active = selected.includes(room.id);
-          const plan = sensorPlan[room.id] || defaultSensorPlan(room.id);
-          const locked = lockedSensorPlan[room.id] || defaultSensorPlan(room.id);
+          const plan = sensorPlan[room.id] || emptySensorPlan();
+          const locked = lockedSensorPlan[room.id] || emptySensorPlan();
           const roomLocked = roomHasLockedSensor(lockedSensorPlan, room.id);
           return (
             <div key={room.id} className={`sc-room-choice-card ${active ? 'active' : ''}${roomLocked ? ' has-bound-sensor' : ''}`}>
@@ -472,11 +785,15 @@ function RoomsStep({ selected, customRooms, sensorPlan, lockedSensorPlan, custom
                 <div className="sc-room-sensor-toggles">
                   <label className={`${plan.motion ? 'active' : ''}${locked.motion ? ' locked' : ''}`}>
                     <input type="checkbox" checked={plan.motion} disabled={locked.motion} onChange={() => onToggleSensorType(room.id, 'motion')} />
-                    <i aria-hidden="true" /> <span>Präsenzsensor{locked.motion}</span>
+                    <i aria-hidden="true" /> <span>Präsenzsensor</span>
                   </label>
                   <label className={`${plan.door ? 'active' : ''}${locked.door ? ' locked' : ''}`}>
                     <input type="checkbox" checked={plan.door} disabled={locked.door} onChange={() => onToggleSensorType(room.id, 'door')} />
-                    <i aria-hidden="true" /> <span>Türsensor{locked.door}</span>
+                    <i aria-hidden="true" /> <span>Türsensor</span>
+                  </label>
+                  <label className={`${plan.smoke ? 'active' : ''}${locked.smoke ? ' locked' : ''}`}>
+                    <input type="checkbox" checked={plan.smoke} disabled={locked.smoke} onChange={() => onToggleSensorType(room.id, 'smoke')} />
+                    <i aria-hidden="true" /> <span>Rauchmelder</span>
                   </label>
                 </div>
               )}
@@ -496,19 +813,19 @@ function RoomsStep({ selected, customRooms, sensorPlan, lockedSensorPlan, custom
       <div className="sc-meter-choice-card">
         <div className="sc-meter-choice-head">
           <strong>Haushalt</strong>
-          <small>Strom, Wasser und Gas</small>
+          <small>Strom</small>
         </div>
         <div className="sc-room-sensor-toggles">
-          <label className={`${(sensorPlan.home || defaultSensorPlan('home')).electricity ? 'active' : ''}${lockedSensorPlan.home?.electricity ? ' locked' : ''}`}>
-            <input type="checkbox" checked={(sensorPlan.home || defaultSensorPlan('home')).electricity} disabled={lockedSensorPlan.home?.electricity} onChange={() => onToggleSensorType('home', 'electricity')} />
+          <label className={`${(sensorPlan.home || emptySensorPlan()).electricity ? 'active' : ''}${lockedSensorPlan.home?.electricity ? ' locked' : ''}`}>
+            <input type="checkbox" checked={(sensorPlan.home || emptySensorPlan()).electricity} disabled={lockedSensorPlan.home?.electricity} onChange={() => onToggleSensorType('home', 'electricity')} />
             <i aria-hidden="true" /> <span>Stromzähler{lockedSensorPlan.home?.electricity}</span>
           </label>
-          <label className={`${(sensorPlan.home || defaultSensorPlan('home')).water ? 'active' : ''}${lockedSensorPlan.home?.water ? ' locked' : ''}`}>
-            <input type="checkbox" checked={(sensorPlan.home || defaultSensorPlan('home')).water} disabled={lockedSensorPlan.home?.water} onChange={() => onToggleSensorType('home', 'water')} />
+          <label style={{ display: 'none' }} className={`${(sensorPlan.home || emptySensorPlan()).water ? 'active' : ''}${lockedSensorPlan.home?.water ? ' locked' : ''}`}>
+            <input type="checkbox" checked={(sensorPlan.home || emptySensorPlan()).water} disabled={lockedSensorPlan.home?.water} onChange={() => onToggleSensorType('home', 'water')} />
             <i aria-hidden="true" /> <span>Wasserzähler{lockedSensorPlan.home?.water}</span>
           </label>
-          <label className={`${(sensorPlan.home || defaultSensorPlan('home')).gas ? 'active' : ''}${lockedSensorPlan.home?.gas ? ' locked' : ''}`}>
-            <input type="checkbox" checked={(sensorPlan.home || defaultSensorPlan('home')).gas} disabled={lockedSensorPlan.home?.gas} onChange={() => onToggleSensorType('home', 'gas')} />
+          <label style={{ display: 'none' }} className={`${(sensorPlan.home || emptySensorPlan()).gas ? 'active' : ''}${lockedSensorPlan.home?.gas ? ' locked' : ''}`}>
+            <input type="checkbox" checked={(sensorPlan.home || emptySensorPlan()).gas} disabled={lockedSensorPlan.home?.gas} onChange={() => onToggleSensorType('home', 'gas')} />
             <i aria-hidden="true" /> <span>Gaszähler{lockedSensorPlan.home?.gas}</span>
           </label>
         </div>
@@ -628,7 +945,7 @@ function buildBindings(roomIds: string[], sensorPlan: Record<string, SensorPlan>
   const byId = Object.fromEntries(current.map((sensor) => [sensor.id, sensor]));
   return roomIds.flatMap((roomId) => {
     const label = customRooms[roomId] || baseRoomLabel[roomId] || roomId;
-    const plan = sensorPlan[roomId] || defaultSensorPlan(roomId);
+    const plan = sensorPlan[roomId] || emptySensorPlan();
     const bindings: SensorBinding[] = [];
     if (plan.motion) {
       const motionId = `${roomId}_presence`;
@@ -637,6 +954,10 @@ function buildBindings(roomIds: string[], sensorPlan: Record<string, SensorPlan>
     if (plan.door) {
       const doorId = `${roomId}_door`;
       bindings.push(byId[doorId] || { id: doorId, roomId, type: 'door', sensorId: '', name: `${label} Türkontakt`, status: 'idle' });
+    }
+    if (plan.smoke) {
+      const smokeId = `${roomId}_smoke`;
+      bindings.push(byId[smokeId] || { id: smokeId, roomId, type: 'smoke_detector', sensorId: '', name: `${label} Rauchmelder`, status: 'idle' });
     }
     if (roomId === 'home' && plan.electricity) bindings.push(byId.home_energy || { id: 'home_energy', roomId, type: 'electricity_meter', sensorId: '', name: 'Stromzähler', status: 'idle' });
     if (roomId === 'home' && plan.water) bindings.push(byId.home_water || { id: 'home_water', roomId, type: 'water_meter', sensorId: '', name: 'Wasserzähler', status: 'idle' });
@@ -676,7 +997,7 @@ function mergeSensorPlan(current: Record<string, SensorPlan>, roles: SenteroSens
     const type = sensorTypeFromRole(role.role);
     const roomId = role.room || roomFromRole(role.role);
     if (!type || !roomId) continue;
-    const plan = next[roomId] || defaultSensorPlan(roomId);
+    const plan = next[roomId] || emptySensorPlan();
     next[roomId] = { ...plan, [sensorPlanKey(type)]: true };
   }
   return next;
@@ -689,19 +1010,27 @@ function lockedPlanFromRoles(roles: SenteroSensorRole[]) {
     const type = sensorTypeFromRole(role.role);
     const roomId = role.room || roomFromRole(role.role);
     if (!type || !roomId) continue;
-    plan[roomId] = { ...(plan[roomId] || defaultSensorPlan(roomId)), [sensorPlanKey(type)]: true };
+    plan[roomId] = { ...(plan[roomId] || emptySensorPlan()), [sensorPlanKey(type)]: true };
   }
   return plan;
 }
 
 function roomHasLockedSensor(lockedSensorPlan: Record<string, SensorPlan>, roomId: string) {
   const locked = lockedSensorPlan[roomId];
-  return Boolean(locked?.motion || locked?.door || locked?.electricity || locked?.water || locked?.gas);
+  return Boolean(locked?.motion || locked?.door || locked?.smoke || locked?.electricity || locked?.water || locked?.gas);
+}
+
+function unlockSensorPlan(current: Record<string, SensorPlan>, sensor: SensorBinding) {
+  const key = sensorPlanKey(sensor.type);
+  const plan = current[sensor.roomId];
+  if (!plan || !key) return current;
+  return { ...current, [sensor.roomId]: { ...plan, [key]: false } };
 }
 
 function sensorTypeFromRole(role: string): SensorBinding['type'] | null {
   if (role.endsWith('_presence') || role.endsWith('_motion')) return 'motion';
   if (role.endsWith('_door') || role.endsWith('_contact')) return 'door';
+  if (role.endsWith('_smoke')) return 'smoke_detector';
   if (role.endsWith('_energy') || role.endsWith('_power')) return 'electricity_meter';
   if (role.endsWith('_water')) return 'water_meter';
   if (role.endsWith('_gas')) return 'gas_meter';
@@ -709,12 +1038,13 @@ function sensorTypeFromRole(role: string): SensorBinding['type'] | null {
 }
 
 function roomFromRole(role: string) {
-  return role.replace(/_(presence|motion|door|contact|energy|power|water|gas)$/, '');
+  return role.replace(/_(presence|motion|door|contact|smoke|energy|power|water|gas)$/, '');
 }
 
 function defaultSensorName(roomLabel: string, type: SensorBinding['type']) {
   if (type === 'motion') return `${roomLabel} Präsenz`;
   if (type === 'door') return `${roomLabel} Türkontakt`;
+  if (type === 'smoke_detector') return `${roomLabel} Rauchmelder`;
   if (type === 'electricity_meter') return 'Stromzähler';
   if (type === 'water_meter') return 'Wasserzähler';
   return 'Gaszähler';
@@ -734,7 +1064,7 @@ async function waitForPresenceSensor(): Promise<SenteroEsp32DiscoverySensor> {
     if (sensor) return sensor;
     await wait(600);
   }
-  throw new Error('Präsenzsensor wurde noch nicht im Netzwerk gefunden.');
+  throw new Error('Präsenzsensor wurde noch nicht gefunden.');
 }
 
 function wait(ms: number) {
@@ -747,10 +1077,10 @@ function uniqueValues(values: string[]) {
 
 function selectedRoomsWithSensors(roomIds: string[], sensorPlan: Record<string, SensorPlan>) {
   const selected = roomIds.filter((roomId) => {
-    const plan = sensorPlan[roomId] || defaultSensorPlan(roomId);
-    return plan.motion || plan.door || plan.electricity || plan.water || plan.gas;
+    const plan = sensorPlan[roomId] || emptySensorPlan();
+    return plan.motion || plan.door || plan.smoke || plan.electricity || plan.water || plan.gas;
   });
-  const homePlan = sensorPlan.home || defaultSensorPlan('home');
+  const homePlan = sensorPlan.home || emptySensorPlan();
   return homePlan.electricity || homePlan.water || homePlan.gas ? uniqueValues([...selected, 'home']) : selected;
 }
 
@@ -765,23 +1095,49 @@ function validBirthYear(value: string) {
   return ageFromBirthYear(value) !== null;
 }
 
-function defaultSensorPlan(roomId: string) {
-  const option = roomOptions.find((room) => room.id === roomId);
-  return { motion: roomId !== 'home', door: roomId !== 'home' && option?.door !== false, electricity: false, water: false, gas: false };
+function emptySensorPlan(): SensorPlan {
+  return { motion: false, door: false, smoke: false, electricity: false, water: false, gas: false };
 }
 
 function sensorTypeForDiscovery(type: SensorBinding['type']) {
   if (type === 'door') return 'door_contact';
+  if (type === 'smoke_detector') return 'smoke_detector';
   if (type === 'electricity_meter') return 'electricity_meter';
   if (type === 'water_meter') return 'water_meter';
   if (type === 'gas_meter') return 'gas_meter';
   return 'presence_sensor';
 }
 
+function bindingTypeFromDiscovery(type: string): SensorBinding['type'] {
+  if (type === 'door_contact' || type === 'door') return 'door';
+  if (type === 'smoke_detector') return 'smoke_detector';
+  if (type === 'electricity_meter') return 'electricity_meter';
+  if (type === 'water_meter') return 'water_meter';
+  if (type === 'gas_meter') return 'gas_meter';
+  return 'motion';
+}
+
+function roleForSensor(sensorType: string, roomId: string) {
+  if (sensorType === 'door_contact' || sensorType === 'door') return roomId === 'entrance' || roomId === 'hallway' ? 'main_door' : `${roomId}_door`;
+  if (sensorType === 'smoke_detector') return `${roomId}_smoke`;
+  if (sensorType === 'electricity_meter') return `${roomId}_energy`;
+  if (sensorType === 'water_meter') return `${roomId}_water`;
+  if (sensorType === 'gas_meter') return `${roomId}_gas`;
+  if (sensorType === 'button') return `${roomId}_button`;
+  return `${roomId}_presence`;
+}
+
+function userFacingSensorError(err: unknown) {
+  const message = err instanceof Error ? err.message : '';
+  if (message === 'wifi_sensor_setup_disabled') return 'Kein Sensor gefunden. Bitte versetzen Sie den Sensor in den Verbindungsmodus und versuchen Sie es erneut.';
+  return 'Kein Sensor gefunden. Bitte versetzen Sie den Sensor in den Verbindungsmodus und versuchen Sie es erneut.';
+}
+
 function sensorPlanKey(type: SensorBinding['type']): keyof SensorPlan {
   if (type === 'electricity_meter') return 'electricity';
   if (type === 'water_meter') return 'water';
   if (type === 'gas_meter') return 'gas';
+  if (type === 'smoke_detector') return 'smoke';
   return type;
 }
 

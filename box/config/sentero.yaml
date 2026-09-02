@@ -1,0 +1,86 @@
+sentero:
+  enabled: true
+  behavior:
+    learning_days: 14
+    min_usable_days: 7
+  environment:
+    temperature_min_celsius: 16
+    temperature_max_celsius: 28
+    humidity_max_percent: 70
+    co2_orange_ppm: 1000
+    co2_red_ppm: 2000
+    voc_orange_ppb: 500
+    voc_red_ppb: 1000
+    pm25_orange_ugm3: 25
+    pm25_red_ugm3: 50
+    pm10_orange_ugm3: 50
+    pm10_red_ugm3: 100
+    aqi_orange: 100
+    aqi_red: 150
+
+notifications:
+  incident_recovery:
+    healthy_checks_required: 3
+
+app:
+  dev_mode: false
+
+box_setup:
+  mode: SENTERO_BOX_SETUP_MODE
+  hostname: sentero
+
+network:
+  failover:
+    enabled: true
+    failure_threshold: 3
+    recovery_threshold: 3
+    check_interval_seconds: 30
+    switch_cooldown_seconds: 120
+  mail_probe_host: sentero.de
+  mail_probe_port: 443
+
+logging:
+  level: INFO
+
+# Sensor data is read directly from MQTT.
+# Zigbee devices arrive through Zigbee2MQTT; ESP32/generic MQTT topics are
+# normalized by the same MQTT sensor pipeline.
+
+mqtt:
+  host: SENTERO_MQTT_HOST
+  port: SENTERO_MQTT_PORT
+  username: SENTERO_MQTT_USERNAME
+  password: SENTERO_MQTT_PASSWORD
+  topic_prefix: zigbee2mqtt
+  snapshot_timeout: 0.5
+  bootstrap_events: ""
+
+sensors:
+  presence_live_state_ttl_seconds: 300
+  presence_unreachable_grace_seconds: 900
+  health_stale_seconds: 172800
+  unreachable_grace_seconds: 604800
+
+esp32:
+  topic_prefix: sentero
+  discovery_port: 37020
+  discovery_wait_timeout: 6
+  discovery_store_interval: 15
+  provisioning_timeout: 10
+  mqtt_wait_timeout: 30
+  token: SENTERO_ESP32_DEVICE_TOKEN
+
+zigbee:
+  provider: auto
+
+updates: {}
+
+llm:
+  # rule_based keeps Sentero fully local and is the safe default.
+  # Set provider to openai, gemini, claude or llama/ollama when wanted.
+  # rule_based/openai/emini/claude/llama:
+  provider: SENTERO_LLM_PROVIDER
+  timeout_seconds: 30
+  llama:
+    base_url: SENTERO_LLM_BASE_URL
+    model: SENTERO_LLM_MODEL

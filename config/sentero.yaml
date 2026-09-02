@@ -3,38 +3,63 @@ sentero:
   behavior:
     learning_days: 14
     min_usable_days: 7
+  environment:
+    temperature_min_celsius: 16
+    temperature_max_celsius: 28
+    humidity_max_percent: 70
+    co2_orange_ppm: 1000
+    co2_red_ppm: 2000
+    voc_orange_ppb: 500
+    voc_red_ppb: 1000
+    pm25_orange_ugm3: 25
+    pm25_red_ugm3: 50
+    pm10_orange_ugm3: 50
+    pm10_red_ugm3: 100
+    aqi_orange: 100
+    aqi_red: 150
+
+notifications:
+  incident_recovery:
+    healthy_checks_required: 3
 
 app:
   dev_mode: false
 
 box_setup:
-  mode: disabled
+  mode: SENTERO_BOX_SETUP_MODE
   hostname: sentero
+
+network:
+  failover:
+    enabled: true
+    failure_threshold: 3
+    recovery_threshold: 3
+    check_interval_seconds: 30
+    switch_cooldown_seconds: 120
+  mail_probe_host: sentero.de
+  mail_probe_port: 443
 
 logging:
   level: INFO
 
-sensor_sources:
-  source: mixed
-  development:
-    adapter: homeassistant
-  production:
-    adapters:
-      - zigbee2mqtt
-      - mqtt
-
-home_assistant:
-  url: http://homeassistant.local:8123
-  token: HA_TOKEN
+# Sensor data is read directly from MQTT.
+# Zigbee devices arrive through Zigbee2MQTT; ESP32/generic MQTT topics are
+# normalized by the same MQTT sensor pipeline.
 
 mqtt:
-  host: 192.168.178.143
-  port: 1883
+  host: SENTERO_MQTT_HOST
+  port: SENTERO_MQTT_PORT
   username: SENTERO_MQTT_USERNAME
   password: SENTERO_MQTT_PASSWORD
   topic_prefix: zigbee2mqtt
   snapshot_timeout: 0.5
   bootstrap_events: ""
+
+sensors:
+  presence_live_state_ttl_seconds: 300
+  presence_unreachable_grace_seconds: 900
+  health_stale_seconds: 172800
+  unreachable_grace_seconds: 604800
 
 esp32:
   topic_prefix: sentero
@@ -48,28 +73,17 @@ esp32:
 zigbee:
   provider: auto
 
-updates:
-  channel: stable
-  mode: zip
-  base_url: https://seirafi.de/robotersteve/sentero
-  manifest_path: update-manifest.json
-  manifest_url: ""
+updates: {}
 
 llm:
   # rule_based keeps Sentero fully local and is the safe default.
   # Set provider to openai, gemini, claude or llama/ollama when wanted.
   # rule_based/openai/emini/claude/llama:
-  provider: gemini
+  provider: SENTERO_LLM_PROVIDER
   timeout_seconds: 30
-  openai:
-    api_key: OPENAI_API_KEY
-    model: gpt-4.1-mini
+  llama:
+    base_url: SENTERO_LLM_BASE_URL
+    model: SENTERO_LLM_MODEL
   gemini:
     api_key: GEMINI_API_KEY
     model: gemini-2.5-flash
-  claude:
-    api_key: CLAUDE_API_KEY
-    model: claude-3-5-sonnet-latest
-  llama:
-    base_url: http://localhost:11434
-    model: qwen2.5:3b

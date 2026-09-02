@@ -1,6 +1,7 @@
 {
-  "version": "0.1.1",
-  "build": "2026.06.25",
-  "commit": "standalone",
-  "updated_at": "2026-06-25T00:00:00+00:00"
+  "version": "0.4.1",
+  "build": "2026.08.30",
+  "commit": "adffe07",
+  "updated_at": "2026-08-30T11:36:12+00:00",
+  "app_version": "0.4.1"
 }

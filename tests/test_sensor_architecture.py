@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
 import unittest
-from unittest.mock import patch
 
 from backend.sensor_sources.base import create_sensor_source
 from backend.sensor_sources.zigbee2mqtt import Zigbee2MqttSensorSource
@@ -22,6 +20,9 @@ class FakeMapping:
     def home_status(self):
         return {"connected": True, "sensor_ready": True, "system_ready": True}
 
+    def roles(self, dev=False, include_state=False):
+        return []
+
 
 class FailingMqtt:
     host = "localhost"
@@ -38,15 +39,10 @@ class FailingMqtt:
 
 
 class SensorArchitectureTests(unittest.TestCase):
-    def test_mixed_source_can_be_selected_explicitly(self) -> None:
-        with patch.dict(os.environ, {"SENTERO_SENSOR_SOURCE": "mixed"}, clear=True):
-            source = create_sensor_source()
-        self.assertEqual(source.name, "mixed")
-
-    def test_mqtt_source_can_be_selected_explicitly(self) -> None:
-        with patch.dict(os.environ, {"SENTERO_SENSOR_SOURCE": "mqtt"}, clear=True):
-            source = create_sensor_source()
+    def test_sensor_source_is_direct_mqtt_zigbee2mqtt(self) -> None:
+        source = create_sensor_source()
         self.assertEqual(source.name, "zigbee2mqtt")
+        self.assertIsInstance(source, Zigbee2MqttSensorSource)
 
     def test_mqtt_source_snapshot_does_not_crash_when_broker_unavailable(self) -> None:
         source = Zigbee2MqttSensorSource(mqtt=FailingMqtt())
@@ -75,6 +71,7 @@ class SensorArchitectureTests(unittest.TestCase):
         self.assertIn("power_usage", devices[0].capabilities)
         self.assertIn("water_consumption", devices[0].capabilities)
         self.assertIn("gas_consumption", devices[0].capabilities)
+
         by_type = {event.event_type: event.value for event in events}
         self.assertEqual(by_type["energy_consumption"], 1234.5)
         self.assertEqual(by_type["power_usage"], 42.7)
@@ -92,14 +89,18 @@ class SensorArchitectureTests(unittest.TestCase):
         self.assertEqual(public_type_from_mqtt_candidate({"device_class": "water", "payload_key": "water_consumption"}), "water_meter")
         self.assertEqual(public_type_from_mqtt_candidate({"device_class": "gas", "payload_key": "gas_consumption"}), "gas_meter")
 
-    def test_battery_entity_matches_homeassistant_sensor_prefix(self) -> None:
+    def test_battery_entity_matches_generic_sensor_prefix(self) -> None:
         match = find_battery_entity(
             {"entity_id": "binary_sensor.keller_sensor_bewegung"},
             [
-                {"entity_id": "sensor.keller_sensor_batterie", "device_class": "battery", "state": "100", "friendly_name": "Keller Bewegungsmelder Batterie"},
+                {
+                    "entity_id": "sensor.keller_sensor_batterie",
+                    "device_class": "battery",
+                    "state": "100",
+                    "friendly_name": "Keller Bewegungsmelder Batterie",
+                },
             ],
         )
-
         self.assertIsNotNone(match)
         self.assertEqual(match["state"], "100")
 
@@ -107,18 +108,22 @@ class SensorArchitectureTests(unittest.TestCase):
         match = find_battery_entity(
             {"entity_id": "zigbee2mqtt/keller Türkontakt", "device_id": "0xa4c1381219fcffff"},
             [
-                {"entity_id": "sensor.0xa4c1381219fcffff_battery", "device_class": "battery", "state": "100", "friendly_name": "Hobby Fenster Links Batterie"},
+                {
+                    "entity_id": "sensor.0xa4c1381219fcffff_battery",
+                    "device_class": "battery",
+                    "state": "100",
+                    "friendly_name": "Hobby Fenster Links Batterie",
+                },
             ],
         )
-
         self.assertIsNotNone(match)
         self.assertEqual(match["state"], "100")
 
-    def test_dashboard_is_public_and_hides_source_refs_and_raw_payloads(self) -> None:
+    def test_dashboard_hides_source_refs_and_raw_payloads(self) -> None:
         service = SenteroSensorService(FakeMapping([
             {
-                "entity_id": "binary_sensor.haustuer",
-                "source": "homeassistant",
+                "entity_id": "zigbee2mqtt/Haustuer/contact",
+                "source": "zigbee2mqtt",
                 "friendly_name": "Haustuer",
                 "device_class": "opening",
                 "state": "on",
@@ -142,8 +147,8 @@ class SensorArchitectureTests(unittest.TestCase):
     def test_dashboard_exposes_utility_usage_summary(self) -> None:
         service = SenteroSensorService(FakeMapping([
             {
-                "entity_id": "sensor.stromzaehler_energy",
-                "source": "homeassistant",
+                "entity_id": "zigbee2mqtt/Stromzaehler/energy",
+                "source": "zigbee2mqtt",
                 "friendly_name": "Stromzaehler Energie",
                 "device_class": "energy",
                 "state": "1234.5",

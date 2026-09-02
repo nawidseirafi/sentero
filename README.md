@@ -1,40 +1,47 @@
 # Sentero
 
-Sentero is a standalone care-signal product extracted from RoboterSteve.
+Sentero ist ein eigenstaendiges Care-Signal-Produkt, das aus RoboterSteve herausgeloest wurde.
 
-## Architecture
+## Architektur
 
-- `backend/`: FastAPI API, authentication, behavior assessment, setup flow, notification channels and sensor mapping.
-- `frontend/`: Vite/React Sentero app.
-- `config/`: standalone Sentero configuration.
-- `docker/`: container and Mosquitto configuration.
-- `data/`: runtime SQLite and adapter data.
-- `docs/`: product documentation.
+- `backend/`: FastAPI-API, Authentifizierung, Verhaltensbewertung, Setup-Flow, Benachrichtigungskanaele und Sensor-Mapping.
+- `frontend/`: Vite/React-App fuer Sentero.
+- `config/`: eigenstaendige Sentero-Konfiguration.
+- `docker/`: Container- und Mosquitto-Konfiguration.
+- `data/`: Laufzeitdaten fuer SQLite und Adapter.
+- `docs/`: Produktdokumentation.
 
-Sentero does not use RoboterSteve editions, agent registry, orchestrator, agent control or RoboterSteve-specific APIs.
+Sentero verwendet keine RoboterSteve-Editionen, keine Agent-Registry, keinen Orchestrator, keine Agent-Steuerung und keine RoboterSteve-spezifischen APIs.
 
-## Sensor Sources
+## Sensorquellen
 
-Configure the source through:
+Sentero verwendet eine einheitliche MQTT-Sensorpipeline.
 
-```bash
-SENTERO_SENSOR_SOURCE=homeassistant|mqtt|mixed
+```text
+Zigbee-Sensor -> Zigbee2MQTT --\
+                               -> Mosquitto/MQTT -> Sentero
+ESP32/generischer MQTT-Sensor -/
+EcoTracker lokal ------------> Sentero
 ```
 
-Development may use Home Assistant. Production is designed for Zigbee2MQTT, Mosquitto, MQTT and ESP32 sensors without Home Assistant.
+Sentero verarbeitet nur Sensoren, die ueber den eigenen Onboarding-/Mapping-Flow
+registriert wurden. Beliebige MQTT-Geraete, die lediglich am Broker sichtbar
+sind, duerfen nicht automatisch in Verhaltensanalyse oder Benachrichtigungen
+einfliessen.
 
-## Local Development
+
+## Lokale Entwicklung
 
 ```bash
 deactivate
 rm -rf .venv
 /opt/homebrew/opt/python@3.14/bin/python3.14 -m venv .venv
-source .venv/bin/activate      
+source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn backend.main:app --reload --host 0.0.0.0 --port 8080
 ```
 
-In another shell:
+In einer zweiten Shell:
 
 ```bash
 cd frontend
@@ -42,58 +49,148 @@ npm install
 npm run dev
 ```
 
-Frontend dependencies such as MUI, Emotion and QR code rendering are managed
-through `frontend/package.json`, not `requirements.txt`.
+Frontend-Abhaengigkeiten wie MUI, Emotion und QR-Code-Rendering werden ueber `frontend/package.json` verwaltet, nicht ueber `requirements.txt`.
 
-Open `http://localhost:5173`.
+Oeffnen: `http://localhost:5173`.
 
 ## Docker
 
-Production Docker uses Mosquitto/Zigbee2MQTT/MQTT by default and does not require Home Assistant. Build the frontend first, then start the stack:
+Das Repository enthaelt Dockerfiles sowie eine `box/`-Deployment-Schicht mit Compose/systemd-Dateien, persistenten Volumes und Host-Updater-Anbindung. Fuer reine App-Tests kann das Applikations-Image direkt gebaut werden:
 
 ```bash
-cd frontend
-npm install
-npm run build
-cd ..
-docker compose up --build -d
+docker build -f docker/Dockerfile.appliance -t sentero/app:dev .
 ```
 
-For a production Zigbee2MQTT container as part of the stack:
+Das Appliance-Dockerfile baut das Frontend innerhalb von Docker. Fuer lokale Entwicklung ohne Docker die Backend-/Frontend-Kommandos oben verwenden.
+
+Zur Box-v2-Appliance siehe `docs/README_sentero_box_v2.md`. Die externe AAL-Flaeche ist auf `/api/sentero/exchange/v1/*` begrenzt; GUI und Admin-APIs sollen im lokalen Netzwerk bleiben.
+
+## Deployment-Build
+
+Sentero-Box-Appliance-Update-Artefakte erzeugen:
 
 ```bash
-docker compose --profile production up --build -d
+DOCKER_DEFAULT_PLATFORM=linux/amd64 \
+python3 deployment_build.py \
+  --version 0.2.0 \
+  --base-url https://sentero.de/sentero \
+  --release-note "Sentero Box Update 0.2.0"
 ```
 
-Docker forces `SENTERO_SENSOR_SOURCE=mqtt` unless `SENTERO_DOCKER_SENSOR_SOURCE` is set explicitly. This keeps local Home Assistant development settings from leaking into the production container.
+`deployment_build.py` ersetzt den alten dateibasierten Update-ZIP-Build fuer Appliance v2. Das Skript erwartet `docker/Dockerfile.appliance`, baut das Frontend im Docker-Multi-Stage-Build, schreibt `version.json` vor dem Docker-Build auf die angegebene Version und erzeugt ein Appliance-Bundle mit `release.json` plus `sentero-image.tar`.
 
-For Debian Mini-PC deployment and the optional local-only AAL edge proxy, see `docs/MINI_PC_DOCKER_DEPLOYMENT.md`. The external AAL surface is limited to `/api/sentero/exchange/v1/*`; the GUI and admin APIs should stay on the local network.
+Der Build bereitet zusaetzlich das initiale Kunden-Deployment aus `box/` vor.
 
-## Deployment Build
+Ausgaben:
 
-Create an installable directory and update ZIP artifacts:
-
-```bash
-UPDATE_BASE_URL=https://seirafi.de/robotersteve/sentero python3 deployment_build.py --version 0.1.1
-```
-
-Outputs:
-
-- `build/sentero/`
 - `build/updates/sentero/stable/latest.json`
-- `build/updates/sentero/stable/releases/sentero-<version>.zip`
+- `build/updates/sentero/stable/releases/sentero-box-<version>.zip`
+- `build/sentero-box/`, nur wenn ein `box/`-Deployment-Baum im Projekt existiert.
 
-## Updates
-
-Sentero has a standalone update API under `/api/sentero/system/update/*`.
-
-Default mode is `dry_run`, so update checks and UI flow work without modifying files. For ZIP-based application updates, publish `build/updates/sentero/stable/latest.json` and the matching ZIP files under `stable/releases/`, then set:
+Metadaten-/Testlauf ohne Docker-Export:
 
 ```bash
-SENTERO_UPDATE_MODE=zip
-UPDATE_BASE_URL=https://example.com/sentero
+python3 deployment_build.py \
+  --version 0.2.0 \
+  --base-url https://sentero.de/sentero \
+  --skip-docker-build \
+  --skip-docker-save
 ```
 
-The runtime derives `https://example.com/sentero/stable/latest.json`; the build derives ZIP download URLs like `https://example.com/sentero/stable/releases/sentero-<version>.zip`.
+## Aktualisierungen
 
-The ZIP installer updates application files only and never overwrites `.env`, `data/`, `backups/`, virtualenvs or `node_modules`.
+Sentero hat eine eigenstaendige Update-API unter `/api/sentero/system/update/*`.
+
+Fuer lokale Entwicklung kann `dry_run` verwendet werden. Auf der Sentero Box v2 wird `appliance` verwendet; die GUI delegiert die Installation an den hostseitigen Sentero-Updater.
+
+Der historische `zip`-Update-Modus ist nur fuer nicht-containerisierte Altinstallationen gedacht und gehoert nicht zum normalen Box-v2-Betrieb.
+
+
+Fuer Sentero Box v2 werden Appliance-Bundles aus `deployment_build.py` verwendet; Details stehen in `docs/README_sentero_box_v2.md`. Diese Bundles enthalten `release.json` plus `sentero-image.tar`; die Installation wird an einen hostseitigen Updater delegiert, statt Dateien in einem laufenden Container zu ersetzen.
+
+## Debian-Mini-PC-Deployment
+
+Die fuehrende Installations- und Update-Dokumentation fuer die Box ist `docs/README_sentero_box_v2.md`. Dieser Abschnitt enthaelt ergaenzende Hinweise fuer Debian-Mini-PCs, Firewall-Regeln, externe AAL-Freigabe und Backups.
+
+Debian-Basispakete:
+
+```bash
+sudo apt update
+sudo apt install -y ca-certificates curl git ufw network-manager modemmanager avahi-daemon
+sudo systemctl enable --now NetworkManager ModemManager avahi-daemon
+```
+
+NetworkManager soll WLAN-Client-Modus, temporaeren Setup-Hotspot und LTE-Verbindungen exklusiv verwalten. Keine parallelen produktiven `wpa_supplicant`-, `hostapd`- oder Modem-Skripte neben Sentero betreiben.
+
+Docker:
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker "$USER"
+newgrp docker
+```
+
+Firewall-Grundregel: kein Router-Portforwarding auf `8080` oder `1883`.
+
+Waehrend des Setup-WLANs sollen Clients nur die Setup-Oberflaeche erreichen. Kein Routing vom Setup-WLAN zu Sensordaten, Historie, Logs, MQTT oder Admin-/Shell-Diensten freigeben.
+
+UFW-Beispiel fuer Heimnetz `192.168.178.0/24`:
+
+```bash
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow from 192.168.178.0/24 to any port 8080 proto tcp
+sudo ufw allow from 192.168.178.0/24 to any port 1883 proto tcp
+sudo ufw enable
+```
+
+Wenn keine LAN-MQTT-Clients vorhanden sind, Port `1883` nicht oeffnen.
+
+Die optionale externe AAL-Exchange-Freigabe haelt Sentero-GUI, Login, Setup, Sensoren, Transparenz und Admin-APIs lokal. Nur diese Endpunkte duerfen extern sichtbar sein:
+
+- `/api/sentero/exchange/v1/daily-status`
+- `/api/sentero/exchange/v1/event-summary`
+- `/api/sentero/exchange/v1/system-status`
+
+Die externe AAL-Freigabe wird ueber den jeweiligen Edge-Proxy/Deployment-Layer konfiguriert. Die frueheren `SENTERO_AAL_*`-Environment-Variablen sind kein Bestandteil der aktuellen Sentero-Konfiguration.
+
+Ohne diese Compose-Schicht muss der Edge-Proxy separat mit `docker/caddy/Caddyfile`, Nginx oder Caddy bereitgestellt werden.
+
+Router-Portforwarding soll dann nur auf den Edge-Proxy zeigen:
+
+- TCP `80` -> Mini-PC
+- TCP `443` -> Mini-PC
+
+Nicht weiterleiten: `8080`, `1883` oder andere Sentero-Ports.
+
+Kontrolle:
+
+```bash
+curl -i https://aal.example.org/api/sentero/exchange/v1/daily-status \
+  -H "Authorization: Bearer <export-token>"
+
+curl -i https://aal.example.org/
+curl -i https://aal.example.org/docs
+curl -i https://aal.example.org/openapi.json
+curl -i https://aal.example.org/api/sentero/auth/status
+curl -i https://aal.example.org/api/sentero/transparency
+```
+
+Nur der Exchange-Aufruf soll mit gueltigem Token erfolgreich sein. Die anderen Pfade muessen `404` oder `403` liefern.
+
+Persistente Daten fuer Backups:
+
+- `data/sentero.db`
+- MQTT-Cache-Tabelle `mqtt_last_states` innerhalb von `data/sentero.db`
+- Mosquitto-Daten
+- Zigbee2MQTT-Daten
+- `config/sentero.yaml`
+- `.env`
+
+Backup-Beispiel fuer ein Repo-/Box-Layout mit `data/` und `config/`:
+
+```bash
+tar czf sentero-backup-$(date +%F).tar.gz data config .env
+```
+
+Die Datei `.env` enthaelt Secrets und darf nicht geteilt werden. Netzwerk-Credentials gehoeren produktiv in NetworkManager oder einen OS Secret Store; Sentero speichert in SQLite nur Status und Historie, keine WLAN-Passwoerter, SIM-PINs oder Tokens.

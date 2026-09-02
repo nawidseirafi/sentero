@@ -14,6 +14,7 @@ from backend.services.data_classification import aggregation_for_data_class, cla
 from backend.services.device_mapping_service import DeviceMappingService, now
 from backend.logging_config import get_logger
 from backend.services.notification_service import NotificationService
+from backend.services.human_activity_service import HumanActivityScorer, reasons_json
 
 logger = get_logger(__name__)
 
@@ -49,6 +50,7 @@ class SenteroBehaviorAgent:
         self.mapping = mapping or DeviceMappingService()
         self.messaging = messaging or MessagingService()
         self.notifications = NotificationService(self.mapping, self.messaging)
+        self.human_activity = HumanActivityScorer()
         self.ensure_schema()
 
     def ensure_schema(self) -> None:
@@ -79,6 +81,10 @@ class SenteroBehaviorAgent:
             )
             self._ensure_column(con, "sentero_sensor_events", "data_class", "text not null default 'technical'")
             self._ensure_column(con, "sentero_sensor_events", "aggregation_level", "text not null default 'raw'")
+            self._ensure_column(con, "sentero_sensor_events", "human_activity_score", "integer")
+            self._ensure_column(con, "sentero_sensor_events", "human_activity_confidence", "real")
+            self._ensure_column(con, "sentero_sensor_events", "human_activity_classification", "text")
+            self._ensure_column(con, "sentero_sensor_events", "human_activity_reasons", "text not null default '[]'")
             self._ensure_column(con, "behavior_events", "data_class", "text not null default 'technical'")
             self._ensure_column(con, "behavior_events", "aggregation_level", "text not null default 'raw'")
             con.execute(
@@ -150,13 +156,12 @@ class SenteroBehaviorAgent:
         profile = self._profile()
         contacts = self._contacts()
         sensor_snapshot = self.mapping.roles(dev=True, include_state=True)
-        try:
-            ha_snapshot = self.mapping.snapshot()
-        except Exception as exc:
-            logger.exception("Behavior HA snapshot unavailable", extra={"component": "behavior"})
-            ha_snapshot = []
+        # Analysis is scoped to sensors explicitly configured in Sentero. The raw
+        # MQTT snapshot can contain unrelated household devices and must not feed
+        # behavior/AI context.
+        source_snapshot = list(sensor_snapshot)
         if not dry_run:
-            self._record_snapshot(sensor_snapshot, ha_snapshot)
+            self._record_snapshot(sensor_snapshot, source_snapshot)
             self._notify_system_warnings(sensor_snapshot)
             self._cleanup_old_data()
         history = self._history(days=30)
@@ -166,7 +171,7 @@ class SenteroBehaviorAgent:
         daily_summary["anomaly_score"] = int(deviations.get("anomaly_score") or 0)
         if not dry_run:
             self._store_daily_anomaly_score(str(daily_summary.get("date") or ""), int(daily_summary["anomaly_score"]))
-        payload = self._analysis_payload(profile, contacts, sensor_snapshot, history, ha_snapshot, daily_summary, behavior_profile, deviations)
+        payload = self._analysis_payload(profile, contacts, sensor_snapshot, history, source_snapshot, daily_summary, behavior_profile, deviations)
         assessment = self._assess(payload)
         assessment = self._apply_learning_policy(assessment, payload)
         stored = assessment if dry_run else self._store_assessment(assessment)
@@ -220,12 +225,185 @@ class SenteroBehaviorAgent:
 
     def record_current_snapshot(self) -> int:
         sensor_snapshot = self.mapping.roles(dev=True, include_state=True)
-        try:
-            ha_snapshot = self.mapping.snapshot()
-        except Exception:
-            logger.exception("Behavior live snapshot unavailable", extra={"component": "behavior"})
-            ha_snapshot = []
-        return self._record_snapshot(sensor_snapshot, ha_snapshot)
+        source_snapshot = list(sensor_snapshot)
+        written = self._record_snapshot(sensor_snapshot, source_snapshot)
+        self._notify_system_warnings(sensor_snapshot)
+        return written
+
+    def handle_mqtt_message(self, topic: str, payload: Any, received_at: str) -> int:
+        """Persist behavior-relevant MQTT changes at ingestion time.
+
+        The MQTT last-state table answers "what is the current value?". This
+        method answers "what happened when?" by writing presence/motion events to
+        the behavior history as soon as Zigbee2MQTT publishes them.
+        """
+        clean_topic = str(topic or "").strip().strip("/")
+        if not clean_topic or not isinstance(payload, dict):
+            return 0
+        # Bridge metadata and availability are technical transport messages, not
+        # human behavior observations.
+        if "/bridge/" in f"/{clean_topic}/" or clean_topic.endswith("/availability"):
+            return 0
+
+        matched_roles = self._roles_for_mqtt_topic(clean_topic)
+        if not matched_roles:
+            return 0
+
+        written = 0
+        for role in matched_roles:
+            self._handle_mqtt_smoke_warning(role, payload)
+            events = self._mqtt_behavior_events(role, clean_topic, payload, received_at)
+            if events:
+                written += self._write_sensor_events(events, created_at=now())
+        if written:
+            logger.debug(
+                "MQTT behavior events recorded",
+                extra={"component": "behavior", "topic": clean_topic, "written_events": written},
+            )
+        return written
+
+    def _handle_mqtt_smoke_warning(self, role: dict[str, Any], payload: dict[str, Any]) -> None:
+        if not self._is_smoke_role(role):
+            return
+        smoke = self._mqtt_smoke_active(payload)
+        if smoke is None:
+            return
+        sensor = {
+            **role,
+            "configured": True,
+            "active": True,
+            "enabled": True,
+            "smoke": smoke,
+            "battery_level": payload.get("battery") if isinstance(payload.get("battery"), (int, float)) else role.get("battery_level"),
+        }
+        subject_id = self.notifications._sensor_subject_id(sensor)
+        if smoke:
+            self.notifications.notify_sensor_warnings([sensor])
+        else:
+            self.notifications.resolve_system_warning(f"smoke_alarm:{subject_id}")
+
+    def _roles_for_mqtt_topic(self, topic: str) -> list[dict[str, Any]]:
+        clean = str(topic or "").strip().strip("/")
+        if not clean:
+            return []
+        result: list[dict[str, Any]] = []
+        for role in self.mapping.roles(dev=True, include_state=False):
+            candidates = {
+                str(role.get("entity_id") or "").strip().strip("/"),
+                str(role.get("source_ref") or "").strip().strip("/"),
+                str(role.get("primary_entity_id") or "").strip().strip("/"),
+            }
+            entity_ids = role.get("entity_ids")
+            if isinstance(entity_ids, list):
+                candidates.update(str(item or "").strip().strip("/") for item in entity_ids)
+            if clean in {item for item in candidates if item}:
+                result.append(role)
+        return result
+
+    def _mqtt_behavior_events(
+        self,
+        role: dict[str, Any],
+        topic: str,
+        payload: dict[str, Any],
+        event_time: str,
+    ) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        role_name = str(role.get("role") or "").strip() or "sensor"
+        if self._is_smoke_role(role):
+            return events
+        room = role.get("room")
+        source = str(role.get("source") or "zigbee2mqtt")
+
+        motion_raw = payload.get("motion_state") if "motion_state" in payload else payload.get("motion")
+        motion = self._mqtt_motion_active(motion_raw)
+
+        presence_value = payload.get("presence") if "presence" in payload else payload.get("occupancy")
+        presence = self._mqtt_bool(presence_value)
+        # Combined PIR/radar sensors can transiently report presence=false while
+        # motion_state is moving/static/still. Any of those states proves that the
+        # person is still in the room and must prevent a false "Nicht im Haus".
+        if self._mqtt_motion_state_implies_presence(motion_raw):
+            presence = True
+        if presence is not None:
+            events.append({
+                "event_time": event_time,
+                "role": role_name,
+                "room": room,
+                "entity_id": f"{topic}#presence",
+                "state": "on" if presence else "off",
+                "device_class": "presence",
+                "source": source,
+                "event_type": "presence",
+                "motion_state": motion_raw,
+                # Presence is a state. Repeated telemetry with unchanged presence
+                # must not look like repeated human activity.
+                "transition_only": True,
+            })
+
+        if motion is not None:
+            events.append({
+                "event_time": event_time,
+                "role": f"{role_name}_motion",
+                "room": room,
+                "entity_id": f"{topic}#motion",
+                "state": "on" if motion else "off",
+                "device_class": "motion",
+                "source": source,
+                "event_type": "motion",
+                "motion_state": motion_raw,
+                # Every explicit moving message is useful as a fresh last-movement
+                # timestamp. Repeated inactive messages are only state transitions.
+                "transition_only": not motion,
+            })
+        return events
+
+    @staticmethod
+    def _mqtt_bool(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and value in {0, 1}:
+            return bool(value)
+        text = str(value or "").strip().lower()
+        if text in {"true", "on", "yes", "1", "present", "occupied", "detected"}:
+            return True
+        if text in {"false", "off", "no", "0", "absent", "clear", "none", "not_present", "not present"}:
+            return False
+        return None
+
+    @staticmethod
+    def _mqtt_motion_state_implies_presence(value: Any) -> bool:
+        text = str(value or "").strip().lower().replace("-", "_")
+        return text in {
+            "moving", "move", "movement", "motion", "active", "detected", "moving_target", "large", "small",
+            "still", "static", "stationary", "standstill", "static_target", "presence", "present",
+        }
+
+    @staticmethod
+    def _mqtt_motion_active(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and value in {0, 1}:
+            return bool(value)
+        text = str(value or "").strip().lower().replace("-", "_")
+        if text in {"moving", "move", "movement", "motion", "active", "detected", "moving_target", "large", "small"}:
+            return True
+        if text in {"none", "still", "static", "stationary", "standstill", "inactive", "clear", "off", "false", "0", "no_motion", "no motion"}:
+            return False
+        return None
+
+    @classmethod
+    def _mqtt_smoke_active(cls, payload: dict[str, Any]) -> bool | None:
+        for key in ("smoke", "smoke_alarm", "smoke_state"):
+            if key in payload:
+                parsed = cls._mqtt_bool(payload.get(key))
+                if parsed is not None:
+                    return parsed
+                text = str(payload.get(key) or "").strip().lower().replace("-", "_")
+                if text in {"alarm", "alert", "smoke", "smoke_detected", "detected", "fire"}:
+                    return True
+                if text in {"clear", "ok", "normal", "none", "no_smoke", "not_detected"}:
+                    return False
+        return None
 
     def _profile(self) -> dict[str, Any]:
         with self.mapping.connect() as con:
@@ -240,41 +418,90 @@ class SenteroBehaviorAgent:
             rows = con.execute("select * from trusted_contacts where active = 1 order by id").fetchall()
         return [dict(row) for row in rows]
 
-    def _record_snapshot(self, roles: list[dict[str, Any]], ha_snapshot: list[dict[str, Any]] | None = None) -> int:
+    def _record_snapshot(self, roles: list[dict[str, Any]], source_snapshot: list[dict[str, Any]] | None = None) -> int:
         timestamp = now()
-        snapshot_rows = ha_snapshot or []
+        snapshot_rows = source_snapshot or []
         extra_events = [
-            *self._fp300_snapshot_events(roles, snapshot_rows, timestamp),
             *self._smart_meter_snapshot_events(snapshot_rows, timestamp),
         ]
+        normalized: list[dict[str, Any]] = []
+        for role in roles:
+            behavior_events = self._behavior_events_from_role(role, timestamp)
+            normalized.extend(behavior_events if behavior_events else [role])
+        normalized.extend(extra_events)
+        written = self._write_sensor_events(normalized, created_at=timestamp)
+        logger.debug(
+            "Behavior snapshot recorded",
+            extra={"component": "behavior", "role_count": len(roles), "extra_event_count": len(extra_events), "written_events": written},
+        )
+        return written
+
+    def _behavior_events_from_role(self, role: dict[str, Any], fallback_time: str) -> list[dict[str, Any]]:
+        if not self._is_presence_role(role):
+            return []
+        event_time = str(role.get("last_changed") or role.get("last_updated") or fallback_time)
+        topic = str(role.get("entity_id") or role.get("resolved_entity_id") or role.get("role") or "sensor").strip()
+        payload: dict[str, Any] = {}
+        if role.get("presence") is not None:
+            payload["presence"] = role.get("presence")
+        if role.get("motion_state") is not None:
+            payload["motion_state"] = role.get("motion_state")
+        elif role.get("motion") is not None:
+            payload["motion"] = role.get("motion")
+        if not payload:
+            return []
+        return self._mqtt_behavior_events(role, topic, payload, event_time)
+
+    def _write_sensor_events(self, events: list[dict[str, Any]], created_at: str) -> int:
         written = 0
         with self.mapping.connect() as con:
-            for role in [*roles, *extra_events]:
-                state = role.get("state")
+            for event in events:
+                state = event.get("state")
                 if state in (None, "", "unknown", "unavailable"):
                     continue
-                event_time = role.get("last_changed") or role.get("last_updated") or timestamp
-                role_name = role.get("role")
-                entity_id = role.get("entity_id")
+                event_time = str(event.get("event_time") or event.get("last_changed") or event.get("last_updated") or created_at)
+                role_name = event.get("role")
+                entity_id = event.get("entity_id")
                 if self._event_already_recorded(con, event_time, role_name, entity_id, state):
                     continue
-                event_type = self._event_type(role)
-                data_class = classify_sensor_event(event_type, role.get("device_class"), role_name)
+                if event.get("transition_only") and self._latest_sensor_state(con, entity_id, role_name) == str(state):
+                    continue
+                event_type = str(event.get("event_type") or self._event_type(event))
+                data_class = classify_sensor_event(event_type, event.get("device_class"), role_name)
+
+                # Shadow-mode only: store an estimate of how human-like the event
+                # looks, but do not suppress or change any existing behavior logic.
+                scoring_event = {
+                    **event,
+                    "event_time": event_time,
+                    "event_type": event_type,
+                    "state": state,
+                }
+                human = self.human_activity.assess(con, scoring_event)
+
                 con.execute(
                     """insert into sentero_sensor_events
-                       (event_time, role, room, entity_id, state, device_class, source, data_class, aggregation_level, created_at)
-                       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (event_time, role, room, entity_id, state, device_class, source,
+                        data_class, aggregation_level,
+                        human_activity_score, human_activity_confidence,
+                        human_activity_classification, human_activity_reasons,
+                        created_at)
+                       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         event_time,
                         role_name,
-                        role.get("room"),
+                        event.get("room"),
                         entity_id,
                         state,
-                        role.get("device_class"),
-                        role.get("source") or "snapshot",
+                        event.get("device_class"),
+                        event.get("source") or "snapshot",
                         data_class,
                         "raw",
-                        timestamp,
+                        human.score if human else None,
+                        human.confidence if human else None,
+                        human.classification if human else None,
+                        reasons_json(human),
+                        created_at,
                     ),
                 )
                 con.execute(
@@ -284,25 +511,48 @@ class SenteroBehaviorAgent:
                     (
                         event_time,
                         entity_id or role_name,
-                        role.get("device_class") or role.get("type") or role.get("domain"),
-                        role.get("room"),
+                        event.get("device_class") or event.get("type") or event.get("domain"),
+                        event.get("room"),
                         event_type,
                         json.dumps({
                             "role": role_name,
                             "state": state,
-                            "source": role.get("source") or "snapshot",
+                            "source": event.get("source") or "snapshot",
+                            "motion_state": event.get("motion_state"),
+                            "human_activity": human.as_dict() if human else None,
+                            "human_activity_shadow_mode": True,
                         }, ensure_ascii=False),
                         data_class,
                         "raw",
                     ),
                 )
+                if human is not None:
+                    logger.debug(
+                        "Human activity score recorded",
+                        extra={
+                            "component": "behavior",
+                            "room": event.get("room"),
+                            "event_type": event_type,
+                            "human_activity_score": human.score,
+                            "human_activity_confidence": human.confidence,
+                            "human_activity_classification": human.classification,
+                            "human_activity_shadow_mode": True,
+                        },
+                    )
                 written += 1
             con.commit()
-        logger.debug(
-            "Behavior snapshot recorded",
-            extra={"component": "behavior", "role_count": len(roles), "extra_event_count": len(extra_events), "written_events": written},
-        )
         return written
+
+    def _latest_sensor_state(self, con: Any, entity_id: Any, role: Any) -> str | None:
+        row = con.execute(
+            """select state from sentero_sensor_events
+               where coalesce(entity_id, '') = coalesce(?, '')
+                 and coalesce(role, '') = coalesce(?, '')
+               order by event_time desc, id desc
+               limit 1""",
+            (entity_id, role),
+        ).fetchone()
+        return str(row["state"]) if row else None
 
     def _event_already_recorded(self, con: Any, event_time: Any, role: Any, entity_id: Any, state: Any) -> bool:
         row = con.execute(
@@ -331,7 +581,7 @@ class SenteroBehaviorAgent:
         contacts: list[dict[str, Any]],
         sensor_snapshot: list[dict[str, Any]],
         history: list[dict[str, Any]],
-        ha_snapshot: list[dict[str, Any]],
+        source_snapshot: list[dict[str, Any]],
         daily_summary: dict[str, Any],
         behavior_profile: dict[str, Any],
         deviations: dict[str, Any],
@@ -341,6 +591,7 @@ class SenteroBehaviorAgent:
         previous_events = [event for event in history if self._parse_time(event.get("event_time")).date() != today]
         learning = behavior_profile.get("learning") or {}
         utility_usage = self._utility_usage_summary(history)
+        data_quality = self._sensor_data_quality(sensor_snapshot)
         return {
             "learning_completed": bool(learning.get("completed")),
             "learning": learning,
@@ -372,11 +623,13 @@ class SenteroBehaviorAgent:
                 "configured_sensors": len(sensor_snapshot),
                 "rooms": sorted({str(item.get("room")) for item in sensor_snapshot if item.get("room")}),
             },
+            "data_quality": data_quality,
             "deviations": {**self._deviations(today_events, previous_events, sensor_snapshot), "low_utility_usage_today": utility_usage.get("low_usage_today"), **deviations},
             "safety_rules": {
                 "no_medical_diagnosis": True,
                 "no_emergency_calls": True,
                 "only_behavioral_anomaly_detection": True,
+                "data_quality_required": "Bei eingeschränkter Sensor-Datenlage keine beruhigende oder eskalierende Aussage ohne Hinweis auf die eingeschränkte Verlässlichkeit treffen.",
                 "presence_sensor_limits": [
                     "Aqara FP300 erkennt Anwesenheit und Bewegung, aber keine Atmung.",
                     "Aqara FP300 unterscheidet Sitzen und Liegen nicht zuverlässig.",
@@ -412,6 +665,7 @@ class SenteroBehaviorAgent:
 
     def _heuristic_assessment(self, payload: dict[str, Any]) -> dict[str, Any]:
         deviations = payload.get("deviations") or {}
+        data_quality = payload.get("data_quality") or {}
         score = int(payload.get("anomaly_score") or deviations.get("anomaly_score") or 0)
         findings = []
         status = self._status_from_score(score)
@@ -423,6 +677,19 @@ class SenteroBehaviorAgent:
                 "summary": "Es liegen noch nicht genug Sensordaten für eine verlässliche Tagesbewertung vor.",
                 "findings": ["Sentero sammelt zunächst Sensorhistorie, um Routinen zu lernen."],
                 "recommendation": "Keine Aktion erforderlich.",
+                "anomaly_score": score,
+                "email_subject": "",
+                "email_body": "",
+                "llm_response": "",
+            }
+        if data_quality.get("monitoring_reliable") is False:
+            return {
+                "assessment_time": now(),
+                "status": "yellow",
+                "confidence": 0.45,
+                "summary": "Keine verlässliche Tagesbewertung möglich, weil wichtige Aktivitätssensoren keine frischen Daten liefern.",
+                "findings": self._data_quality_findings(data_quality),
+                "recommendation": "Bitte Sensorstatus, Stromversorgung, Batterie und Funkverbindung prüfen.",
                 "anomaly_score": score,
                 "email_subject": "",
                 "email_body": "",
@@ -451,6 +718,11 @@ class SenteroBehaviorAgent:
             "red": "Es liegt eine deutliche Auffälligkeit vor. Bitte prüfen Sie die Situation.",
         }
         recommendation = "Keine Aktion erforderlich." if status == "green" else "Bitte kurz nachfragen, ob alles in Ordnung ist."
+        if status == "green" and data_quality.get("observation_limited"):
+            status = "yellow"
+            findings.extend(self._data_quality_findings(data_quality))
+            summary_by_status["yellow"] = "Es sind keine Auffälligkeiten erkennbar, die Datenlage ist aber eingeschränkt."
+            recommendation = "Bitte Sensorstatus im Blick behalten."
         return {
             "assessment_time": now(),
             "status": status,
@@ -499,6 +771,8 @@ class SenteroBehaviorAgent:
 
     def _notify_system_warnings(self, sensor_snapshot: list[dict[str, Any]]) -> None:
         try:
+            # Only configured Sentero roles are eligible for warnings. The raw
+            # MQTT snapshot may contain unrelated devices on the same broker.
             result = self.notifications.notify_system_warnings(sensor_snapshot)
             if result.get("warnings"):
                 logger.info(
@@ -517,6 +791,10 @@ class SenteroBehaviorAgent:
             return
         status = assessment.get("status")
         if status not in {"orange", "red"}:
+            self.notifications.resolve_behavior_notification()
+            return
+        notification_result = self.notifications.notify_assessment(assessment, contacts)
+        if not int(notification_result.get("sent") or 0):
             return
         severity = "critical" if status == "red" else "warning"
         self.messaging.create_message(
@@ -532,7 +810,6 @@ class SenteroBehaviorAgent:
                 "email_subject": assessment.get("email_subject") or "Sentero Hinweis",
             },
         )
-        self.notifications.notify_assessment(assessment, contacts)
 
     def _learning_days(self) -> int:
         config = load_agent_section("sentero")
@@ -713,12 +990,62 @@ class SenteroBehaviorAgent:
             "learning_completed": bool(learning.get("completed")),
             "learning_day": int(learning.get("day") or 1),
             "learning_days": int(learning.get("days") or self._learning_days()),
+            "data_quality": self._sensor_data_quality(roles),
         }
+
+    def _sensor_data_quality(self, roles: list[dict[str, Any]]) -> dict[str, Any]:
+        configured = [role for role in roles if role.get("configured", role.get("active", True))]
+        unavailable = [role for role in configured if role.get("reachable") is False]
+        stale = [role for role in configured if role.get("stale") is True]
+        activity = [role for role in configured if self._is_presence_role(role) or self._is_motion_entity(role)]
+        activity_limited = [role for role in activity if role.get("reachable") is False or role.get("stale") is True]
+        monitoring_reliable = bool(activity) and len(activity_limited) < len(activity)
+        return {
+            "configured_sensors": len(configured),
+            "activity_sensors": len(activity),
+            "stale_sensors": len(stale),
+            "unreachable_sensors": len(unavailable),
+            "observation_limited": bool(stale or unavailable or not monitoring_reliable),
+            "monitoring_reliable": monitoring_reliable,
+            "stale": self._compact_roles(stale),
+            "unreachable": self._compact_roles(unavailable),
+            "activity_limited": self._compact_roles(activity_limited),
+        }
+
+    def _data_quality_findings(self, data_quality: dict[str, Any]) -> list[str]:
+        findings: list[str] = []
+        if data_quality.get("activity_sensors") == 0:
+            findings.append("Es ist kein Aktivitätssensor eingerichtet.")
+        elif data_quality.get("monitoring_reliable") is False:
+            findings.append("Alle Aktivitätssensoren liefern derzeit keine frischen verwertbaren Daten.")
+        elif data_quality.get("stale_sensors"):
+            findings.append("Einige Sensorwerte sind nicht frisch und nur als letzter bekannter Zustand zu verstehen.")
+        if data_quality.get("unreachable_sensors"):
+            findings.append("Mindestens ein Sensor ist als nicht erreichbar markiert.")
+        return findings or ["Die Sensor-Datenlage ist eingeschränkt."]
 
     def _apply_learning_policy(self, assessment: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         learning = payload.get("learning") or {}
+        data_quality = payload.get("data_quality") or {}
         score = int(payload.get("anomaly_score") or assessment.get("anomaly_score") or 0)
         status = str(assessment.get("status") or self._status_from_score(score))
+        findings = self._list(assessment.get("findings"))
+        if data_quality.get("monitoring_reliable") is False:
+            status = "yellow"
+            assessment["summary"] = "Keine verlässliche Tagesbewertung möglich, weil wichtige Aktivitätssensoren keine frischen Daten liefern."
+            assessment["recommendation"] = "Bitte Sensorstatus, Stromversorgung, Batterie und Funkverbindung prüfen."
+            assessment["email_subject"] = ""
+            assessment["email_body"] = ""
+            findings.extend(item for item in self._data_quality_findings(data_quality) if item not in findings)
+            assessment["confidence"] = min(float(assessment.get("confidence") or 0), 0.55)
+        elif status == "green" and data_quality.get("observation_limited"):
+            status = "yellow"
+            assessment["summary"] = "Es sind keine Auffälligkeiten erkennbar, die Datenlage ist aber eingeschränkt."
+            assessment["recommendation"] = "Bitte Sensorstatus im Blick behalten."
+            assessment["email_subject"] = ""
+            assessment["email_body"] = ""
+            findings.extend(item for item in self._data_quality_findings(data_quality) if item not in findings)
+            assessment["confidence"] = min(float(assessment.get("confidence") or 0), 0.6)
         if not learning.get("completed") and status in {"orange", "red"}:
             status = "yellow"
             assessment["summary"] = "Sentero lernt aktuell den gewohnten Tagesablauf kennen. Es gibt erste Hinweise, aber noch keine abschließende Bewertung."
@@ -726,6 +1053,7 @@ class SenteroBehaviorAgent:
             assessment["email_subject"] = ""
             assessment["email_body"] = ""
         assessment["status"] = status
+        assessment["findings"] = findings
         assessment["anomaly_score"] = score
         assessment["learning_completed"] = bool(learning.get("completed"))
         assessment["learning_day"] = int(learning.get("day") or 1)
@@ -840,6 +1168,8 @@ class SenteroBehaviorAgent:
         return average > 0 and current >= max(average * 2.5, average + 3)
 
     def _event_type(self, event: dict[str, Any]) -> str:
+        if self._is_smoke_role(event):
+            return "safety"
         if self._is_door_event(event):
             return "door"
         if self._is_presence_role(event):
@@ -849,9 +1179,11 @@ class SenteroBehaviorAgent:
         return "sensor_state"
 
     def _is_activity_event(self, event: dict[str, Any]) -> bool:
-        return self._is_on(event.get("state")) and (self._is_presence_role(event) or self._is_motion_entity(event) or self._is_door_event(event))
+        return self._is_on(event.get("state")) and not self._is_smoke_role(event) and (self._is_presence_role(event) or self._is_motion_entity(event) or self._is_door_event(event))
 
     def _is_door_event(self, event: dict[str, Any]) -> bool:
+        if self._is_smoke_role(event):
+            return False
         text = self._entity_text(event)
         return "door" in text or "tuer" in text or "tür" in text or self._device_class(event) in {"door", "opening"}
 
@@ -953,27 +1285,6 @@ class SenteroBehaviorAgent:
             "inactive_hours": round(inactive_hours, 2),
         }
 
-    def _fp300_snapshot_events(self, roles: list[dict[str, Any]], ha_snapshot: list[dict[str, Any]], timestamp: str) -> list[dict[str, Any]]:
-        events: list[dict[str, Any]] = []
-        for role in roles:
-            if not self._is_presence_role(role):
-                continue
-            related = self._related_presence_entities(role, ha_snapshot)
-            for kind, item in related.items():
-                if not item:
-                    continue
-                events.append({
-                    "role": f"{role.get('role')}_{kind}",
-                    "room": role.get("room"),
-                    "entity_id": item.get("entity_id"),
-                    "state": item.get("state"),
-                    "device_class": item.get("device_class"),
-                    "source": "fp300_snapshot",
-                    "last_changed": item.get("last_changed") or timestamp,
-                    "last_updated": item.get("last_updated") or timestamp,
-                })
-        return events
-
     def _smart_meter_snapshot_events(self, snapshot: list[dict[str, Any]], timestamp: str) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
         for item in snapshot:
@@ -1069,14 +1380,14 @@ class SenteroBehaviorAgent:
     def _fp300_analysis(
         self,
         roles: list[dict[str, Any]],
-        ha_snapshot: list[dict[str, Any]],
+        source_snapshot: list[dict[str, Any]],
         history: list[dict[str, Any]],
     ) -> dict[str, Any]:
         devices = []
         for role in roles:
             if not self._is_presence_role(role):
                 continue
-            related = self._related_presence_entities(role, ha_snapshot)
+            related = self._related_presence_entities(role, source_snapshot)
             presence = related.get("presence")
             motion = related.get("motion")
             devices.append({
@@ -1121,13 +1432,13 @@ class SenteroBehaviorAgent:
             "devices": devices,
         }
 
-    def _related_presence_entities(self, role: dict[str, Any], ha_snapshot: list[dict[str, Any]]) -> dict[str, dict[str, Any] | None]:
+    def _related_presence_entities(self, role: dict[str, Any], source_snapshot: list[dict[str, Any]]) -> dict[str, dict[str, Any] | None]:
         role_entity = str(role.get("entity_id") or "")
         device_id = str(role.get("device_id") or "").strip()
-        same_device = [item for item in ha_snapshot if device_id and str(item.get("device_id") or "") == device_id]
+        same_device = [item for item in source_snapshot if device_id and str(item.get("device_id") or "") == device_id]
         if not same_device:
             prefix = role_entity.rsplit("_", 1)[0] if "_" in role_entity else role_entity.rsplit(".", 1)[-1]
-            same_device = [item for item in ha_snapshot if prefix and str(item.get("entity_id") or "").startswith(prefix)]
+            same_device = [item for item in source_snapshot if prefix and str(item.get("entity_id") or "").startswith(prefix)]
         return {
             "presence": self._best_entity(same_device, self._is_presence_entity) or (role if self._is_presence_entity(role) else None),
             "motion": self._best_entity(same_device, self._is_motion_entity),
@@ -1227,18 +1538,28 @@ class SenteroBehaviorAgent:
         return sorted(matches, key=lambda item: (self._entity_id(item).startswith("binary_sensor."), self._parse_time(item.get("last_updated")).timestamp()), reverse=True)[0] if matches else None
 
     def _is_presence_role(self, role: dict[str, Any]) -> bool:
+        if self._is_smoke_role(role):
+            return False
         text = self._entity_text(role)
         return str(role.get("role") or "").endswith("presence") or self._is_presence_entity(role) or "occupy" in text
 
     def _is_presence_entity(self, item: dict[str, Any]) -> bool:
+        if self._is_smoke_role(item):
+            return False
         dc = self._device_class(item)
         text = self._entity_text(item)
         return dc in {"occupancy", "presence"} or any(term in text for term in ["presence", "praesenz", "präsenz", "occupancy", "occupy"])
 
     def _is_motion_entity(self, item: dict[str, Any]) -> bool:
+        if self._is_smoke_role(item):
+            return False
         dc = self._device_class(item)
         text = self._entity_text(item)
         return dc == "motion" or any(term in text for term in ["motion", "bewegung", "pir_detection", "pir detection", "pir"])
+
+    def _is_smoke_role(self, item: dict[str, Any]) -> bool:
+        text = self._entity_text(item)
+        return self._device_class(item) == "smoke" or any(term in text for term in ["smoke", "rauch", "fire_alarm"])
 
     @staticmethod
     def _device_class(item: dict[str, Any]) -> str:
@@ -1273,6 +1594,8 @@ class SenteroBehaviorAgent:
                 "label": role.get("label") or role.get("friendly_name"),
                 "state": role.get("state"),
                 "reachable": role.get("reachable"),
+                "stale": role.get("stale"),
+                "stale_seconds": role.get("stale_seconds"),
                 "last_changed": role.get("last_changed"),
                 "last_updated": role.get("last_updated"),
                 "device_class": role.get("device_class"),

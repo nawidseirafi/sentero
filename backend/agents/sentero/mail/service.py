@@ -1,0 +1,644 @@
+from __future__ import annotations
+
+import time
+import json
+import re
+from email.utils import parseaddr
+from typing import Any
+
+from backend.agents.sentero.mail.conversation_service import ConversationService
+from backend.agents.sentero.mail.imap_client import ImapMailClient
+from backend.agents.sentero.mail.intent_service import MailIntentService
+from backend.agents.sentero.mail.models import InboundMail, MailAssistantConfig, MailIntent
+from backend.agents.sentero.mail.query_service import MailQueryService
+from backend.agents.sentero.mail.response_service import MailResponseService
+from backend.agents.sentero.mail.store import MailAssistantStore
+from backend.logging_config import get_logger
+from backend.services.device_mapping_service import DeviceMappingService, now
+from backend.services.notification_service import NotificationService, sentero_mail_from
+from backend.services.service import SenteroService
+
+logger = get_logger(__name__)
+
+REPLY_SEPARATOR_RE = re.compile(
+    r"^\s*(?:"
+    r"[-_]{2,}\s*(?:original message|ursprüngliche nachricht|weitergeleitete nachricht)\s*[-_]{2,}|"
+    r"(?:am|on)\s+.+\b(?:schrieb|wrote)\b.*:|"
+    r"from:|von:|sent:|gesendet:|to:|an:|cc:|betreff:|subject:"
+    r")",
+    re.I,
+)
+
+
+class SenteroMailAssistant:
+    def __init__(
+        self,
+        mapping: DeviceMappingService,
+        sentero: SenteroService,
+        notification: NotificationService,
+        config: MailAssistantConfig | None = None,
+        imap_client: ImapMailClient | None = None,
+        conversation: ConversationService | None = None,
+    ) -> None:
+        self.mapping = mapping
+        self.sentero = sentero
+        self.notification = notification
+        self._fixed_config = config
+        self.config = config or config_from_notification_settings(mapping)
+        self.store = MailAssistantStore(mapping)
+        self.intent = MailIntentService()
+        self.query_service = MailQueryService(
+            mapping,
+            sentero,
+            fresh_seconds=self.config.fresh_seconds,
+            recent_seconds=self.config.recent_seconds,
+            stale_seconds=self.config.stale_seconds,
+        )
+        self.response = MailResponseService()
+        self.conversation = conversation or ConversationService()
+        self.imap = imap_client or ImapMailClient(self.config)
+
+    def _refresh_runtime_config(self) -> None:
+        self.config = self._fixed_config or config_from_notification_settings(self.mapping)
+        self.query_service.fresh_seconds = self.config.fresh_seconds
+        self.query_service.recent_seconds = self.config.recent_seconds
+        self.query_service.stale_seconds = self.config.stale_seconds
+        self.imap.config = self.config
+
+    def enabled(self) -> bool:
+        self._refresh_runtime_config()
+        return self.config.enabled
+
+    def poll_once(self) -> dict[str, Any]:
+        self._refresh_runtime_config()
+        if not self.enabled():
+            return {"processed": 0, "skipped": "disabled"}
+        messages = self.imap.fetch_unseen()
+        evaluated = 0
+        marked_read = 0
+        skipped_reviewed = 0
+        results: dict[str, int] = {}
+
+        for message in messages:
+            # Ignored/unrelated mail deliberately stays unread. Remember that the
+            # assistant already reviewed it so it is not reevaluated every poll.
+            if self.store.already_reviewed(message.message_id):
+                skipped_reviewed += 1
+                continue
+
+            try:
+                outcome = self.process_message(message)
+            except Exception:
+                logger.exception(
+                    "Mail message processing failed",
+                    extra={"component": "mail_assistant", "uid": message.uid},
+                )
+                results["failed"] = results.get("failed", 0) + 1
+                # Failed processing is intentionally not remembered and not marked
+                # read, so Sentero can retry it on a later poll.
+                continue
+
+            evaluated += 1
+            status = str(outcome.get("status") or "unknown")
+            results[status] = results.get(status, 0) + 1
+
+            response_sent = bool(outcome.get("response_sent"))
+            if response_sent:
+                try:
+                    self.imap.mark_processed(message.uid)
+                    marked_read += 1
+                except Exception:
+                    logger.exception(
+                        "Mail response sent but IMAP mark-read failed",
+                        extra={"component": "mail_assistant", "uid": message.uid},
+                    )
+                self.store.record_reviewed(message.message_id, status)
+            elif status in {"ignored", "duplicate"}:
+                # Keep the mail unread for the user, but do not reconsider it on
+                # every polling cycle.
+                self.store.record_reviewed(message.message_id, status)
+
+        return {
+            "processed": evaluated,
+            "evaluated": evaluated,
+            "marked_read": marked_read,
+            "skipped_reviewed": skipped_reviewed,
+            "results": results,
+        }
+
+    def process_message(self, message: InboundMail) -> dict[str, Any]:
+        started = time.perf_counter()
+        recipient_match = self._recipient_match_details(message)
+        logger.info(
+            "Mail received for evaluation",
+            extra={
+                "component": "mail_assistant",
+                "uid": message.uid,
+                "sender": normalize_log_email(message.sender_email),
+                "recipient_match": recipient_match["matched"],
+                "recipient_source": recipient_match["source"],
+            },
+        )
+
+        # Guard 1: only mail actually delivered to the configured Sentero mailbox
+        # is eligible for processing. Other mail in a shared/catch-all inbox is
+        # silently ignored and never reaches intent/LLM/query processing.
+        if not self._is_addressed_to_sentero(message):
+            return self._ignore_silently(message, "wrong_recipient")
+
+        # Guard 2: never converse with automatic senders, mailing lists, bounces
+        # or messages generated by Sentero itself.
+        if is_generated_or_auto_submitted(message):
+            return self._ignore_silently(message, "automatic_message")
+
+        if self.store.already_processed(message.message_id):
+            return {
+                "status": "duplicate",
+                "response_sent": self.store.response_was_sent(message.message_id),
+            }
+
+        # Guard 3: only explicitly enabled trusted contacts may ask questions.
+        # Unknown or disabled senders are deliberately ignored without sending a
+        # rejection. This avoids mail loops, backscatter and spam interaction.
+        contact, auth_error = self.store.find_authorized_contact(message.sender_email, message.recipient_addresses)
+        if not contact:
+            return self._ignore_silently(message, auth_error or "unauthorized_sender")
+
+        logger.info(
+            "Mail sender authorized",
+            extra={
+                "component": "mail_assistant",
+                "contact_id": contact.id,
+                "sender": normalize_log_email(message.sender_email),
+            },
+        )
+
+        # Activation gate:
+        # - A NEW Sentero conversation must carry the configured marker in the
+        #   subject (default: "Sentero:").
+        # - A REPLY is accepted when In-Reply-To/References points to a message
+        #   Sentero actually sent to the same trusted contact.
+        #
+        # A normal email from an authorized family member therefore remains a
+        # normal email and is never sent to intent classification or the LLM.
+        context = self.store.find_thread_context(reply_context_message_id(message))
+        if context and context.contact_id not in {None, contact.id}:
+            context = None
+
+        subject_activated = subject_activates_sentero(
+            message.subject,
+            self.config.activation_subject_prefix,
+        )
+        thread_activated = context is not None
+
+        if not subject_activated and not thread_activated:
+            return self._ignore_silently(message, "missing_sentero_activation")
+
+        logger.info(
+            "Mail activation accepted",
+            extra={
+                "component": "mail_assistant",
+                "contact_id": contact.id,
+                "activation": "thread" if thread_activated else "subject",
+            },
+        )
+
+        if self.store.rate_limit_exceeded(contact.id, self.config.hourly_limit, self.config.daily_limit):
+            body = "Guten Tag,\n\ndas Anfrage-Limit für E-Mail-Statusabfragen ist erreicht. Bitte versuchen Sie es später erneut.\n\nViele Grüße\nSentero"
+            self._send_response(message, contact.email, body, contact_id=contact.id)
+            self.store.record_query(received_at=message.received_at, message_id=message.message_id, contact_id=contact.id, sender_email=message.sender_email, intent=None, confidence=None, question="", response_status="rate_limited", error_code="rate_limit", processing_ms=_elapsed_ms(started), response_sent_at=now())
+            return {"status": "rate_limited", "response_sent": True}
+
+        # The subject is only the activation switch. The actual user question is
+        # deliberately taken from the email body, never from the subject.
+        question = sanitize_question(message.body)
+        if not question:
+            body = (
+                "Guten Tag,\n\n"
+                "ich habe Ihre Sentero-Anfrage erkannt, aber im Nachrichtentext "
+                "keine Frage gefunden. Bitte schreiben Sie Ihre Frage in den Text "
+                "der E-Mail.\n\nViele Grüße\nSentero"
+            )
+            try:
+                self._send_response(message, contact.email, body, contact_id=contact.id)
+            except Exception as exc:
+                logger.exception(
+                    "Mail empty-question response failed",
+                    extra={"component": "mail_assistant", "contact_id": contact.id},
+                )
+                return {
+                    "status": "failed",
+                    "error": exc.__class__.__name__,
+                    "response_sent": False,
+                }
+            self.store.record_query(
+                received_at=message.received_at,
+                message_id=message.message_id,
+                contact_id=contact.id,
+                sender_email=message.sender_email,
+                intent=None,
+                confidence=None,
+                question="",
+                response_status="sent",
+                error_code="empty_question",
+                processing_ms=_elapsed_ms(started),
+                response_sent_at=now(),
+            )
+            return {
+                "status": "sent",
+                "error": "empty_question",
+                "response_sent": True,
+            }
+
+        routed = self.conversation.classify(question, self.intent)
+        if routed.is_action_request:
+            body = self.response.read_only_action_rejected()
+            intent_name = MailIntent.UNKNOWN.value
+            confidence = routed.confidence
+        else:
+            query = self.query_service.query(routed.intent, contact, context=context)
+            body = self.conversation.build_response(query, self.response)
+            intent_name = routed.intent.value
+            confidence = routed.confidence
+        try:
+            self._send_response(message, contact.email, body, contact_id=contact.id)
+        except Exception as exc:
+            self.store.record_query(received_at=message.received_at, message_id=message.message_id, contact_id=contact.id, sender_email=message.sender_email, intent=intent_name, confidence=confidence, question=question, response_status="failed", error_code=exc.__class__.__name__, processing_ms=_elapsed_ms(started))
+            logger.exception("Mail query response failed", extra={"component": "mail_assistant", "contact_id": contact.id, "intent": intent_name})
+            return {
+                "status": "failed",
+                "intent": intent_name,
+                "error": exc.__class__.__name__,
+                "response_sent": False,
+            }
+        self.store.record_query(received_at=message.received_at, message_id=message.message_id, contact_id=contact.id, sender_email=message.sender_email, intent=intent_name, confidence=confidence, question=question, response_status="sent", processing_ms=_elapsed_ms(started), response_sent_at=now())
+        logger.info(
+            "Mail query answered",
+            extra={
+                "component": "mail_assistant",
+                "contact_id": contact.id,
+                "intent": intent_name,
+                "intent_source": routed.source,
+                "response_status": "sent",
+            },
+        )
+        return {
+            "status": "sent",
+            "intent": intent_name,
+            "intent_source": routed.source,
+            "thread_context": bool(context),
+            "response_sent": True,
+        }
+
+    def _send_response(self, message: InboundMail, recipient: str, body: str, contact_id: int | None = None) -> None:
+        incoming_subject = sanitize_header_value(message.subject)
+        if subject_activates_sentero(incoming_subject, self.config.activation_subject_prefix):
+            subject = incoming_subject if incoming_subject.lower().startswith("re:") else f"Re: {incoming_subject}"
+        else:
+            # Preserve human-readable context, but always leave the Sentero marker
+            # visible in Sentero-generated conversation threads.
+            suffix = strip_reply_prefixes(incoming_subject)
+            subject = f"Re: {self.config.activation_subject_prefix}"
+            if suffix and not subject_activates_sentero(suffix, self.config.activation_subject_prefix):
+                subject = f"{subject} {suffix}"
+        headers = {
+            "In-Reply-To": sanitize_message_id(message.message_id),
+            "References": sanitize_references(message.references, message.message_id),
+        }
+        result = self.notification.send_email_direct(
+            sanitize_email_address(recipient),
+            subject,
+            body,
+            config={
+                "smtp_host": self.config.smtp_host,
+                "smtp_port": self.config.smtp_port,
+                "smtp_user": self.config.smtp_username,
+                "smtp_password": self.config.smtp_password,
+                "smtp_starttls": True,
+                "mail_from": self.config.mail_from,
+            },
+            headers=headers,
+        )
+        self._log_response_message(contact_id, subject, provider_message_id(result))
+
+    def _log_response_message(self, contact_id: int | None, subject: str, message_id: str | None) -> None:
+        if not message_id or not hasattr(self.notification, "_log"):
+            return
+        self.notification._log(contact_id, "email", "green", "mail_assistant_response", subject, None, outgoing_message_id=message_id)
+
+    def _ignore_silently(self, message: InboundMail, reason: str) -> dict[str, Any]:
+        # Intentionally do not write sentero_mail_queries here. Unknown spam,
+        # mailing lists and unrelated inbox mail must not pollute the user-facing
+        # transparency/activity timeline. poll_once() keeps the IMAP message unread
+        # but remembers the review separately so it is not examined repeatedly.
+        logger.info(
+            "Mail silently ignored",
+            extra={
+                "component": "mail_assistant",
+                "reason": reason,
+                "sender": normalize_log_email(message.sender_email),
+            },
+        )
+        return {"status": "ignored", "error": reason, "response_sent": False}
+
+    def _is_addressed_to_sentero(self, message: InboundMail) -> bool:
+        return bool(self._recipient_match_details(message)["matched"])
+
+    def _recipient_match_details(self, message: InboundMail) -> dict[str, Any]:
+        allowed = configured_mailbox_addresses(self.config)
+        if not allowed:
+            return {"matched": False, "source": "no_configured_mailbox"}
+
+        header_recipients = {
+            normalize_mailbox_address(item)
+            for item in message.recipient_addresses
+            if normalize_mailbox_address(item)
+        }
+        delivery_recipients = {
+            normalize_mailbox_address(item)
+            for item in message.delivery_addresses
+            if normalize_mailbox_address(item)
+        }
+
+        for recipient in delivery_recipients:
+            if any(mailbox_addresses_match(recipient, allowed_address) for allowed_address in allowed):
+                return {"matched": True, "source": "delivery_header"}
+
+        for recipient in header_recipients:
+            if any(mailbox_addresses_match(recipient, allowed_address) for allowed_address in allowed):
+                return {"matched": True, "source": "to_cc_header"}
+
+        # If there are no parseable recipient headers at all, the message has
+        # already been retrieved from the explicitly configured IMAP inbox.
+        # Treat that delivery as sufficient instead of silently dropping legitimate
+        # mail because a provider omitted Delivered-To/To information.
+        if not header_recipients and not delivery_recipients:
+            return {"matched": True, "source": "configured_imap_inbox"}
+
+        return {"matched": False, "source": "recipient_mismatch"}
+
+
+def config_from_notification_settings(mapping: DeviceMappingService) -> MailAssistantConfig:
+    with mapping.connect() as con:
+        row = con.execute("select * from notification_channel_settings where channel = 'email'").fetchone()
+    if not row:
+        return MailAssistantConfig(enabled=False)
+    try:
+        data = json.loads(row["config_json"] or "{}")
+    except json.JSONDecodeError:
+        data = {}
+    smtp_user = str(data.get("smtp_login") or data.get("smtp_user") or "").strip()
+    imap_user = _mailbox_username(data.get("imap_user"), smtp_user, data.get("imap_host"))
+    smtp_password = str(data.get("smtp_password") or "").strip()
+    imap_password = str(data.get("imap_password") or smtp_password).strip()
+    mail_from = sentero_mail_from({"mail_from": data.get("mail_from"), "smtp_user": smtp_user})
+    enabled = bool(row["enabled"]) and bool(
+        data.get("smtp_host")
+        and smtp_user
+        and smtp_password
+        and data.get("imap_host")
+        and imap_user
+        and imap_password
+    )
+    return MailAssistantConfig(
+        enabled=enabled,
+        poll_interval_seconds=_int_from_value(data.get("poll_interval_seconds"), 60, minimum=10),
+        imap_host=str(data.get("imap_host") or ""),
+        imap_port=_int_from_value(data.get("imap_port"), 993, minimum=1),
+        imap_username=imap_user,
+        imap_password=imap_password,
+        smtp_host=str(data.get("smtp_host") or ""),
+        smtp_port=_int_from_value(data.get("smtp_port"), 587, minimum=1),
+        smtp_username=smtp_user,
+        smtp_password=smtp_password,
+        mail_from=mail_from,
+        fresh_seconds=_int_from_value(data.get("fresh_seconds"), 120, minimum=10),
+        recent_seconds=_int_from_value(data.get("recent_seconds"), 900, minimum=60),
+        stale_seconds=_int_from_value(data.get("stale_seconds"), 1800, minimum=120),
+        hourly_limit=_int_from_value(data.get("hourly_limit"), 20, minimum=1),
+        daily_limit=_int_from_value(data.get("daily_limit"), 50, minimum=1),
+        activation_subject_prefix=normalize_activation_prefix(
+            data.get("activation_subject_prefix") or "Sentero:"
+        ),
+    )
+
+
+REPLY_SUBJECT_PREFIX_RE = re.compile(r"^\\s*(?:(?:re|aw|wg|fw|fwd)\\s*:\\s*)+", re.IGNORECASE)
+
+
+def normalize_activation_prefix(value: Any) -> str:
+    text = sanitize_header_value(value).strip()
+    if not text:
+        return "Sentero:"
+    # A colon makes the marker visually obvious and prevents accidental matches
+    # with ordinary subjects such as "Sentero Installation".
+    return text if text.endswith(":") else f"{text}:"
+
+
+def strip_reply_prefixes(subject: Any) -> str:
+    text = sanitize_header_value(subject)
+    previous = None
+    while text and text != previous:
+        previous = text
+        text = REPLY_SUBJECT_PREFIX_RE.sub("", text, count=1).strip()
+    return text
+
+
+def subject_activates_sentero(subject: Any, activation_prefix: Any) -> bool:
+    normalized_subject = strip_reply_prefixes(subject).casefold()
+    prefix = normalize_activation_prefix(activation_prefix).casefold()
+    return normalized_subject.startswith(prefix)
+
+
+def sanitize_question(value: str) -> str:
+    lines = []
+    for line in str(value or "").splitlines():
+        if line.strip().startswith(">") or REPLY_SEPARATOR_RE.match(line):
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()[:2000]
+
+
+def sanitize_header_value(value: Any) -> str:
+    return re.sub(r"[\r\n]+", " ", str(value or "")).strip()
+
+
+def sanitize_message_id(value: Any) -> str:
+    text = sanitize_header_value(value)
+    return text if re.fullmatch(r"<[^<>\s]+>", text) else ""
+
+
+def sanitize_references(*values: Any) -> str:
+    ids: list[str] = []
+    for value in values:
+        for match in re.findall(r"<[^<>\s]+>", sanitize_header_value(value)):
+            if match not in ids:
+                ids.append(match)
+    return " ".join(ids)
+
+
+def sanitize_email_address(value: Any) -> str:
+    address = parseaddr(sanitize_header_value(value))[1].strip()
+    return address or sanitize_header_value(value)
+
+
+def is_generated_or_auto_submitted(message: InboundMail) -> bool:
+    if str(message.x_sentero_generated or "").strip().lower() == "true":
+        return True
+
+    auto_submitted = str(message.auto_submitted or "").strip().lower()
+    if auto_submitted and auto_submitted != "no":
+        return True
+
+    precedence = str(message.precedence or "").strip().lower()
+    if precedence in {"bulk", "list", "junk", "auto_reply"}:
+        return True
+
+    if str(message.list_id or "").strip():
+        return True
+
+    suppress = str(message.x_auto_response_suppress or "").strip().lower()
+    if suppress and suppress not in {"no", "none"}:
+        return True
+
+    sender = sanitize_email_address(message.sender_email).lower()
+    local_part = sender.split("@", 1)[0]
+    if local_part in {"mailer-daemon", "postmaster", "bounce", "bounces", "no-reply", "noreply"}:
+        return True
+
+    return_path = sanitize_email_address(message.return_path).lower()
+    if return_path in {"", "<>"} and local_part in {"mailer-daemon", "postmaster"}:
+        return True
+
+    return False
+
+
+def configured_mailbox_addresses(config: MailAssistantConfig) -> set[str]:
+    addresses: set[str] = set()
+    for value in (config.imap_username, config.smtp_username, config.mail_from):
+        address = sanitize_email_address(value).lower()
+        if address and "@" in address:
+            addresses.add(address)
+    return addresses
+
+
+def normalize_mailbox_address(value: Any) -> str:
+    return sanitize_email_address(value).strip().lower()
+
+
+def mailbox_addresses_match(recipient: str, configured: str) -> bool:
+    recipient = normalize_mailbox_address(recipient)
+    configured = normalize_mailbox_address(configured)
+    if not recipient or not configured:
+        return False
+    if recipient == configured:
+        return True
+
+    # Support standard plus-addressing, e.g. sentero+test@example.org.
+    try:
+        recipient_local, recipient_domain = recipient.rsplit("@", 1)
+        configured_local, configured_domain = configured.rsplit("@", 1)
+    except ValueError:
+        return False
+    return (
+        recipient_domain == configured_domain
+        and recipient_local.split("+", 1)[0] == configured_local.split("+", 1)[0]
+    )
+
+
+def normalize_log_email(value: Any) -> str:
+    # Avoid logging arbitrary local parts from unsolicited mail. Keeping only the
+    # domain is sufficient for diagnostics and reduces unnecessary personal data.
+    address = sanitize_email_address(value).lower()
+    if "@" not in address:
+        return "unknown"
+    return f"*@{address.split('@', 1)[1]}"
+
+
+def reply_context_message_id(message: InboundMail) -> str | None:
+    if message.in_reply_to:
+        return message.in_reply_to
+    references = str(message.references or "").split()
+    return references[-1] if references else None
+
+
+def provider_message_id(result: Any) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    value = str(result.get("message_id") or "").strip()
+    return value or None
+
+
+def _int_from_value(raw: Any, default: int, minimum: int) -> int:
+    try:
+        value = int(raw if raw not in {None, ""} else default)
+    except ValueError:
+        value = default
+    return max(value, minimum)
+
+
+def _mailbox_username(raw_imap_user: Any, smtp_user: str, imap_host: Any) -> str:
+    raw = str(raw_imap_user or "").strip()
+    host = str(imap_host or "").strip().lower()
+    if raw and raw.lower() != host:
+        return raw
+    return smtp_user
+
+
+def _elapsed_ms(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)
+
+
+class SenteroMailAssistantSettings:
+    def __init__(self, mapping: DeviceMappingService) -> None:
+        self.mapping = mapping
+        self.store = MailAssistantStore(mapping)
+
+    def status(self) -> dict[str, Any]:
+        config = config_from_notification_settings(self.mapping)
+        with self.mapping.connect() as con:
+            rows = con.execute("select * from trusted_contacts where active = 1 order by primary_contact desc, id").fetchall()
+        contacts = []
+        for row in rows:
+            data = dict(row)
+            contacts.append({
+                "id": data.get("id"),
+                "name": data.get("name"),
+                "email": data.get("email"),
+                "email_queries_enabled": bool(data.get("email_queries_enabled")),
+                "email_permissions": _decode_permissions(data.get("email_permissions")),
+            })
+        return {
+            "enabled": config.enabled,
+            "contacts": contacts,
+            "activation_subject_prefix": config.activation_subject_prefix,
+            "usage_hint": (
+                f"Neue Anfrage: Betreff '{config.activation_subject_prefix}' und Frage im Nachrichtentext. "
+                "Rückfragen: einfach auf eine Sentero-Antwort antworten."
+            ),
+        }
+
+    def update_contact(self, contact_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        permissions = [str(item) for item in payload.get("email_permissions") or [] if str(item) in {"STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT", "HISTORY", "TECHNICAL_HEALTH"}]
+        if not permissions:
+            permissions = ["STATUS", "ACTIVITY", "ROOM", "ENVIRONMENT", "NIGHT"]
+        with self.mapping.connect() as con:
+            row = con.execute("select id from trusted_contacts where id = ? and active = 1", (contact_id,)).fetchone()
+            if not row:
+                raise ValueError("contact not found")
+            con.execute(
+                "update trusted_contacts set email_queries_enabled = ?, email_permissions = ?, updated_at = ? where id = ?",
+                (int(bool(payload.get("email_queries_enabled"))), __import__("json").dumps(permissions), now(), contact_id),
+            )
+            con.commit()
+        return self.status()
+
+
+def _decode_permissions(value: Any) -> list[str]:
+    import json
+
+    try:
+        parsed = json.loads(value or "[]")
+    except json.JSONDecodeError:
+        return []
+    return [str(item) for item in parsed if str(item)]

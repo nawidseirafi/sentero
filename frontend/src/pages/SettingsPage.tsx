@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
-import { Battery, Bell, ChevronLeft, ChevronRight, CheckCircle2, Copy, DoorClosed, DoorOpen, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, ShieldCheck, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
-import { api, type BoxNetworkStatus, type SenteroConsent, type SenteroExportToken, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroTransparency } from '@shared/api/client';
+import { Battery, Bell, ChevronDown, ChevronLeft, ChevronRight, CheckCircle2, Copy, DoorClosed, DoorOpen, Droplets, HardDrive, Home, KeyRound, Lightbulb, Mail, MessageCircle, Pencil, Plug, Plus, Save, Send, ShieldAlert, ShieldCheck, Thermometer, Trash2, UserRound, Users, Wifi, WifiOff, X} from 'lucide-react';
+import QRCode from 'qrcode';
+import { api, type BoxNetworkStatus, type MailConfig, type SenteroConsent, type SenteroEcoTrackerReading, type SenteroExportToken, type SenteroMailQuerySettings, type SenteroNotificationChannel, type SenteroSensorNetworkSettings, type SenteroSensorRole, type SenteroSetupStatus, type SenteroSystemStatus, type SenteroTelegramBotInfo, type SenteroTransparency, type SenteroTrustedContact } from '@shared/api/client';
 import { UpdatePanel } from '../components/UpdatePanel';
 import { useSenteroAuth } from '../auth/SenteroAuthContext';
 import type { SenteroSettingsTab } from '../routes/routes';
@@ -9,10 +10,8 @@ import { senteroRouteToPath } from '../routes/routes';
 import PersonIcon from '@mui/icons-material/Person';
 import PersonOutlineIcon from '@mui/icons-material/PersonOff';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
-import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlined';
 import DirectionsRunIcon from '@mui/icons-material/DirectionsRun';
 import AccessibilityNewIcon from '@mui/icons-material/AccessibilityNew';
-import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutlined';
 
 type MeterAddType = 'electricity_meter' | 'water_meter' | 'gas_meter';
@@ -25,6 +24,16 @@ const aalActorRoles: Array<{ value: AalActorRole; label: string }> = [
   { value: 'housing_provider', label: 'Wohnungsanbieter' },
   { value: 'resident', label: 'Bewohner' },
   { value: 'admin', label: 'Administrator' },
+];
+
+const emailQueryPermissions = [
+  { value: 'STATUS', label: 'Status' },
+  { value: 'ACTIVITY', label: 'Aktivität' },
+  { value: 'ROOM', label: 'Räume' },
+  { value: 'ENVIRONMENT', label: 'Temperatur' },
+  { value: 'NIGHT', label: 'Nacht' },
+  { value: 'HISTORY', label: 'Historie' },
+  { value: 'TECHNICAL_HEALTH', label: 'Technik' },
 ];
 
 const roomLabels: Record<string, string> = {
@@ -50,10 +59,16 @@ const settingsTabs: Array<{ tab: SenteroSettingsTab; label: string; shortLabel: 
 export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const { user, updateMe, changePassword } = useSenteroAuth();
   const [status, setStatus] = useState<SenteroSetupStatus | null>(null);
+  const [systemStatus, setSystemStatus] = useState<SenteroSystemStatus | null>(null);
+  const [systemStatusLoading, setSystemStatusLoading] = useState(false);
+  const [systemHealthOpen, setSystemHealthOpen] = useState(false);
+  const [deviceIdCopied, setDeviceIdCopied] = useState(false);
   const [sensors, setSensors] = useState<SenteroSensorRole[]>([]);
   const [saved, setSaved] = useState('');
   const [error, setError] = useState('');
   const [resetText, setResetText] = useState('');
+  const [factoryResetBusy, setFactoryResetBusy] = useState(false);
+  const [factoryResetMessage, setFactoryResetMessage] = useState('');
   const [mobileShowList, setMobileShowList] = useState(true);
   const [profile, setProfile] = useState({ name: '', birthYear: '', notes: '' });
   const [contactForm, setContactForm] = useState(emptyContactForm());
@@ -67,29 +82,68 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [networkStatus, setNetworkStatus] = useState<SenteroSensorNetworkSettings | null>(null);
   const [boxNetworkForm, setBoxNetworkForm] = useState({ ssid: '', password: '' });
   const [boxNetworkStatus, setBoxNetworkStatus] = useState<BoxNetworkStatus | null>(null);
+  const [ecoTrackerHost, setEcoTrackerHost] = useState('');
+  const [ecoTrackerMessage, setEcoTrackerMessage] = useState('');
+  const [ecoTrackerReading, setEcoTrackerReading] = useState<SenteroEcoTrackerReading | null>(null);
+  const [ecoTrackerBusy, setEcoTrackerBusy] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '', new_password_confirm: '' });
   const [accountEditing, setAccountEditing] = useState(false);
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [ledStates, setLedStates] = useState<Record<string, boolean>>({});
   const [ledBusyRole, setLedBusyRole] = useState<string | null>(null);
+  const [sensorTestBusyRole, setSensorTestBusyRole] = useState<string | null>(null);
   const [channels, setChannels] = useState<SenteroNotificationChannel[]>([]);
+  const [telegramBot, setTelegramBot] = useState<SenteroTelegramBotInfo | null>(null);
   const [consents, setConsents] = useState<SenteroConsent[]>([]);
   const [exportTokens, setExportTokens] = useState<SenteroExportToken[]>([]);
   const [newExportToken, setNewExportToken] = useState<{ contactId: number; token: string } | null>(null);
   const [exportDialogContactId, setExportDialogContactId] = useState<number | null>(null);
   const [transparency, setTransparency] = useState<SenteroTransparency | null>(null);
+  const [emailQueries, setEmailQueries] = useState<SenteroMailQuerySettings | null>(null);
   const [meterDiscovery, setMeterDiscovery] = useState<{ type: MeterAddType; status: 'idle' | 'searching' | 'found' | 'missing'; message: string; remainingSeconds?: number } | null>(null);
   const [setupChannel, setSetupChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
   const [helpChannel, setHelpChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
+  const [mailDiscovery, setMailDiscovery] = useState<{ status: 'idle' | 'checking' | 'found' | 'failed'; message: string }>({ status: 'idle', message: '' });
+  const [mailVerification, setMailVerification] = useState<{ busy: boolean; ok: boolean; message: string }>({ busy: false, ok: false, message: '' });
+  const [emailAdvancedOpen, setEmailAdvancedOpen] = useState(false);
+  const lastDiscoveredEmail = useRef('');
   const [channelForms, setChannelForms] = useState({
-    email: { smtp_host: '', smtp_port: '587', smtp_user: '', smtp_password: '', test_recipient: '' },
+    email: { mail_from: '', smtp_host: '', smtp_port: '587', smtp_user: '', smtp_login: '', smtp_password: '', smtp_encryption: '', smtp_starttls: 'true', smtp_ssl: 'false', imap_host: '', imap_port: '993', imap_user: '', imap_password: '', imap_encryption: '', app_password_help_url: '', test_recipient: '' },
     telegram: { bot_token: '', default_chat_id: '', test_recipient: '' },
-    whatsapp: { access_token: '', phone_number_id: '', business_account_id: '', test_recipient: '' },
+    whatsapp: { access_token: '', phone_number_id: '', business_account_id: '', api_version: 'v23.0', test_recipient: '' },
   });
 
   useEffect(() => {
     void load();
   }, []);
+
+  useEffect(() => {
+    if (setupChannel !== 'email') return;
+    const email = normalizeEmail(channelForms.email.smtp_user);
+    lastDiscoveredEmail.current = '';
+    const savedEmailChannel = channels.find((item) => item.channel === 'email');
+    const savedEmail = normalizeEmail(String(savedEmailChannel?.config?.smtp_user || ''));
+    const usingSavedConfiguration = Boolean(
+      savedEmailChannel?.configured && savedEmail && savedEmail === email
+    );
+    setMailVerification({
+      busy: false,
+      ok: usingSavedConfiguration,
+      message: usingSavedConfiguration ? 'Gespeicherte Zugangsdaten vorhanden.' : '',
+    });
+    if (!isValidEmail(email)) {
+      setMailDiscovery({ status: 'idle', message: '' });
+      return;
+    }
+    if (hasEmailServerSettings(channelForms.email)) {
+      setMailDiscovery({ status: 'idle', message: '' });
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void discoverEmailSettings(email);
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [setupChannel, channelForms.email.smtp_user, channels]);
 
   useEffect(() => {
     if (activeTab !== 'sensors') return;
@@ -121,12 +175,46 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   }, [activeTab]);
 
   useEffect(() => {
+    if (activeTab !== 'system') return;
+    let active = true;
+    let loading = false;
+
+    async function refreshSystemStatus() {
+      if (loading) return;
+      loading = true;
+      if (active) setSystemStatusLoading(true);
+      try {
+        const next = await api.senteroSystemStatus();
+        if (active) setSystemStatus(next);
+      } catch {
+        // Keep the last known status visible during short service restarts.
+      } finally {
+        loading = false;
+        if (active) setSystemStatusLoading(false);
+      }
+    }
+
+    void refreshSystemStatus();
+    const timer = window.setInterval(() => void refreshSystemStatus(), 15000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (systemStatus?.overall && systemStatus.overall !== 'ok') {
+      setSystemHealthOpen(true);
+    }
+  }, [systemStatus?.overall]);
+
+  useEffect(() => {
     setAccountForm({ display_name: user?.display_name || '', email: user?.email || '' });
   }, [user]);
 
   async function load() {
     try {
-      const [nextStatus, nextSensors, nextChannels, nextConsents, nextExportTokens, nextTransparency, nextNetwork, nextBoxNetwork] = await Promise.all([
+      const [nextStatus, nextSensors, nextChannels, nextConsents, nextExportTokens, nextTransparency, nextNetwork, nextBoxNetwork, nextEmailQueries, nextEcoTracker] = await Promise.all([
         api.senteroSetupStatus(),
         api.senteroSensorRoles(true),
         api.senteroNotificationChannels(),
@@ -135,11 +223,17 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         api.senteroTransparency(),
         api.senteroSensorNetwork(),
         api.boxNetworkStatus(),
+        api.senteroEmailQuerySettings(),
+        api.senteroEcoTrackerStatus(),
       ]);
+      const nextTelegramBot = nextChannels.channels.some((channel) => channel.channel === 'telegram' && channel.configured)
+        ? await api.senteroTelegramBot().catch(() => null)
+        : null;
       setStatus(nextStatus);
       setSensors(nextSensors.sensor_roles);
       hydrateLedStates(nextSensors.sensor_roles);
       setChannels(nextChannels.channels);
+      setTelegramBot(nextTelegramBot);
       setConsents(nextConsents.consents);
       setExportTokens(nextExportTokens.tokens);
       setTransparency(nextTransparency);
@@ -149,6 +243,10 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         wifi_password: '',
       });
       setBoxNetworkStatus(nextBoxNetwork);
+      setEmailQueries(nextEmailQueries);
+      setEcoTrackerHost(nextEcoTracker.host || '');
+      setEcoTrackerReading(nextEcoTracker.reading || null);
+      setEcoTrackerMessage(nextEcoTracker.reading ? ecoTrackerReadingMessage(nextEcoTracker.reading) : '');
       setBoxNetworkForm({ ssid: '', password: '' });
       hydrateChannelForms(nextChannels.channels);
       const sensorRooms = Array.from(new Set(nextSensors.sensor_roles.map((sensor) => sensor.room).filter(Boolean))) as string[];
@@ -189,6 +287,50 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       await pollMeterDiscovery(type, started.discovery_id, Date.now());
     } catch (err) {
       setMeterDiscovery({ type, status: 'missing', message: err instanceof Error ? err.message : `${meta.label} konnte nicht verbunden werden.` });
+    }
+  }
+
+  async function testEcoTracker() {
+    const host = ecoTrackerHost.trim();
+    if (!host) {
+      setEcoTrackerMessage('Bitte geben Sie die IP-Adresse des EcoTrackers ein.');
+      return;
+    }
+    setEcoTrackerBusy(true);
+    setEcoTrackerMessage('EcoTracker wird geprüft ...');
+    try {
+      const result = await api.testSenteroEcoTracker(host);
+      setEcoTrackerHost(result.host);
+      setEcoTrackerReading(result.reading);
+      setEcoTrackerMessage(ecoTrackerReadingMessage(result.reading));
+      setError('');
+    } catch (err) {
+      setEcoTrackerMessage(err instanceof Error ? err.message : 'EcoTracker konnte nicht erreicht werden.');
+    } finally {
+      setEcoTrackerBusy(false);
+    }
+  }
+
+  async function connectEcoTracker() {
+    const host = ecoTrackerHost.trim();
+    if (!host) {
+      setEcoTrackerMessage('Bitte geben Sie die IP-Adresse des EcoTrackers ein.');
+      return;
+    }
+    setEcoTrackerBusy(true);
+    setEcoTrackerMessage('EcoTracker wird verbunden ...');
+    try {
+      const result = await api.connectSenteroEcoTracker(host);
+      setEcoTrackerHost(host);
+      setEcoTrackerReading(result.reading);
+      setEcoTrackerMessage(`EcoTracker verbunden. ${ecoTrackerReadingMessage(result.reading)}`);
+      setSaved('everHome EcoTracker IR wurde als Stromzähler verbunden.');
+      setError('');
+      await load();
+    } catch (err) {
+      setEcoTrackerMessage(err instanceof Error ? err.message : 'EcoTracker konnte nicht verbunden werden.');
+    } finally {
+      setEcoTrackerBusy(false);
     }
   }
 
@@ -279,6 +421,39 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Netzwerk konnte nicht gespeichert werden.');
+    }
+  }
+
+  async function startNetworkRecovery() {
+    if (!window.confirm('Setup-WLAN vorübergehend starten? Die bestehende Verbindung bleibt erhalten, bis eine neue Verbindung erfolgreich geprüft wurde.')) return;
+    try {
+      await api.startNetworkSetupAp();
+      const status = await api.boxNetworkStatus();
+      setBoxNetworkStatus(status);
+      toast('Netzwerk-Einrichtung gestartet');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Netzwerk-Einrichtung konnte nicht gestartet werden.');
+    }
+  }
+
+  async function factoryReset() {
+    if (resetText !== 'ZURÜCKSETZEN' || factoryResetBusy) return;
+    const confirmed = window.confirm(
+      'Werkseinstellungen wirklich wiederherstellen? Kundendaten, Benutzer, Sensoren, Benachrichtigungen, Zigbee-Kopplungen und gespeicherte WLANs werden gelöscht. Die installierte Sentero-Version und die Box-ID bleiben erhalten. Die Box startet anschließend neu.'
+    );
+    if (!confirmed) return;
+
+    setFactoryResetBusy(true);
+    setFactoryResetMessage('Werkseinstellungen werden vorbereitet …');
+    setError('');
+    try {
+      const result = await api.senteroFactoryReset(resetText);
+      setFactoryResetMessage(result.message || 'Werkseinstellungen werden wiederhergestellt. Die Box startet gleich neu.');
+      setResetText('');
+    } catch (err) {
+      setFactoryResetMessage('');
+      setError(err instanceof Error ? err.message : 'Werkseinstellungen konnten nicht gestartet werden.');
+      setFactoryResetBusy(false);
     }
   }
 
@@ -435,6 +610,29 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     }
   }
 
+  async function updateEmailQueryPermission(contactId: number, permission: string, checked: boolean) {
+    const contact = emailQueries?.contacts.find((item) => item.id === contactId);
+    if (!contact) return;
+    const permissions = new Set(contact.email_permissions || []);
+    if (checked) permissions.add(permission);
+    else permissions.delete(permission);
+    const next = await api.updateSenteroEmailQueryContact(contactId, {
+      email_queries_enabled: contact.email_queries_enabled,
+      email_permissions: Array.from(permissions),
+    });
+    setEmailQueries(next);
+  }
+
+  async function toggleEmailQueries(contactId: number, enabled: boolean) {
+    const contact = emailQueries?.contacts.find((item) => item.id === contactId);
+    if (!contact) return;
+      const next = await api.updateSenteroEmailQueryContact(contactId, {
+      email_queries_enabled: enabled,
+      email_permissions: contact.email_permissions?.length ? contact.email_permissions : ['STATUS', 'ACTIVITY', 'ROOM', 'ENVIRONMENT', 'NIGHT', 'TECHNICAL_HEALTH'],
+    });
+    setEmailQueries(next);
+  }
+
   async function revokeExportToken(tokenId: number) {
     if (!window.confirm('Export-Token widerrufen? Der Partner kann ihn danach nicht mehr nutzen.')) return;
     try {
@@ -455,6 +653,19 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       toast('Token kopiert');
     } catch {
       setError('Token konnte nicht automatisch kopiert werden.');
+    }
+  }
+
+  async function copyDeviceId(deviceId?: string | null) {
+    if (!deviceId) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard_unavailable');
+      await navigator.clipboard.writeText(deviceId);
+      setDeviceIdCopied(true);
+      window.setTimeout(() => setDeviceIdCopied(false), 1800);
+    } catch {
+      setDeviceIdCopied(false);
+      setError('Geräte-ID konnte nicht automatisch kopiert werden.');
     }
   }
 
@@ -560,7 +771,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     if (!window.confirm(message)) return;
     try {
       for (const sensor of roomSensors) {
-        await api.deleteSenteroSensorRole(sensor.role);
+        await deleteSensorRoleWithFallback(sensor);
       }
       await api.saveSenteroSetupRooms(rooms.filter((item) => item !== room));
       toast('Raum gelöscht');
@@ -590,7 +801,17 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     setChannelForms((current) => {
       const byChannel = Object.fromEntries(nextChannels.map((item) => [item.channel, item.config || {}]));
       return {
-        email: { ...current.email, ...stringConfig(byChannel.email), smtp_port: String(byChannel.email?.smtp_port || current.email.smtp_port) },
+        email: {
+          ...current.email,
+          ...stringConfig(byChannel.email),
+          smtp_login: String(byChannel.email?.smtp_login || current.email.smtp_login || byChannel.email?.smtp_user || ''),
+          smtp_port: String(byChannel.email?.smtp_port || current.email.smtp_port),
+          imap_port: String(byChannel.email?.imap_port || current.email.imap_port),
+          // The API returns secrets masked. A mask such as "••••••" is not a
+          // password and must never be sent back to IMAP/SMTP.
+          smtp_password: '',
+          imap_password: '',
+        },
         telegram: { ...current.telegram, ...stringConfig(byChannel.telegram) },
         whatsapp: { ...current.whatsapp, ...stringConfig(byChannel.whatsapp) },
       };
@@ -599,17 +820,94 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
   async function saveChannel(channel: 'email' | 'telegram' | 'whatsapp') {
     try {
-      const config = channelForms[channel];
+      if (channel === 'email' && !mailVerification.ok) {
+        setMailVerification({ busy: false, ok: false, message: 'Bitte prüfen Sie zuerst die Verbindung.' });
+        return;
+      }
+      const config = channel === 'email' ? emailChannelConfig(channelForms.email) : channelForms[channel];
       await api.saveSenteroNotificationChannel(channel, { enabled: false, config });
-      toast('Kanal gespeichert. Bitte testen, um ihn für Vertrauenspersonen freizuschalten.');
+      toast(channel === 'email' ? 'E-Mail ist eingerichtet.' : 'Kanal gespeichert. Bitte testen, um ihn für Vertrauenspersonen freizuschalten.');
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Kanal konnte nicht gespeichert werden.');
     }
   }
 
+  async function discoverEmailSettings(email: string) {
+    if (lastDiscoveredEmail.current === email) return;
+    lastDiscoveredEmail.current = email;
+    setMailDiscovery({ status: 'checking', message: 'Mailbox wird erkannt ...' });
+    try {
+      const config = await api.discoverMailSettings(email);
+      setChannelForms((current) => ({
+        ...current,
+        email: discoveredEmailForm(current.email, config, email),
+      }));
+      setMailDiscovery({ status: 'found', message: 'Mailbox erkannt' });
+    } catch {
+      setMailDiscovery({ status: 'failed', message: 'Sentero konnte den Mailserver nicht automatisch erkennen.' });
+    }
+  }
+
+  async function verifyEmailSettings(values?: { email?: string; password?: string }) {
+    const email = normalizeEmail(values?.email || channelForms.email.smtp_user);
+    const enteredPassword = values?.password ?? channelForms.email.smtp_password ?? channelForms.email.imap_password;
+    const password = looksMaskedSecret(enteredPassword) ? '' : enteredPassword;
+    const effectiveForm = {
+      ...channelForms.email,
+      smtp_user: email,
+      smtp_login: channelForms.email.smtp_login || email,
+      imap_user: channelForms.email.imap_user || email,
+      smtp_password: password,
+      imap_password: password,
+      mail_from: channelForms.email.mail_from || 'Sentero',
+    };
+    if (!isValidEmail(email)) {
+      setMailVerification({ busy: false, ok: false, message: 'Bitte geben Sie eine gültige E-Mail-Adresse ein.' });
+      return;
+    }
+    const savedEmailChannel = channels.find((item) => item.channel === 'email');
+    const canUseSavedPassword = Boolean(
+      savedEmailChannel?.configured
+      && normalizeEmail(String(savedEmailChannel?.config?.smtp_user || '')) === email
+    );
+    if (!password && !canUseSavedPassword) {
+      setMailVerification({ busy: false, ok: false, message: 'Bitte geben Sie das Passwort oder App-Passwort ein.' });
+      return;
+    }
+    if (!effectiveForm.smtp_host || !effectiveForm.imap_host) {
+      setEmailAdvancedOpen(true);
+      setMailVerification({ busy: false, ok: false, message: 'Sentero konnte den Mailserver nicht automatisch erkennen.' });
+      return;
+    }
+    setChannelForms((current) => ({ ...current, email: effectiveForm }));
+    setMailVerification({ busy: true, ok: false, message: 'Verbindung wird geprüft ...' });
+    try {
+      const result = await api.verifyMailSettings({
+        email,
+        password,
+        config: mailConfigFromForm(effectiveForm),
+        imap_username: effectiveForm.imap_user || email,
+        smtp_username: effectiveForm.smtp_login || email,
+      });
+      setMailVerification({
+        busy: false,
+        ok: result.ok,
+        message: result.ok ? 'Senden und Empfangen funktioniert.' : friendlyMailError(result.message, Boolean(channelForms.email.app_password_help_url)),
+      });
+    } catch (err) {
+      setMailVerification({
+        busy: false,
+        ok: false,
+        message: friendlyMailError(err instanceof Error ? err.message : '', Boolean(channelForms.email.app_password_help_url)),
+      });
+    }
+  }
+
   async function testChannel(channel: 'email' | 'telegram' | 'whatsapp') {
     try {
+      const config = channel === 'email' ? emailChannelConfig(channelForms.email) : channelForms[channel];
+      await api.saveSenteroNotificationChannel(channel, { enabled: false, config });
       const result = await api.testSenteroNotificationChannel(channel);
       if (result.ok) {
         setError('');
@@ -644,14 +942,14 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       : 'Sensor aus Sentero entfernen?';
     if (!window.confirm(message)) return;
     try {
-      await api.deleteSenteroSensorRole(sensor.role);
+      await deleteSensorRoleWithFallback(sensor);
       toast('Sensor entfernt');
       await load();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Sensor konnte nicht entfernt werden.';
-      if (esp32Presence && message.includes('nicht erreichbar')) {
+      if (canOfferLocalOnlySensorDelete(sensor, message)) {
         const localOnly = window.confirm(
-          'Der Sensor ist derzeit nicht erreichbar.\n\nEr kann deshalb nicht auf Werkseinstellungen zurückgesetzt werden.\n\nMöchten Sie ihn trotzdem nur aus Sentero entfernen?',
+          'Der Sensor konnte nicht zurückgesetzt oder aus dem Sensornetzwerk entfernt werden.\n\nNur aus Sentero entfernen?\n\nDer Sensor bleibt dann technisch unverändert und muss bei Bedarf separat zurückgesetzt oder entfernt werden.',
         );
         if (localOnly) {
           try {
@@ -666,6 +964,23 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
         }
       }
       setError(message);
+    }
+  }
+
+  async function deleteSensorRoleWithFallback(sensor: SenteroSensorRole) {
+    try {
+      return await api.deleteSenteroSensorRole(sensor.role);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Sensor konnte nicht entfernt werden.';
+      if (canOfferLocalOnlySensorDelete(sensor, message)) {
+        const localOnly = window.confirm(
+          'Der Sensor konnte nicht aus dem Sensornetzwerk entfernt werden.\n\nNur aus Sentero entfernen?\n\nDer Sensor bleibt dann in Zigbee2MQTT bzw. im Sensornetzwerk erhalten und muss dort bei Bedarf separat entfernt werden.',
+        );
+        if (localOnly) {
+          return await api.deleteSenteroSensorRole(sensor.role, { localOnly: true });
+        }
+      }
+      throw err;
     }
   }
 
@@ -687,11 +1002,15 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     }
   }
 
-  async function testSensor(role: string) {
+  async function testSensor(sensor: SenteroSensorRole) {
+    const wasOffline = sensor.reachable === false || sensor.stale === true;
+    setSensorTestBusyRole(sensor.role);
     try {
-      const result = await api.testSenteroSensorRole(role);
+      const result = await api.testSenteroSensorRole(sensor.role);
       if (!result.ok) {
         setError(result.message || 'Sensor ist aktuell nicht erreichbar.');
+      } else if (wasOffline && result.stale !== false) {
+        setError('Sensor erneut geprüft. Sentero wartet auf neue Sensordaten.');
       } else {
         setError('');
         toast(result.message || 'Sensor geprüft');
@@ -699,6 +1018,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sensor konnte nicht geprüft werden.');
+    } finally {
+      setSensorTestBusyRole(null);
     }
   }
 
@@ -808,16 +1129,24 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       {activeTab === 'sensors' && (
         <section className="sc-panel sc-settings-panel">
           <div className="sc-section-title"><h2>Räume & Sensoren</h2><button type="button" onClick={() => window.location.assign('/sentero/setup')}><Plus size={20} /> Sensor hinzufügen</button></div>
-          <div className="sc-inline-add">
-            <button type="button" onClick={() => void addMeter('electricity_meter')} disabled={meterDiscovery?.status === 'searching'}><Plug size={18} /> Stromzähler suchen</button>
-            <button type="button" onClick={() => void addMeter('water_meter')} disabled={meterDiscovery?.status === 'searching'}><Plus size={18} /> Wasserzähler suchen</button>
-            <button type="button" onClick={() => void addMeter('gas_meter')} disabled={meterDiscovery?.status === 'searching'}><Plus size={18} /> Gaszähler suchen</button>
-          </div>
-          {meterDiscovery && (
-            <p className={`sc-muted-note ${meterDiscovery.status}`}>
-              {meterDiscovery.message}{meterDiscovery.status === 'searching' && typeof meterDiscovery.remainingSeconds === 'number' ? ` (${Math.ceil(meterDiscovery.remainingSeconds)}s)` : ''}
-            </p>
-          )}
+
+          <section className="sc-network-card">
+            <div className="sc-network-card-head">
+              <div>
+                <h3>everHome EcoTracker IR</h3>
+                <p>{ecoTrackerMessage || 'EcoTracker-IP eintragen, um Leistung und Stromzählerstand lokal auszulesen.'}</p>
+              </div>
+              <span className={`sc-network-pill ${ecoTrackerHost ? 'ready' : 'setup'}`}>
+                {ecoTrackerHost ? 'Verbunden' : 'Einrichten'}
+              </span>
+            </div>
+            <div className="sc-inline-add">
+              <input value={ecoTrackerHost} onChange={(event) => setEcoTrackerHost(event.target.value)} placeholder="EcoTracker IP, z.B. 192.168.1.42" />
+              <button type="button" onClick={() => void testEcoTracker()} disabled={ecoTrackerBusy}><Wifi size={18} /> Prüfen</button>
+              <button type="button" onClick={() => void connectEcoTracker()} disabled={ecoTrackerBusy}><Plug size={18} /> Verbinden</button>
+            </div>
+          </section>
+
           <div className="sc-inline-add">
             <input value={roomDraft} onChange={(event) => setRoomDraft(event.target.value)} placeholder="Raum hinzufügen" />
             <button type="button" onClick={() => void addRoom()}><Plus size={20} /> Raum hinzufügen</button>
@@ -841,23 +1170,30 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                       <div key={sensor.role}>
                         <div className="sc-sensor-settings-main">
                           <div className="sc-sensor-settings-head">
-                            <strong>{sensor.label || sensor.role}</strong>
-                            <small>{sensorType(sensor)} · zuletzt {formatDateTime(sensor.last_changed || sensor.last_updated || sensor.updated_at)}</small>
+                            <div className="sc-sensor-title-line">
+                              <span
+                                className={`sc-sensor-connection-dot ${sensorConnectionTone(sensor)}`}
+                                title={sensorConnectionLabel(sensor)}
+                                aria-label={sensorConnectionLabel(sensor)}
+                              />
+                              <strong>{sensor.label || sensor.role}</strong>
+                            </div>
+                            <small>{sensorType(sensor)} · letzte Meldung {formatDateTime(sensor.last_changed || sensor.last_updated || sensor.updated_at)}</small>
                           </div>
                           <div className="sc-sensor-health">
                             {isDoorContactSensor(sensor) && <DoorContactStatus sensor={sensor} />}
+                            {isSmokeSensor(sensor) && <SmokeStatus sensor={sensor} />}
                             {isEsp32PresenceSensor(sensor) && <C1001Telemetry sensor={sensor} />}
+                            {!isEsp32PresenceSensor(sensor) && !isSmokeSensor(sensor) && isMotionSensor(sensor) && <MotionStatus sensor={sensor} />}
                             {isSmartMeterSensor(sensor) && <span className="battery"><Plug size={17} /> {formatMeterValue(sensor)}</span>}
-                            <span className={sensor.reachable === false ? 'offline' : sensor.reachable == null ? 'unknown' : 'online'}>
-                              {sensor.reachable === false ? <WifiOff size={17} /> : <CheckCircle2 size={17} />}
-                              {sensor.reachable === false ? 'Nicht erreichbar' : sensor.reachable == null ? 'In HA vorhanden' : 'Erreichbar'}
-                            </span>
+                            {isEcoTrackerSensor(sensor) && ecoTrackerMeterReadingLabel(ecoTrackerReading) && <span className="battery"><Plug size={17} /> {ecoTrackerMeterReadingLabel(ecoTrackerReading)}</span>}
+                            <SensorEnvironment sensor={sensor} />
                             {sensorPowerLabel(sensor) === 'USB-Strom' ? (
                               <span className="battery"><Plug size={17} /> USB-Strom</span>
                             ) : (
                               <span className={batteryClass(sensor.battery_level)}>
                                 <Battery size={17} />
-                                Akku {sensor.battery_level ?? 'unbekannt'}{sensor.battery_level == null ? '' : '%'}
+                                {sensor.battery_level ?? 'unbekannt'}{sensor.battery_level == null ? '' : '%'}
                               </span>
                             )}
                           </div>
@@ -876,9 +1212,17 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                               <span aria-hidden="true" />
                             </button>
                           )}
-                          <button type="button" onClick={() => void renameSensor(sensor)}><Pencil size={18} /> </button>
-                          <button type="button" onClick={() => void testSensor(sensor.role)}><Wifi size={18} /> </button>
-                          <button type="button" onClick={() => void deleteSensor(sensor)}><Trash2 size={18} /> </button>
+                          <button type="button" onClick={() => void renameSensor(sensor)} title="Sensor umbenennen" aria-label="Sensor umbenennen"><Pencil size={18} aria-hidden="true" /> </button>
+                          <button
+                            type="button"
+                            onClick={() => void testSensor(sensor)}
+                            disabled={sensorTestBusyRole === sensor.role}
+                            title={sensor.reachable === false ? 'Sensor erneut prüfen' : 'Sensor prüfen'}
+                            aria-label={sensor.reachable === false ? 'Sensor erneut prüfen' : 'Sensor prüfen'}
+                          >
+                            {sensor.reachable === false ? <WifiOff size={18} aria-hidden="true" /> : <Wifi size={18} aria-hidden="true" />}
+                          </button>
+                          <button type="button" onClick={() => void deleteSensor(sensor)} title="Sensor entfernen" aria-label="Sensor entfernen"><Trash2 size={18} aria-hidden="true" /> </button>
                         </div>
                       </div>
                     ))}
@@ -896,7 +1240,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
              <div className="sc-section-title">
             <h2>Netzwerk</h2>
              </div>
-            <p>Verwalten Sie die Verbindung der Sentero-Box und die gespeicherten WLAN-Daten fuer Sensoren.</p>
+            <p>Prüfen Sie die lokale Netzwerk- und Internetverbindung der Sentero-Box oder richten Sie WLAN bei Bedarf neu ein.</p>
           </div>
           <div className="sc-network-sections">
             <div className="sc-network-card">
@@ -910,10 +1254,20 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                 </span>
               </div>
               <div className="sc-network-facts">
-                <span>Adresse: {boxNetworkStatus?.local_url || 'http://sentero.local'}</span>
-                <span>Modus: {boxNetworkStatus?.mode || 'disabled'}</span>
-                <span>Einrichtung: {boxNetworkStatus?.setup_ap_active ? 'aktiv' : 'nicht aktiv'}</span>
+                <span>Verbindung: {networkLabel(boxNetworkStatus)}</span>
+                <span>Lokales Netzwerk: {boxNetworkStatus?.network_ready ? 'Verbunden' : 'Nicht verbunden'}</span>
+                <span>Internet: {boxNetworkStatus?.internet_reachable ? 'Verbunden' : 'Nicht erreichbar'}</span>
+                <span>Setup-WLAN: {boxNetworkStatus?.setup_ap_active ? 'Aktiv' : 'Aus'}</span>
               </div>
+              {boxNetworkStatus?.network_ready && !boxNetworkStatus?.internet_reachable && (
+                <p className="sc-network-note">Die Box ist im lokalen Netzwerk erreichbar und arbeitet lokal weiter. Internetdienste und Benachrichtigungen stehen wieder zur Verfügung, sobald die Internetverbindung zurückkehrt.</p>
+              )}
+              {!boxNetworkStatus?.network_ready && (
+                <p className="sc-network-note">Keine lokale Netzwerkverbindung. Über „Netzwerk neu einrichten“ kann das Sentero-Setup-WLAN gestartet werden.</p>
+              )}
+              {boxNetworkStatus?.ethernet_active && (
+                <p className="sc-network-note">LAN ist aktiv. Eine WLAN-Konfiguration ist optional und kann als Fallback gespeichert werden.</p>
+              )}
               <div className="sc-form-grid">
                 <label>
                   WLAN-Name
@@ -927,6 +1281,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
               <footer className="sc-account-actions">
                 <button className="sc-soft-action primary" type="button" onClick={() => void saveBoxNetwork()}><Save size={18} /> Verbinden</button>
+                {!boxNetworkStatus?.network_ready && (
+                  <button className="sc-soft-action" type="button" onClick={() => void startNetworkRecovery()}><Wifi size={18} /> Setup-WLAN starten</button>
+                )}
               </footer>
             </div>
           </div>
@@ -953,7 +1310,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                 <label>Beziehung<input value={contactForm.relationship} onChange={(event) => setContactForm((value) => ({ ...value, relationship: event.target.value }))} /></label>
                 <label>AAL-Rolle<select value={contactForm.actor_role} onChange={(event) => setContactForm((value) => ({ ...value, actor_role: actorRoleForContact(event.target.value) }))}>{aalActorRoles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
                 {channelSelected(contactForm.preferred_channels, 'email', availableChannels) && <label>E-Mail<input type="email" value={contactForm.email} onChange={(event) => setContactForm((value) => ({ ...value, email: event.target.value }))} /></label>}
-                {channelSelected(contactForm.preferred_channels, 'telegram', availableChannels) && <label>Telegram Chat ID<input value={contactForm.telegram_chat_id} onChange={(event) => setContactForm((value) => ({ ...value, telegram_chat_id: event.target.value }))} /></label>}
+                {channelSelected(contactForm.preferred_channels, 'telegram', availableChannels) && <label>Telegram Chat ID<input value={contactForm.telegram_chat_id} onChange={(event) => setContactForm((value) => ({ ...value, telegram_chat_id: event.target.value }))} placeholder="Wird per Einladung automatisch gesetzt" /></label>}
                 {channelSelected(contactForm.preferred_channels, 'whatsapp', availableChannels) && <label>WhatsApp Telefonnummer<input value={contactForm.whatsapp_phone_number} onChange={(event) => setContactForm((value) => ({ ...value, whatsapp_phone_number: event.target.value, phone: event.target.value }))} /></label>}
               </div>
               <ChannelChecks value={contactForm.preferred_channels} available={availableChannels} onChange={(preferred_channels) => setContactForm((value) => ({ ...value, preferred_channels }))} />
@@ -970,10 +1327,23 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                       <label>Beziehung<input value={editContactForm.relationship} onChange={(event) => setEditContactForm((value) => ({ ...value, relationship: event.target.value }))} /></label>
                       <label>AAL-Rolle<select value={editContactForm.actor_role} onChange={(event) => setEditContactForm((value) => ({ ...value, actor_role: actorRoleForContact(event.target.value) }))}>{aalActorRoles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
                       {channelSelected(editContactForm.preferred_channels, 'email', availableChannels) && <label>E-Mail<input type="email" value={editContactForm.email} onChange={(event) => setEditContactForm((value) => ({ ...value, email: event.target.value }))} /></label>}
-                      {channelSelected(editContactForm.preferred_channels, 'telegram', availableChannels) && <label>Telegram Chat ID<input value={editContactForm.telegram_chat_id} onChange={(event) => setEditContactForm((value) => ({ ...value, telegram_chat_id: event.target.value }))} /></label>}
+                      {channelSelected(editContactForm.preferred_channels, 'telegram', availableChannels) && <label>Telegram Chat ID<input value={editContactForm.telegram_chat_id} onChange={(event) => setEditContactForm((value) => ({ ...value, telegram_chat_id: event.target.value }))} placeholder="Wird per Einladung automatisch gesetzt" /></label>}
                       {channelSelected(editContactForm.preferred_channels, 'whatsapp', availableChannels) && <label>WhatsApp Telefonnummer<input value={editContactForm.whatsapp_phone_number} onChange={(event) => setEditContactForm((value) => ({ ...value, whatsapp_phone_number: event.target.value, phone: event.target.value }))} /></label>}
                     </div>
                     <ChannelChecks value={editContactForm.preferred_channels} available={availableChannels} onChange={(preferred_channels) => setEditContactForm((value) => ({ ...value, preferred_channels }))} />
+                    <ContactQueryCard
+                      contact={{
+                        ...contact,
+                        email: editContactForm.email,
+                        preferred_channels: editContactForm.preferred_channels,
+                        telegram_chat_id: editContactForm.telegram_chat_id,
+                      }}
+                      query={emailQueries?.contacts.find((item) => item.id === contact.id) || null}
+                      mailEnabled={Boolean(emailQueries?.enabled)}
+                      editable
+                      onToggle={(enabled) => void toggleEmailQueries(contact.id, enabled)}
+                      onPermission={(permission, checked) => void updateEmailQueryPermission(contact.id, permission, checked)}
+                    />
                     <footer>
                       <button type="button" onClick={() => void saveEditedContact()}><Save size={18} /> Speichern</button>
                       <button type="button" onClick={() => setEditingContactId(null)}><X size={18} /> Abbrechen</button>
@@ -981,12 +1351,27 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                   </>
                 ) : (
                   <>
-                    <span className="sc-avatar">{contact.name[0]}</span>
-                    <h3>{contact.name}</h3>
-                    <p>{contact.relationship || 'Kontakt'}</p>
-                    <small className="sc-contact-role">{aalRoleLabel(contact.actor_role)}</small>
-                    <small>{contact.email || 'Keine E-Mail hinterlegt'}</small>
-                    <div className="sc-contact-channel-list">{normalizeChannels(contact.preferred_channels).map((channel) => <span key={channel}>{channelLabel(channel)}</span>)}</div>
+                    <header className="sc-contact-card-head">
+                      <span className="sc-avatar">{contact.name[0]}</span>
+                      <div className="sc-contact-card-identity">
+                        <div>
+                          <h3>
+                            {contact.name}
+                            <span className="relationship"> · {contact.relationship || 'Kontakt'}</span>
+                          </h3>
+                        </div>
+                        <small>{contact.email || 'Keine E-Mail hinterlegt'}</small>
+                        <small className="sc-contact-role">{aalRoleLabel(contact.actor_role)}</small>
+                      </div>
+                    </header>
+                    {normalizeChannels(contact.preferred_channels).includes('telegram') && (
+                      <TelegramPairingCard
+                        contact={contact}
+                        bot={telegramBot}
+                        onCopied={(message) => toast(message)}
+                        onError={(message) => setError(message)}
+                      />
+                    )}
                     <ContactDataSharingControl
                       behaviorConsent={activeBehaviorConsent(contact.id, consents)}
                       revokedBehaviorConsent={latestBehaviorConsent(contact.id, consents)}
@@ -1002,6 +1387,14 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                       onCreateToken={() => void createExportToken(contact.id)}
                       onRevokeToken={(tokenId) => void revokeExportToken(tokenId)}
                       onOpenPackage={() => setExportDialogContactId(contact.id)}
+                      queryControl={(
+                        <ContactQueryCard
+                          contact={contact}
+                          query={emailQueries?.contacts.find((item) => item.id === contact.id) || null}
+                          mailEnabled={Boolean(emailQueries?.enabled)}
+                          onToggle={(enabled) => void toggleEmailQueries(contact.id, enabled)}
+                        />
+                      )}
                     />
                     <footer>
                       <button type="button" onClick={() => startEditContact(contact)}><Pencil size={18} /> </button>
@@ -1064,7 +1457,20 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
               form={channelForms[setupChannel]}
               recipient={primaryNotificationRecipient(status?.trusted_contacts || [])}
               onClose={() => setSetupChannel(null)}
-              onFormChange={(form) => setChannelForms((value) => ({ ...value, [setupChannel]: form as never }))}
+              onFormChange={(form) => {
+                if (setupChannel === 'email') {
+                  setMailVerification({ busy: false, ok: false, message: '' });
+                }
+                setChannelForms((value) => ({ ...value, [setupChannel]: form as never }));
+              }}
+              discoverStatus={mailDiscovery.status}
+              discoverMessage={setupChannel === 'email' ? mailDiscovery.message : ''}
+              verificationBusy={mailVerification.busy}
+              verificationOk={mailVerification.ok}
+              verificationMessage={setupChannel === 'email' ? mailVerification.message : ''}
+              advancedOpen={emailAdvancedOpen}
+              onAdvancedToggle={() => setEmailAdvancedOpen((value) => !value)}
+              onVerify={setupChannel === 'email' ? (values) => void verifyEmailSettings(values) : undefined}
               onSave={() => void saveChannel(setupChannel)}
               onTest={() => void testChannel(setupChannel)}
             />
@@ -1086,6 +1492,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
             <TransparencyMetric label="Einträge" value={String(transparency?.summary.total || 0)} />
             <TransparencyMetric label="Exporte" value={String(transparency?.summary.exports || 0)} />
             <TransparencyMetric label="Benachrichtigungen" value={String(transparency?.summary.notifications || 0)} />
+            <TransparencyMetric label="Anfragen" value={String(transparency?.summary.mail_queries || 0)} />
             <TransparencyMetric label="Freigaben" value={String(transparency?.summary.consents || 0)} />
           </section>
 
@@ -1208,21 +1615,123 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
 
       {activeTab === 'system' && (
         <section className="sc-panel sc-settings-panel">
-           <div className="sc-section-title">
-          <h2>System</h2>
-           </div>
-          <div className="sc-system-grid">
-            <p><strong>Home verbunden</strong><span>{status?.home.connected ? 'Ja' : 'Nein'}</span></p>
-            <p><strong>Sensoren verbunden</strong><span>{sensors.filter((sensor) => sensor.configured).length}</span></p>
-            <p><strong>Sensoren offline</strong><span>{sensors.filter((sensor) => sensor.reachable === false).length}</span></p>
-            <p><strong>Letzte Aktualisierung</strong><span>{formatDateTime(status?.updated_at)}</span></p>
+          <div className="sc-section-title sc-system-heading">
+            <div>
+              <h2>System</h2>
+              <p>Systemverwaltung und Status Ihrer Sentero Box.</p>
+            </div>
           </div>
+
+          <section className={`sc-system-health sc-system-health-${systemStatus?.overall || 'warning'} ${systemHealthOpen ? 'open' : ''}`}>
+            <button
+              className="sc-system-health-toggle"
+              type="button"
+              aria-expanded={systemHealthOpen}
+              aria-controls="sentero-system-health-details"
+              onClick={() => setSystemHealthOpen((value) => !value)}
+            >
+              <div className="sc-system-health-title">
+                <span className={`sc-system-health-icon sc-system-health-icon-${systemStatus?.overall || 'warning'}`} aria-hidden="true">
+                  <CheckCircle2 size={22} />
+                </span>
+                <div>
+                  <strong>Systemzustand</strong>
+                  <span>{systemHealthSummary(systemStatus, systemStatusLoading)}</span>
+                </div>
+              </div>
+              <div className="sc-system-health-toggle-meta">
+                <span className={`sc-system-health-pill sc-system-health-pill-${systemStatus?.overall || 'warning'}`}>
+                  {systemStatus?.summary || (systemStatusLoading ? 'Wird geprüft …' : 'Status laden …')}
+                </span>
+                <ChevronDown size={20} aria-hidden="true" />
+              </div>
+            </button>
+
+            {systemHealthOpen && (
+              <div className="sc-system-health-details" id="sentero-system-health-details">
+                <div className="sc-service-status-grid" aria-live="polite">
+                  {(systemStatus?.services || []).map((service) => (
+                    <article className="sc-service-status-card" key={service.key}>
+                      <div className="sc-service-status-main">
+                        <span className={`sc-service-dot sc-service-dot-${service.state}`} aria-hidden="true" />
+                        <div>
+                          <strong>{service.label}</strong>
+                          <span>{service.detail || systemServiceLabel(service.state)}</span>
+                        </div>
+                      </div>
+                      <span className={`sc-service-state sc-service-state-${service.state}`}>{systemServiceLabel(service.state)}</span>
+                    </article>
+                  ))}
+                  {!systemStatus?.services?.length && (
+                    <div className="sc-system-status-placeholder">Systemstatus wird geladen …</div>
+                  )}
+                </div>
+
+                <div className="sc-system-soft-facts">
+                  <p><span>Sensoren</span><strong>{sensors.filter((sensor) => sensor.configured).length} eingerichtet</strong></p>
+                  <p><span>Erreichbarkeit</span><strong>{sensors.filter((sensor) => sensor.reachable === false).length ? `${sensors.filter((sensor) => sensor.reachable === false).length} nicht erreichbar` : 'Alles erreichbar'}</strong></p>
+                  <p><span>Letzte Prüfung</span><strong>{formatDateTime(systemStatus?.checked_at || status?.updated_at)}</strong></p>
+                </div>
+
+                <div className="sc-device-identity">
+                  <h3>Geräteidentität</h3>
+                  {systemStatus?.device?.identity_error && (
+                    <p className="sc-device-identity-error">Geräteidentität beschädigt: {systemStatus.device.identity_error}</p>
+                  )}
+                  <div className="sc-device-identity-grid">
+                    <p>
+                      <span>Seriennummer</span>
+                      <strong>{systemStatus?.device?.serial_number || 'Nicht provisioniert'}</strong>
+                    </p>
+                    <p>
+                      <span>Geräte-ID</span>
+                      <strong className="sc-device-id-value">{systemStatus?.device?.device_id || 'Nicht provisioniert'}</strong>
+                    </p>
+                    {systemStatus?.device?.device_id && (
+                      <button
+                        type="button"
+                        className="sc-device-copy-button"
+                        aria-label="Geräte-ID kopieren"
+                        onClick={() => void copyDeviceId(systemStatus.device?.device_id)}
+                      >
+                        <Copy size={14} aria-hidden="true" />
+                        {deviceIdCopied ? 'Kopiert' : 'Kopieren'}
+                      </button>
+                    )}
+                  </div>
+                  {!systemStatus?.device?.identity_provisioned && systemStatus?.device?.legacy_box_id && (
+                    <p className="sc-device-identity-legacy">Legacy-ID: {systemStatus.device.legacy_box_id}</p>
+                  )}
+                </div>
+
+                <div className="sc-system-query-note">
+                  <div>
+                    <Mail size={18} />
+                    <MessageCircle size={18} />
+                  </div>
+                  <p><strong>Status auch unterwegs abrufen</strong><span>Per E-Mail „Systemstatus“ oder in Telegram <code>/status</code> senden.</span></p>
+                </div>
+              </div>
+            )}
+          </section>
+
           <UpdatePanel />
           <div className="sc-danger-zone">
             <h3><ShieldAlert size={22} /> Werkseinstellungen</h3>
-            <p>Zum Zurücksetzen bitte ZURÜCKSETZEN eingeben.</p>
-            <input value={resetText} onChange={(event) => setResetText(event.target.value)} placeholder="ZURÜCKSETZEN" />
-            <button type="button" disabled={resetText !== 'ZURÜCKSETZEN'} onClick={() => window.confirm('Alle Sentero-Daten löschen?')}>Factory Reset</button>
+            <p>Setzt Kundendaten, Benutzer, Sensoren, Benachrichtigungen, Zigbee-Kopplungen und gespeicherte WLANs zurück. Sentero-Version, Seriennummer, Geräte-ID und Systemsoftware bleiben erhalten.</p>
+            <p>Zum Zurücksetzen bitte <strong>ZURÜCKSETZEN</strong> eingeben.</p>
+            <input
+              value={resetText}
+              onChange={(event) => setResetText(event.target.value)}
+              placeholder="ZURÜCKSETZEN"
+              disabled={factoryResetBusy}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <button type="button" disabled={resetText !== 'ZURÜCKSETZEN' || factoryResetBusy} onClick={() => void factoryReset()}>
+              {factoryResetBusy ? 'Box wird zurückgesetzt …' : 'Werkseinstellungen wiederherstellen'}
+            </button>
+            {factoryResetMessage && <p className="sc-factory-reset-status" role="status">{factoryResetMessage}</p>}
           </div>
         </section>
       )}
@@ -1238,6 +1747,22 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       </div>
     </section>
   );
+}
+
+function systemHealthSummary(systemStatus: SenteroSystemStatus | null, loading: boolean) {
+  const services = systemStatus?.services || [];
+  if (!services.length) return loading ? 'Dienste werden geprüft …' : 'Status wird geladen …';
+  const ready = services.filter((service) => service.state === 'ok').length;
+  if (systemStatus?.overall === 'ok') return `${ready} von ${services.length} Diensten bereit`;
+  const issues = services.length - ready;
+  return issues === 1 ? '1 Bereich benötigt Aufmerksamkeit' : `${issues} Bereiche benötigen Aufmerksamkeit`;
+}
+
+function systemServiceLabel(state?: string) {
+  if (state === 'ok') return 'Bereit';
+  if (state === 'error') return 'Prüfen';
+  if (state === 'inactive') return 'Nicht aktiv';
+  return 'Hinweis';
 }
 
 function EmptyState({ text, action }: { text: string; action: string }) {
@@ -1264,6 +1789,7 @@ function ContactDataSharingControl({
   onCreateToken,
   onRevokeToken,
   onOpenPackage,
+  queryControl,
 }: {
   behaviorConsent?: SenteroConsent | null;
   revokedBehaviorConsent?: SenteroConsent | null;
@@ -1279,6 +1805,7 @@ function ContactDataSharingControl({
   onCreateToken: () => void;
   onRevokeToken: (tokenId: number) => void;
   onOpenPackage: () => void;
+  queryControl?: React.ReactNode;
 }) {
   const currentBehavior = behaviorConsent || revokedBehaviorConsent || null;
   const currentExport = exportConsent || revokedExportConsent || null;
@@ -1316,6 +1843,7 @@ function ContactDataSharingControl({
           </div>
         )}
       />
+      {queryControl}
     </section>
   );
 }
@@ -1414,7 +1942,9 @@ function TransparencyMetric({ label, value }: { label: string; value: string }) 
 function transparencyIcon(category: string) {
   if (category === 'export') return <KeyRound size={18} />;
   if (category === 'notification') return <Bell size={18} />;
+  if (category === 'mail_query') return <Mail size={18} />;
   if (category === 'consent') return <ShieldCheck size={18} />;
+  if (category === 'metadata') return <ShieldAlert size={18} />;
   return <ShieldAlert size={18} />;
 }
 
@@ -1430,6 +1960,8 @@ function transparencyDetail(item: { contact_name?: string | null; actor_role?: s
 
 function purposeLabel(value: string) {
   if (value === 'behavior_notification') return 'Verhaltensmeldung';
+  if (value === 'mail_status_query') return 'E-Mail-Statusfrage';
+  if (value === 'mail_auto_ignored') return 'Automatische E-Mail';
   if (value === 'aal_partner_export') return 'Partnerexport';
   return value;
 }
@@ -1439,6 +1971,10 @@ function statusLabel(value: string) {
   if (value === 'active') return 'aktiv';
   if (value === 'revoked') return 'widerrufen';
   if (value === 'completed') return 'abgeschlossen';
+  if (value === 'failed') return 'fehlgeschlagen';
+  if (value === 'rejected') return 'abgelehnt';
+  if (value === 'ignored') return 'ignoriert';
+  if (value === 'duplicate') return 'doppelt';
   if (value.startsWith('skipped')) return 'blockiert';
   return value;
 }
@@ -1446,6 +1982,8 @@ function statusLabel(value: string) {
 function categoryLabel(value: string) {
   if (value === 'export') return 'Export';
   if (value === 'notification') return 'Benachrichtigung';
+  if (value === 'mail_query') return 'E-Mail-Anfrage';
+  if (value === 'metadata') return 'Metadaten';
   if (value === 'consent') return 'Freigabe';
   if (value === 'security') return 'Sicherheit';
   return value;
@@ -1532,6 +2070,14 @@ function ChannelSetupModal({
   recipient,
   onClose,
   onFormChange,
+  discoverStatus = 'idle',
+  discoverMessage = '',
+  verificationBusy = false,
+  verificationOk = false,
+  verificationMessage = '',
+  advancedOpen = false,
+  onAdvancedToggle,
+  onVerify,
   onSave,
   onTest,
 }: {
@@ -1540,10 +2086,126 @@ function ChannelSetupModal({
   recipient?: { name: string; email: string; relationship?: string; primary: boolean } | null;
   onClose: () => void;
   onFormChange: (form: Record<string, string>) => void;
+  discoverStatus?: 'idle' | 'checking' | 'found' | 'failed';
+  discoverMessage?: string;
+  verificationBusy?: boolean;
+  verificationOk?: boolean;
+  verificationMessage?: string;
+  advancedOpen?: boolean;
+  onAdvancedToggle?: () => void;
+  onVerify?: (values?: { email?: string; password?: string }) => void;
   onSave: () => void;
   onTest: () => void;
 }) {
   const meta = channelSetupMeta(channel);
+  const appPasswordHelpUrl = form.app_password_help_url;
+  const emailInputRef = useRef<HTMLInputElement | null>(null);
+  const passwordInputRef = useRef<HTMLInputElement | null>(null);
+  const visibleDiscoverMessage = channel === 'email' && discoverStatus === 'failed' && hasEmailServerSettings(form) ? '' : discoverMessage;
+  if (channel === 'email') {
+    return (
+      <div className="sc-modal-backdrop" role="presentation" onMouseDown={onClose}>
+        <section className="sc-channel-modal sc-mail-onboarding-modal" role="dialog" aria-modal="true" aria-label={meta.title} onMouseDown={(event) => event.stopPropagation()}>
+          <header>
+            <span>{channelIcon(channel, 24)}</span>
+            <div>
+              <h3>{meta.title}</h3>
+              <p>{meta.text}</p>
+            </div>
+            <button type="button" onClick={onClose} aria-label="Dialog schließen"><X size={20} /></button>
+          </header>
+
+          <div className="sc-mail-simple-form">
+            <label>
+              E-Mail-Adresse
+              <input
+                ref={emailInputRef}
+                type="email"
+                value={form.smtp_user || ''}
+                onInput={(event) => onFormChange(emailAddressForm(form, event.currentTarget.value))}
+                onChange={(event) => onFormChange(emailAddressForm(form, event.target.value))}
+                autoComplete="email"
+              />
+            </label>
+            {visibleDiscoverMessage && (
+              <p className={`sc-mail-status ${discoverStatus}`}>
+                {discoverStatus === 'found' && <CheckCircle2 size={18} />}
+                {visibleDiscoverMessage}
+              </p>
+            )}
+            <label>
+              Passwort / App-Passwort
+              <input
+                ref={passwordInputRef}
+                type="password"
+                value={form.smtp_password || ''}
+                onInput={(event) => onFormChange({ ...form, smtp_password: event.currentTarget.value, imap_password: event.currentTarget.value })}
+                onChange={(event) => onFormChange({ ...form, smtp_password: event.target.value, imap_password: event.target.value })}
+                autoComplete="current-password"
+                placeholder="Leer lassen, um das gespeicherte Passwort zu verwenden"
+              />
+            </label>
+            {appPasswordHelpUrl && (
+              <div className="sc-app-password-note">
+                <small>{appPasswordProviderHint(form.smtp_user)}</small>
+                <a href={appPasswordHelpUrl} target="_blank" rel="noreferrer">So erstellen Sie ein App-Passwort</a>
+              </div>
+            )}
+            {verificationMessage && (
+              <p className={`sc-mail-status ${verificationOk ? 'found' : 'failed'}`}>
+                {verificationOk && <CheckCircle2 size={18} />}
+                {verificationMessage}
+              </p>
+            )}
+          </div>
+
+          <section className="sc-advanced-mail-settings">
+            <button type="button" onClick={onAdvancedToggle} aria-expanded={advancedOpen}>
+              {discoverStatus === 'failed' && !advancedOpen ? 'Erweiterte Einstellungen öffnen' : 'Erweiterte Einstellungen'}
+            </button>
+            {advancedOpen && (
+              <div className="sc-form-grid">
+                {meta.fields.map(({ key, label, hint }) => (
+                  <label key={key} className={key === 'mail_from' ? 'sc-form-wide' : undefined}>
+                    {label}
+                    {key.includes('encryption') ? (
+                      <select value={form[key] || ''} onChange={(event) => onFormChange({ ...form, [key]: event.target.value })}>
+                        <option value="">Automatisch</option>
+                        <option value="SSL">SSL</option>
+                        <option value="STARTTLS">STARTTLS</option>
+                        <option value="NONE">Keine</option>
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={form[key] || ''}
+                        onChange={(event) => onFormChange({ ...form, [key]: event.target.value })}
+                      />
+                    )}
+                    {hint && <small className="sc-field-hint">{hint}</small>}
+                  </label>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <footer>
+            <button
+              type="button"
+              onClick={() => onVerify?.({ email: emailInputRef.current?.value, password: passwordInputRef.current?.value })}
+              disabled={verificationBusy || discoverStatus === 'checking'}
+            >
+              {verificationBusy ? 'Wird geprüft' : 'Verbindung prüfen'}
+            </button>
+            <button type="button" onClick={onTest} disabled={verificationBusy || discoverStatus === 'checking'}>
+              <Send size={18} /> Testmail senden
+            </button>
+            <button type="button" onClick={onSave} disabled={!verificationOk}><Save size={18} /> Speichern</button>
+          </footer>
+        </section>
+      </div>
+    );
+  }
   return (
     <div className="sc-modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="sc-channel-modal" role="dialog" aria-modal="true" aria-label={meta.title} onMouseDown={(event) => event.stopPropagation()}>
@@ -1556,7 +2218,7 @@ function ChannelSetupModal({
           <button type="button" onClick={onClose} aria-label="Dialog schließen"><X size={20} /></button>
         </header>
         <div className="sc-form-grid">
-          {meta.fields.map(([key, label]) => (
+          {meta.fields.map(({ key, label, hint }) => (
             <label key={key} className={key.includes('token') || key.includes('password') ? 'sc-form-wide' : undefined}>
               {label}
               <input
@@ -1564,26 +2226,12 @@ function ChannelSetupModal({
                 value={form[key] || ''}
                 onChange={(event) => onFormChange({ ...form, [key]: event.target.value })}
               />
+              {hint && <small className="sc-field-hint">{hint}</small>}
             </label>
           ))}
         </div>
-        {channel === 'email' && (
-          <div className="sc-channel-recipient">
-            <span>Empfänger</span>
-            {recipient ? (
-              <>
-                <strong>{recipient.name}</strong>
-                <small>{recipient.email}</small>
-                {recipient.primary && <em>Hauptansprechpartner</em>}
-              </>
-            ) : (
-              <small>Bitte hinterlegen Sie zuerst eine Vertrauensperson mit E-Mail-Adresse.</small>
-            )}
-          </div>
-        )}
-        {channel === 'email' && <p className="sc-modal-help">Diese Angaben werden benötigt, damit Sentero E-Mails versenden kann.</p>}
         <footer>
-          <button type="button" onClick={onTest}><Send size={18} /> {channel === 'email' ? 'Test senden' : 'Testen'}</button>
+          <button type="button" onClick={onTest}><Send size={18} /> Testen</button>
           <button type="button" onClick={onSave}><Save size={18} /> Speichern</button>
         </footer>
       </section>
@@ -1601,6 +2249,7 @@ function ChannelChecks({
   onChange: (value: string[]) => void;
 }) {
   function toggle(channel: string, checked: boolean) {
+    if (channel === 'email') return;
     if (!available[channel as 'email' | 'telegram' | 'whatsapp']) return;
     const next = checked ? [...value, channel] : value.filter((item) => item !== channel);
     onChange(sanitizeChannels(next, available));
@@ -1615,8 +2264,8 @@ function ChannelChecks({
       <span>Benachrichtigung per</span>
       <div className="sc-channel-choice-row">
         {options.map((option) => {
-          const selected = value.includes(option.channel) && available[option.channel];
-          const disabled = !available[option.channel];
+          const selected = option.channel === 'email' || (value.includes(option.channel) && available[option.channel]);
+          const disabled = option.channel === 'email' || !available[option.channel];
           return (
             <label key={option.channel} className={`sc-channel-choice${selected ? ' selected' : ''}${disabled ? ' disabled' : ''}`}>
               <input type="checkbox" checked={selected} disabled={disabled} onChange={(event) => toggle(option.channel, event.target.checked)} />
@@ -1626,8 +2275,137 @@ function ChannelChecks({
           );
         })}
       </div>
-      <small>Nicht verfügbare Kanäle werden nach erfolgreichem Verbindungstest freigeschaltet.</small>
+      <small>E-Mail bleibt als Pflichtkanal aktiv. Weitere Kanäle werden nach erfolgreichem Verbindungstest freigeschaltet.</small>
     </div>
+  );
+}
+
+function TelegramPairingCard({
+  contact,
+  bot,
+  onCopied,
+  onError,
+}: {
+  contact: SenteroTrustedContact;
+  bot: SenteroTelegramBotInfo | null;
+  onCopied: (message: string) => void;
+  onError: (message: string) => void;
+}) {
+  const inviteUrl = telegramInviteUrl(bot, contact);
+  const linked = Boolean(contact.telegram_linked || contact.telegram_chat_id);
+  const [qr, setQr] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    if (!inviteUrl) {
+      setQr('');
+      return;
+    }
+    QRCode.toDataURL(inviteUrl, { margin: 1, width: 164, color: { dark: '#16231f', light: '#ffffff' } })
+      .then((value) => {
+        if (active) setQr(value);
+      })
+      .catch(() => {
+        if (active) setQr('');
+      });
+    return () => {
+      active = false;
+    };
+  }, [inviteUrl]);
+
+  async function copyInvite() {
+    if (!inviteUrl) return;
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      onCopied('Telegram-Link kopiert');
+    } catch {
+      onError('Telegram-Link konnte nicht automatisch kopiert werden.');
+    }
+  }
+
+  return (
+    <section className={`sc-telegram-pairing${linked ? ' linked' : ''}`}>
+      <header>
+        <span><Send size={18} /></span>
+        <div>
+          <strong>{linked ? 'Telegram verbunden' : 'Telegram einladen'}</strong>
+          <small>{bot?.username ? `@${bot.username}` : 'Bot noch nicht erkannt'}</small>
+        </div>
+      </header>
+      {inviteUrl ? (
+        <div className="sc-telegram-invite">
+          {qr && <img src={qr} alt={`Telegram QR-Code für ${contact.name}`} />}
+          <div>
+            <p>{linked ? 'Dieser Chat ist gekoppelt. Der Link kann bei Gerätewechsel erneut genutzt werden.' : 'Link oder QR-Code an diese Person senden. Nach Start wird die Chat-ID automatisch gespeichert.'}</p>
+            <button type="button" onClick={() => void copyInvite()}><Copy size={17} /> Link kopieren</button>
+          </div>
+        </div>
+      ) : (
+        <p>Telegram-Bot zuerst im Bereich Benachrichtigungen verbinden.</p>
+      )}
+    </section>
+  );
+}
+
+function ContactQueryCard({
+  contact,
+  query,
+  mailEnabled,
+  editable = false,
+  onToggle,
+  onPermission,
+}: {
+  contact: SenteroTrustedContact;
+  query: SenteroMailQuerySettings['contacts'][number] | null;
+  mailEnabled: boolean;
+  editable?: boolean;
+  onToggle?: (enabled: boolean) => void;
+  onPermission?: (permission: string, checked: boolean) => void;
+}) {
+  const channels = normalizeChannels(contact.preferred_channels);
+  const hasEmail = Boolean(contact.email);
+  const hasTelegram = channels.includes('telegram') || Boolean(contact.telegram_chat_id);
+  if (!hasEmail && !hasTelegram) return null;
+  const enabled = Boolean(query?.email_queries_enabled);
+  const permissions = query?.email_permissions || [];
+  const visiblePermissions = editable ? emailQueryPermissions : emailQueryPermissions.filter((permission) => permissions.includes(permission.value));
+  const channelText = queryChannelText(hasEmail, hasTelegram, Boolean(contact.telegram_chat_id), mailEnabled);
+  const summary = queryPermissionSummary(permissions);
+  if (!editable) {
+    return (
+      <SharingRow
+        active={enabled}
+        icon={enabled ? <MessageCircle size={16} /> : <ShieldAlert size={16} />}
+        title="Anfragen"
+        detail={enabled ? `${summary.countLabel}: ${summary.names}` : `Aus · ${channelText}`}
+        action={onToggle
+          ? <button type="button" className={`sc-binary-toggle ${enabled ? 'active' : ''}`} onClick={() => onToggle(!enabled)} aria-pressed={enabled}>{enabled ? 'Ein' : 'Aus'}</button>
+          : <span className={`sc-binary-status ${enabled ? 'active' : ''}`}>{enabled ? 'Ein' : 'Aus'}</span>}
+      />
+    );
+  }
+  return (
+    <section className={`sc-contact-query-card sc-contact-query-card-edit${enabled ? ' active' : ''}`}>
+      <header>
+        <span><MessageCircle size={18} /></span>
+          <div>
+            <strong>Anfragen</strong>
+            <small>{channelText}</small>
+          </div>
+        <button type="button" className={`sc-binary-toggle ${enabled ? 'active' : ''}`} onClick={() => onToggle?.(!enabled)} aria-pressed={enabled}>
+          {enabled ? 'Ein' : 'Aus'}
+        </button>
+      </header>
+      <div className="sc-email-permission-grid compact">
+        {enabled && visiblePermissions.length === 0 && <span className="sc-query-empty">Keine Bereiche freigegeben</span>}
+        {(enabled || editable) && visiblePermissions.map((permission) => (
+          <label key={permission.value} className={permissions.includes(permission.value) ? 'active' : ''}>
+            {editable && <input type="checkbox" checked={permissions.includes(permission.value)} disabled={!enabled} onChange={(event) => onPermission?.(permission.value, event.target.checked)} />}
+            <span>{permission.label}</span>
+          </label>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -1641,67 +2419,99 @@ function DoorContactStatus({ sensor }: { sensor: SenteroSensorRole }) {
     </div>
   );
 }
-function formatFallDetected(sensor: SenteroSensorRole) {
-  return sensor.fall_detected ? 'Sturz erkannt' : 'Kein Sturz';
+
+function SmokeStatus({ sensor }: { sensor: SenteroSensorRole }) {
+  const alarm = sensor.smoke === true || ['on', 'true', '1', 'alarm', 'detected'].includes(String(sensor.state || '').toLowerCase());
+  return (
+    <span className={`presence-status ${alarm ? 'alert' : 'away'}`} aria-label={alarm ? 'Rauch erkannt' : 'Kein Rauch erkannt'}>
+      <ShieldAlert size={17} />
+      {alarm ? 'Rauch erkannt' : 'Kein Rauch erkannt'}
+    </span>
+  );
 }
 
-function formatMotion(sensor: SenteroSensorRole) {
-  switch (sensor.motion) {
-    case 'Active':
-      return 'Aktive Bewegung';
-    case 'Still':
-      return 'Ruhig / regungslos';
-    case 'None':
-      return 'Keine Bewegung';
-    default:
-      return 'Unbekannt';
-  }
-}
-
-function motionIcon(sensor: SenteroSensorRole) {
-  switch (sensor.motion) {
-    case 'Active':
-      return <DirectionsRunIcon fontSize="small" />;
-    case 'Still':
-      return <AccessibilityNewIcon fontSize="small" />;
-    case 'None':
-      return <RadioButtonUncheckedIcon fontSize="small" />;
-    default:
-      return <HelpOutlineIcon fontSize="small" />;
-  }
-}
 function C1001Telemetry({ sensor }: { sensor: SenteroSensorRole }) {
+  const status = presenceMotionStatus(sensor);
+  return (
+    <span className={`presence-status ${status.tone}`}>
+      {status.icon}
+      {status.label}
+    </span>
+  );
+}
+
+function MotionStatus({ sensor }: { sensor: SenteroSensorRole }) {
+  const status = presenceMotionStatus(sensor);
+  return (
+    <span className={`presence-status ${status.tone}`}>
+      {status.icon}
+      {status.label}
+    </span>
+  );
+}
+
+function SensorEnvironment({ sensor }: { sensor: SenteroSensorRole }) {
+  const temperature = formatMetric(sensor.temperature, '°C', 1);
+  const light = lightLevel(sensor.illuminance);
+  const humidity = formatMetric(sensor.humidity, '%', 0);
   return (
     <>
-      <span className={sensor.presence ? 'presence active' : 'presence inactive'}>
-        {sensor.presence ? <PersonIcon fontSize="small" /> : <PersonOutlineIcon fontSize="small" />}
-        {sensor.presence ? 'Anwesend' : 'Abwesend'}
-      </span>
-      <span className={sensor.fall_detected ? 'fall detected' : 'fall clear'}>
-        {sensor.fall_detected ? <WarningAmberIcon fontSize="small" /> : <CheckCircleOutlineIcon fontSize="small" />}
-        {formatFallDetected(sensor)}
-      </span>
-      <span className={`motion motion-${(sensor.motion || 'unknown').toLowerCase()}`}>
-        {motionIcon(sensor)}
-        {formatMotion(sensor)}
-      </span>
+      {temperature && <span className="battery"><Thermometer size={17} /> {temperature}</span>}
+      {light && (
+        <span className={`battery light-level ${light.tone}`} title={`Helligkeit: ${light.lux} lx`}>
+          <Lightbulb size={17} />
+          {light.label} <small>· {light.lux} lx</small>
+        </span>
+      )}
+      {humidity && <span className="battery"><Droplets size={17} /> {humidity}</span>}
     </>
   );
 }
 
+function lightLevel(value: unknown): { label: string; lux: number; tone: string } | null {
+  const lux = Number(value);
+  if (!Number.isFinite(lux)) return null;
+  const rounded = Math.max(0, Math.round(lux));
+  if (rounded <= 10) return { label: 'Dunkel', lux: rounded, tone: 'dark' };
+  if (rounded <= 50) return { label: 'Sehr gedämpft', lux: rounded, tone: 'very-dim' };
+  if (rounded <= 150) return { label: 'Gedämpft', lux: rounded, tone: 'dim' };
+  if (rounded <= 300) return { label: 'Normal hell', lux: rounded, tone: 'normal' };
+  if (rounded <= 700) return { label: 'Hell', lux: rounded, tone: 'bright' };
+  return { label: 'Sehr hell', lux: rounded, tone: 'very-bright' };
+}
+
+function sensorConnectionTone(sensor: SenteroSensorRole) {
+  if (sensor.reachable === false) return 'offline';
+  if (sensor.stale === true) return 'stale';
+  if (sensor.reachable == null) return 'unknown';
+  return 'online';
+}
+
+function sensorConnectionLabel(sensor: SenteroSensorRole) {
+  if (sensor.reachable === false) return 'Sensor nicht erreichbar';
+  if (sensor.stale === true) return 'Keine frischen Sensordaten';
+  if (sensor.reachable == null) return 'Verbindungsstatus unbekannt';
+  return 'Sensor verbunden';
+}
+
 function sensorType(sensor: SenteroSensorRole) {
   if (isSmartMeterSensor(sensor)) return meterLabelFromRole(sensor.role);
+  if (isSmokeSensor(sensor)) return 'Rauchmelder';
   if (isDoorContactSensor(sensor)) return 'Türkontakt';
-  if (isEsp32PresenceSensor(sensor)) return 'Präsenzsensor';
+  if (isMotionSensor(sensor)) return 'Präsenzsensor';
   if (String(sensor.device_class || '') === 'vibration') return 'Vibrationssensor';
   if (String(sensor.domain || '') === 'lock') return 'Türsensor';
-  return 'Bewegung';
+  return 'Sensor';
 }
 
 function isSmartMeterSensor(sensor: SenteroSensorRole) {
   const role = String(sensor.role || '').toLowerCase();
   const dc = String(sensor.device_class || '').toLowerCase();
   return role.endsWith('_energy') || role.endsWith('_power') || role.endsWith('_water') || role.endsWith('_gas') || ['energy', 'power', 'water', 'gas'].includes(dc);
+}
+
+function isEcoTrackerSensor(sensor: SenteroSensorRole) {
+  return String(sensor.source || '').toLowerCase() === 'ecotracker' || String(sensor.device_id || '').startsWith('ecotracker:');
 }
 
 function meterLabelFromRole(role: string) {
@@ -1719,6 +2529,20 @@ function formatMeterValue(sensor: SenteroSensorRole) {
   return `${value} kWh`;
 }
 
+function ecoTrackerReadingMessage(reading: SenteroEcoTrackerReading) {
+  const parts = [];
+  const meterReading = reading.meter_reading_kwh ?? reading.energy_in_kwh;
+  if (meterReading != null) parts.push(`Stromzählerstand ${meterReading} kWh`);
+  if (reading.power_w != null) parts.push(`Leistung ${reading.power_w} W`);
+  if (reading.energy_out_kwh != null) parts.push(`Einspeisung ${reading.energy_out_kwh} kWh`);
+  return parts.length ? parts.join(' · ') : 'EcoTracker erreichbar.';
+}
+
+function ecoTrackerMeterReadingLabel(reading: SenteroEcoTrackerReading | null) {
+  const meterReading = reading?.meter_reading_kwh ?? reading?.energy_in_kwh;
+  return meterReading == null ? '' : `Zählerstand ${meterReading} kWh`;
+}
+
 function isEsp32PresenceSensor(sensor: SenteroSensorRole) {
   return String(sensor.source || '').toLowerCase() === 'mqtt' && (
     sensor.role.endsWith('_presence') ||
@@ -1734,6 +2558,77 @@ function sensorSupportsLedControl(sensor: SenteroSensorRole) {
 
 function isDoorContactSensor(sensor: SenteroSensorRole) {
   return sensor.role === 'main_door' || sensor.role.endsWith('_door') || sensor.role.endsWith('_contact') || ['door', 'window', 'opening', 'contact'].includes(String(sensor.device_class || ''));
+}
+
+function isSmokeSensor(sensor: SenteroSensorRole) {
+  const role = String(sensor.role || '').toLowerCase();
+  const dc = String(sensor.device_class || '').toLowerCase();
+  return role.endsWith('_smoke') || dc === 'smoke';
+}
+
+function isMotionSensor(sensor: SenteroSensorRole) {
+  const dc = String(sensor.device_class || '').toLowerCase();
+  return sensor.role.endsWith('_presence') || ['occupancy', 'motion', 'presence'].includes(dc);
+}
+
+function presenceMotionStatus(sensor: SenteroSensorRole) {
+  if (sensor.fall_detected) {
+    return { tone: 'alert', label: 'Sturz', icon: <WarningAmberIcon fontSize="small" /> };
+  }
+  const motion = String(sensor.motion_state || sensor.motion || '').toLowerCase();
+  if (sensor.presence === false) {
+    return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
+  }
+  if (sensor.presence === true) {
+    if (['active', 'move', 'moving', 'movement', 'motion', 'detected', 'large', 'small'].includes(motion)) {
+      return { tone: 'motion', label: 'Bewegung', icon: <DirectionsRunIcon fontSize="small" /> };
+    }
+    if (['still', 'static', 'stationary', 'standstill', 'static_target', 'none'].includes(motion)) {
+      return { tone: 'still', label: 'Still', icon: <AccessibilityNewIcon fontSize="small" /> };
+    }
+    return { tone: 'still', label: 'Anwesend', icon: <PersonIcon fontSize="small" /> };
+  }
+  if (['none', 'clear', 'off', 'false', '0', 'no_motion'].includes(motion)) {
+    return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
+  }
+  if (['active', 'move', 'moving', 'movement', 'motion', 'detected', 'large', 'small'].includes(motion)) {
+    return { tone: 'motion', label: 'Bewegung', icon: <DirectionsRunIcon fontSize="small" /> };
+  }
+  const value = String(sensor.state || '').toLowerCase();
+  if (['on', 'true', '1', 'active', 'occupied', 'detected'].includes(value)) {
+    return { tone: 'motion', label: 'Bewegung', icon: <PersonIcon fontSize="small" /> };
+  }
+  if (['off', 'false', '0', 'clear', 'none'].includes(value)) {
+    return { tone: 'away', label: 'Abwesend', icon: <PersonOutlineIcon fontSize="small" /> };
+  }
+  return { tone: 'unknown', label: 'Unbekannt', icon: <HelpOutlineIcon fontSize="small" /> };
+}
+
+function isZigbeeSensor(sensor: SenteroSensorRole) {
+  return sensor.source === 'zigbee2mqtt' || String(sensor.source_ref || '').startsWith('zigbee2mqtt/') || String(sensor.device_id || '').startsWith('0x');
+}
+
+function canOfferLocalOnlySensorDelete(sensor: SenteroSensorRole, message: string) {
+  const lower = message.toLowerCase();
+  if (isEsp32PresenceSensor(sensor)) {
+    return (
+      lower.includes('nicht erreichbar') ||
+      lower.includes('factory reset') ||
+      lower.includes('zurückgesetzt') ||
+      lower.includes('connection refused') ||
+      lower.includes('mqtt') ||
+      lower.includes('errno 61')
+    );
+  }
+  if (!isZigbeeSensor(sensor)) return false;
+  return (
+    lower.includes('permit join') ||
+    lower.includes('sensornetzwerk') ||
+    lower.includes('zigbee') ||
+    lower.includes('connection refused') ||
+    lower.includes('mqtt') ||
+    lower.includes('errno 61')
+  );
 }
 
 function doorContactStatus(sensor: SenteroSensorRole) {
@@ -1766,6 +2661,11 @@ function formatBoolean(value?: boolean | null) {
   return value ? 'true' : 'false';
 }
 
+function formatMetric(value: number | null | undefined, unit: string, digits: number) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '';
+  return `${value.toFixed(digits)} ${unit}`;
+}
+
 function ledEnabled(sensor: SenteroSensorRole, localStates: Record<string, boolean>) {
   return localStates[sensor.role] ?? ledEnabledFromSensor(sensor) ?? false;
 }
@@ -1795,6 +2695,10 @@ function normalizeEmail(value: string) {
   return value.trim().toLowerCase();
 }
 
+function isValidEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
 function emptyContactForm() {
   return {
     name: '',
@@ -1811,7 +2715,7 @@ function emptyContactForm() {
 }
 
 function normalizeChannels(value?: string | string[] | null) {
-  if (Array.isArray(value)) return Array.from(new Set(['email', ...value.filter((item) => ['email', 'telegram', 'whatsapp'].includes(item))]));
+  if (Array.isArray(value)) return Array.from(new Set(value.filter((item) => ['email', 'telegram', 'whatsapp'].includes(item))));
   if (typeof value === 'string') {
     try {
       return normalizeChannels(JSON.parse(value));
@@ -1840,7 +2744,6 @@ function contactPayload(form: ReturnType<typeof emptyContactForm>, available: Re
 function validateContactPayload(payload: ReturnType<typeof contactPayload>) {
   if (payload.preferred_channels.length === 0) return 'Bitte richten Sie zuerst mindestens einen funktionierenden Benachrichtigungskanal ein.';
   if (payload.preferred_channels.includes('email') && !payload.email) return 'Bitte geben Sie eine E-Mail-Adresse ein.';
-  if (payload.preferred_channels.includes('telegram') && !payload.telegram_chat_id) return 'Bitte geben Sie die Telegram Chat ID ein.';
   if (payload.preferred_channels.includes('whatsapp') && !payload.whatsapp_phone_number) return 'Bitte geben Sie die WhatsApp Telefonnummer ein.';
   return '';
 }
@@ -1848,6 +2751,123 @@ function validateContactPayload(payload: ReturnType<typeof contactPayload>) {
 function stringConfig(value: unknown) {
   if (!value || typeof value !== 'object') return {};
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, String(item ?? '')]));
+}
+
+function discoveredEmailForm<T extends Record<string, string>>(current: T, config: MailConfig, email: string): T {
+  const smtpEncryption = String(config.smtp_encryption || '').toUpperCase();
+  const imapEncryption = String(config.imap_encryption || '').toUpperCase();
+  const currentImapUser = String(current.imap_user || '').trim();
+  const imapUser = !currentImapUser || currentImapUser === current.imap_host ? email : currentImapUser;
+  return {
+    ...current,
+    mail_from: current.mail_from || 'Sentero',
+    smtp_host: config.smtp_host,
+    smtp_port: String(config.smtp_port),
+    smtp_user: email,
+    smtp_login: current.smtp_login || email,
+    smtp_encryption: smtpEncryption,
+    smtp_starttls: smtpEncryption === 'STARTTLS' ? 'true' : 'false',
+    smtp_ssl: smtpEncryption === 'SSL' ? 'true' : 'false',
+    imap_host: config.imap_host,
+    imap_port: String(config.imap_port),
+    imap_user: imapUser,
+    imap_encryption: imapEncryption,
+    app_password_help_url: config.app_password_help_url || '',
+  };
+}
+
+function emailAddressForm<T extends Record<string, string>>(current: T, nextEmail: string): T {
+  const previousEmail = normalizeEmail(current.smtp_user || '');
+  const nextLogin = normalizeEmail(nextEmail);
+  const currentImapUser = String(current.imap_user || '').trim();
+  const currentSmtpLogin = String(current.smtp_login || '').trim();
+  const shouldUpdateSmtpLogin = !currentSmtpLogin || normalizeEmail(currentSmtpLogin) === previousEmail;
+  const shouldUpdateImapUser = !currentImapUser || normalizeEmail(currentImapUser) === previousEmail;
+  return {
+    ...current,
+    smtp_user: nextEmail,
+    smtp_login: shouldUpdateSmtpLogin ? nextEmail : currentSmtpLogin,
+    imap_user: shouldUpdateImapUser ? nextEmail : currentImapUser,
+    mail_from: current.mail_from || 'Sentero',
+  };
+}
+
+function hasEmailServerSettings(form: Record<string, string>) {
+  return Boolean(String(form.smtp_host || '').trim() && String(form.imap_host || '').trim());
+}
+
+function emailChannelConfig(form: Record<string, string>) {
+  const email = normalizeEmail(form.smtp_user);
+  const rawPassword = form.smtp_password || form.imap_password || '';
+  const password = looksMaskedSecret(rawPassword) ? '' : rawPassword;
+  const smtpEncryption = normalizedEncryption(form.smtp_encryption, form.smtp_port, form.smtp_starttls, form.smtp_ssl);
+  const { smtp_password: _smtpPassword, imap_password: _imapPassword, ...publicForm } = form;
+  const config: Record<string, string> = {
+    ...publicForm,
+    mail_from: form.mail_from || 'Sentero',
+    smtp_user: email,
+    smtp_login: form.smtp_login || email,
+    smtp_encryption: smtpEncryption,
+    smtp_starttls: smtpEncryption === 'STARTTLS' ? 'true' : 'false',
+    smtp_ssl: smtpEncryption === 'SSL' ? 'true' : 'false',
+    imap_user: form.imap_user || email,
+    imap_encryption: normalizedEncryption(form.imap_encryption, form.imap_port),
+  };
+  if (password) {
+    config.smtp_password = password;
+    config.imap_password = password;
+  }
+  return config;
+}
+
+function looksMaskedSecret(value: unknown) {
+  const text = String(value || '');
+  return text.includes('•') || text.startsWith('***');
+}
+
+function mailConfigFromForm(form: Record<string, string>): MailConfig {
+  const smtpEncryption = normalizedEncryption(form.smtp_encryption, form.smtp_port, form.smtp_starttls, form.smtp_ssl);
+  const imapEncryption = normalizedEncryption(form.imap_encryption, form.imap_port);
+  return {
+    imap_host: form.imap_host,
+    imap_port: parsePort(form.imap_port, 993),
+    imap_encryption: imapEncryption,
+    smtp_host: form.smtp_host,
+    smtp_port: parsePort(form.smtp_port, 587),
+    smtp_encryption: smtpEncryption,
+    auth_method: null,
+    requires_app_password: Boolean(form.app_password_help_url),
+    app_password_help_url: form.app_password_help_url || null,
+    source: 'manual',
+  };
+}
+
+function normalizedEncryption(value: string | undefined, port: string | undefined, starttls?: string, ssl?: string) {
+  const encryption = String(value || '').toUpperCase();
+  if (encryption === 'SSL' || encryption === 'STARTTLS' || encryption === 'NONE') return encryption;
+  if (ssl === 'true' || port === '465' || port === '993') return 'SSL';
+  if (starttls !== 'false') return 'STARTTLS';
+  return 'NONE';
+}
+
+function parsePort(value: string | undefined, fallback: number) {
+  const port = Number.parseInt(String(value || ''), 10);
+  return Number.isFinite(port) && port > 0 ? port : fallback;
+}
+
+function appPasswordProviderHint(email: string) {
+  const domain = normalizeEmail(email).split('@')[1] || 'diesen Anbieter';
+  const label = domain.includes('gmail') ? 'Gmail' : domain.includes('icloud') ? 'iCloud' : domain.includes('yahoo') ? 'Yahoo' : domain.includes('outlook') || domain.includes('hotmail') ? 'Outlook' : 'diesen Anbieter';
+  return `Für ${label} benötigen Sie normalerweise ein App-Passwort.`;
+}
+
+function friendlyMailError(message: string, hasAppPasswordHint: boolean) {
+  const lower = message.toLowerCase();
+  if (hasAppPasswordHint && (lower.includes('passwort') || lower.includes('anmeldung') || lower.includes('auth'))) {
+    return 'Für diesen Anbieter benötigen Sie möglicherweise ein App-Passwort.';
+  }
+  if (lower.includes('nicht automatisch erkennen')) return 'Sentero konnte den Mailserver nicht automatisch erkennen.';
+  return 'Die Anmeldung war nicht erfolgreich. Bitte prüfen Sie E-Mail-Adresse und Passwort.';
 }
 
 function channelState(channels: SenteroNotificationChannel[], channel: string) {
@@ -1866,14 +2886,48 @@ function channelAvailability(channels: SenteroNotificationChannel[]) {
   return state;
 }
 
+function networkLabel(status: BoxNetworkStatus | null) {
+  if (!status?.network_ready) return 'Offline';
+  const value = String(status.active_connection || '');
+  if (value === 'cellular') return 'Mobilfunk';
+  if (value === 'wifi') return 'WLAN';
+  if (value === 'ethernet') return 'LAN';
+  return 'Verbunden';
+}
+
 function sanitizeChannels(channels: string[], available: Record<'email' | 'telegram' | 'whatsapp', boolean>) {
-  return channels.filter((channel): channel is 'email' | 'telegram' | 'whatsapp' => (
-    (channel === 'email' || channel === 'telegram' || channel === 'whatsapp') && available[channel]
+  const optional = channels.filter((channel): channel is 'telegram' | 'whatsapp' => (
+    (channel === 'telegram' || channel === 'whatsapp') && available[channel]
   ));
+  return ['email', ...optional.filter((channel, index) => optional.indexOf(channel) === index)];
 }
 
 function channelSelected(channels: string[], channel: 'email' | 'telegram' | 'whatsapp', available: Record<'email' | 'telegram' | 'whatsapp', boolean>) {
+  if (channel === 'email') return true;
   return available[channel] && channels.includes(channel);
+}
+
+function telegramInviteUrl(bot: SenteroTelegramBotInfo | null, contact: SenteroTrustedContact) {
+  const username = bot?.username?.trim();
+  const code = contact.telegram_invite_code?.trim();
+  if (!username || !code) return '';
+  return `https://t.me/${encodeURIComponent(username)}?start=${encodeURIComponent(code)}`;
+}
+
+function queryChannelText(hasEmail: boolean, hasTelegram: boolean, telegramLinked: boolean, mailEnabled: boolean) {
+  if (hasEmail && hasTelegram) return telegramLinked ? 'Antwortmail und Telegram' : 'Antwortmail, Telegram nach Kopplung';
+  if (hasTelegram) return telegramLinked ? 'Telegram-Fragen' : 'Telegram nach Kopplung';
+  if (hasEmail) return mailEnabled ? 'Antwortmail an Sentero' : 'E-Mail-Verbindung ausstehend';
+  return 'Gilt für freigeschaltete Fragekanäle';
+}
+
+function queryPermissionSummary(permissions: string[]) {
+  const labels = emailQueryPermissions.filter((permission) => permissions.includes(permission.value)).map((permission) => permission.label);
+  if (!labels.length) return { countLabel: 'Keine Bereiche', names: 'Keine Bereiche freigegeben' };
+  return {
+    countLabel: labels.length === 1 ? '1 Bereich' : `${labels.length} Bereiche`,
+    names: labels.join(', '),
+  };
 }
 
 function channelLabel(channel: string) {
@@ -1889,15 +2943,18 @@ function channelIcon(channel: string, size = 20) {
   return <Mail size={size} />;
 }
 
-function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp') {
+type ChannelSetupField = { key: string; label: string; hint?: string };
+type ChannelSetupMeta = { title: string; text: string; fields: ChannelSetupField[] };
+
+function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp'): ChannelSetupMeta {
   if (channel === 'telegram') {
     return {
       title: 'Telegram einrichten',
-      text: 'Telegram kann zusätzlich zur E-Mail genutzt werden.',
+      text: 'Telegram kann über persönliche Einladungslinks mit Angehörigen verbunden werden.',
       fields: [
-        ['bot_token', 'Bot Token'],
-        ['default_chat_id', 'Chat ID'],
-      ] as Array<[string, string]>,
+        { key: 'bot_token', label: 'Bot Token', hint: 'Token von BotFather.' },
+        { key: 'default_chat_id', label: 'Test Chat ID', hint: 'Optional für eine direkte Testnachricht.' },
+      ],
     };
   }
   if (channel === 'whatsapp') {
@@ -1905,22 +2962,27 @@ function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp') {
       title: 'WhatsApp einrichten',
       text: 'WhatsApp benötigt eigene WhatsApp Cloud API Zugangsdaten.',
       fields: [
-        ['access_token', 'Access Token'],
-        ['phone_number_id', 'Phone Number ID'],
-        ['business_account_id', 'Business Account ID'],
-      ] as Array<[string, string]>,
+        { key: 'access_token', label: 'Access Token' },
+        { key: 'phone_number_id', label: 'Phone Number ID' },
+        { key: 'business_account_id', label: 'Business Account ID' },
+        { key: 'api_version', label: 'Graph API Version' },
+      ],
     };
   }
   return {
     title: 'E-Mail einrichten',
-    text: 'E-Mail bleibt der Standardkanal für Sentero-Benachrichtigungen.',
+    text: 'Sentero verwendet diese Mailbox, um Hinweise zu senden und Anfragen von Vertrauenspersonen zu beantworten. Für eine neue Anfrage muss der E-Mail-Betreff mit „Sentero:“ beginnen. Die Frage schreiben Sie in den Nachrichtentext.',
     fields: [
-      ['smtp_host', 'SMTP Host'],
-      ['smtp_port', 'SMTP Port'],
-      ['smtp_user', 'SMTP Benutzer'],
-      ['smtp_password', 'SMTP Passwort'],
-      ['test_recipient', 'Testempfänger'],
-    ] as Array<[string, string]>,
+      { key: 'smtp_host', label: 'SMTP-Server' },
+      { key: 'smtp_port', label: 'SMTP-Port' },
+      { key: 'smtp_encryption', label: 'SMTP-Verschlüsselung' },
+      { key: 'smtp_login', label: 'SMTP-Login' },
+      { key: 'imap_host', label: 'IMAP-Server' },
+      { key: 'imap_port', label: 'IMAP-Port' },
+      { key: 'imap_encryption', label: 'IMAP-Verschlüsselung' },
+      { key: 'imap_user', label: 'IMAP-Login' },
+      { key: 'mail_from', label: 'Anzeigename' },
+    ],
   };
 }
 
@@ -1928,14 +2990,14 @@ function channelHelpContent(channel: 'email' | 'telegram' | 'whatsapp') {
   if (channel === 'telegram') {
     return {
       title: 'Telegram einrichten',
-      intro: 'Telegram kann zusätzlich zu E-Mail verwendet werden.',
+      intro: 'Telegram wird über einen eigenen Bot und persönliche Einladungslinks verbunden.',
       sections: [
-        { title: 'Was wird benötigt?', items: ['Bot Token', 'Chat ID'] },
+        { title: 'Was wird benötigt?', items: ['Bot Token von BotFather'] },
         { title: 'Schritt 1', text: ['Öffnen Sie Telegram und suchen Sie nach @BotFather.'] },
         { title: 'Schritt 2', text: ['Erstellen Sie mit BotFather einen neuen Bot. Danach erhalten Sie einen Bot Token.'] },
-        { title: 'Schritt 3', text: ['Senden Sie Ihrem neuen Bot mindestens eine Nachricht.'] },
-        { title: 'Schritt 4', text: ['Ermitteln Sie Ihre Chat ID. Diese kann über die Telegram Bot API oder über einen Telegram-ID-Helfer ermittelt werden.'] },
-        { title: 'Hinweis', text: ['Telegram ist optional. Für die meisten Sentero-Installationen reicht E-Mail aus.'] },
+        { title: 'Schritt 3', text: ['Token in Sentero eintragen und Telegram testen.'] },
+        { title: 'Schritt 4', text: ['Bei jeder vertrauten Person den persönlichen Link oder QR-Code teilen. Die Chat-ID wird nach dem Start automatisch gespeichert.'] },
+        { title: 'Hinweis', text: ['Der Bot Token bleibt geheim. Angehörige erhalten nur den Link oder QR-Code.'] },
       ],
     };
   }
@@ -1954,12 +3016,12 @@ function channelHelpContent(channel: 'email' | 'telegram' | 'whatsapp') {
     title: 'E-Mail einrichten',
     intro: 'E-Mail ist der empfohlene Standardkanal für Sentero.',
     sections: [
-      { title: 'Warum E-Mail?', text: ['Sentero nutzt Ihre E-Mail-Zugangsdaten, um Hinweise und Warnungen an Ihre Vertrauenspersonen zu senden.'] },
-      { title: 'Was wird benötigt?', items: ['SMTP Host', 'SMTP Port', 'E-Mail-Adresse oder Benutzername', 'App-Passwort oder E-Mail-Passwort'] },
-      { title: 'Beispiel Gmail', text: ['SMTP Host: smtp.gmail.com', 'SMTP Port: 587', 'Verschlüsselung: STARTTLS'] },
+      { title: 'Warum E-Mail?', text: ['Sentero nutzt Ihre E-Mail-Zugangsdaten, um Hinweise und Warnungen zu senden und Antworten von Vertrauenspersonen zu lesen.'] },
+      { title: 'Was wird benötigt?', items: ['Server zum Senden', 'Server für Antworten', 'E-Mail-Adresse', 'App-Passwort oder E-Mail-Passwort'] },
+      { title: 'Beispiel Gmail', text: ['Server zum Senden: smtp.gmail.com', 'Server für Antworten: imap.gmail.com', 'Sendeport: 587', 'Antwortport: 993'] },
       { title: 'Wichtig bei Gmail', text: ['Bei Gmail sollte ein App-Passwort verwendet werden. Das normale Google-Passwort funktioniert meistens nicht.'] },
       { title: 'So erstellen Sie ein App-Passwort', steps: ['Öffnen Sie Ihr Google-Konto.', 'Aktivieren Sie die Zwei-Faktor-Authentifizierung.', 'Öffnen Sie „App-Passwörter“.', 'Erstellen Sie ein neues App-Passwort für „Mail“.', 'Tragen Sie dieses Passwort in Sentero ein.'] },
-      { title: 'Hinweis', text: ['Wenn Sie einen anderen E-Mail-Anbieter verwenden, finden Sie die SMTP-Daten meist in den Hilfe-Seiten Ihres Anbieters.'] },
+      { title: 'Hinweis', text: ['Wenn Sie einen anderen E-Mail-Anbieter verwenden, finden Sie die Angaben zum Senden und Empfangen meist in den Hilfe-Seiten Ihres Anbieters.'] },
     ],
   };
 }

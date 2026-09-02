@@ -4,24 +4,32 @@ import json
 import os
 import re
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from backend.config import config_str
+from backend.config import config_float, config_int, config_str
 from backend.paths import DATA_DIR
 from backend.logging_config import get_logger
+from backend.services.ecotracker_service import EcoTrackerClient, ecotracker_snapshot_rows
 from backend.sensor_sources.base import create_sensor_source
-from backend.services.homeassistant_service import HomeAssistantService
 from backend.services.mqtt_service import MqttService
 
 DB_PATH = DATA_DIR / 'sentero.db'
 DB_TIMEOUT_SECONDS = 30
 DISCOVERY_TIMEOUT_SECONDS = 180
 DISCOVERY_CONFIDENCE_THRESHOLD = 50
-PRESENCE_CLASSES = {'occupancy', 'motion', 'presence'}
+PRESENCE_CLASSES = {'occupancy', 'motion', 'presence', 'moving_target', 'static_target'}
 CONTACT_CLASSES = {'door', 'window', 'opening', 'contact'}
+SMOKE_CLASSES = {'smoke'}
+SMOKE_KEYS = {'smoke', 'smoke_alarm', 'smoke_state'}
 SMART_METER_CLASSES = {'energy', 'power', 'water', 'gas'}
+DEFAULT_PRESENCE_LIVE_STATE_TTL_SECONDS = 300
+DEFAULT_PRESENCE_UNREACHABLE_GRACE_SECONDS = 900
+DEFAULT_SENSOR_HEALTH_STALE_SECONDS = 172800
+DEFAULT_SENSOR_UNREACHABLE_GRACE_SECONDS = 604800
 SMART_METER_KEYS = {
     'energy',
     'energy_consumption',
@@ -34,7 +42,22 @@ SMART_METER_KEYS = {
     'gas',
     'gas_consumption',
 }
+SUPPORTED_SENSOR_TYPES = {
+    'door_contact',
+    'presence_sensor',
+    'smoke_detector',
+    'button',
+    'electricity_meter',
+    'water_meter',
+    'gas_meter',
+}
+EXTRA_CAPABILITY_KEYS = {'state', 'battery', 'battery_low', 'linkquality', 'signal_quality', 'temperature', 'humidity', 'illuminance', 'illuminance_lux', 'voltage'}
 logger = get_logger(__name__)
+
+
+class SensorTransport(str, Enum):
+    ZIGBEE = "zigbee"
+    WIFI_ESPHOME = "wifi_esphome"
 ROOM_TERMS = {
     'living_room': ['wohnzimmer', 'living', 'living_room'],
     'kitchen': ['kueche', 'küche', 'kitchen'],
@@ -64,25 +87,30 @@ def configure_sqlite_connection(con: sqlite3.Connection) -> None:
 
 
 class DeviceMappingService:
-    def __init__(self, database_path: Path | None = None, ha: HomeAssistantService | None = None) -> None:
+    def __init__(self, database_path: Path | None = None, **_: Any) -> None:
         self.database_path = database_path or DB_PATH
         self.source_mode = sensor_source_mode()
-        self.ha = ha or HomeAssistantService()
-        self.sensor_source = create_sensor_source()
-        self.mqtt = MqttService()
+        # One shared MQTT service is important: the sensor source owns the live
+        # subscription/cache while mapping commands use the same broker settings.
+        self.mqtt = MqttService(database_path=self.database_path)
+        self.sensor_source = create_sensor_source(self.mqtt)
         self.ensure_schema()
         logger.debug(
             "Device mapping service initialized",
             extra={"component": "device_mapping", "sensor_source": self.source_mode, "database_path": str(self.database_path)},
         )
 
-    def connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def connect(self):
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         logger.debug("Database connection opening", extra={"component": "database", "database_path": str(self.database_path)})
         con = sqlite3.connect(self.database_path, timeout=DB_TIMEOUT_SECONDS)
-        con.row_factory = sqlite3.Row
-        configure_sqlite_connection(con)
-        return con
+        try:
+            con.row_factory = sqlite3.Row
+            configure_sqlite_connection(con)
+            yield con
+        finally:
+            con.close()
 
     def ensure_schema(self) -> None:
         with self.connect() as con:
@@ -90,17 +118,17 @@ class DeviceMappingService:
             con.commit()
 
     def home_status(self) -> dict[str, bool]:
-        if self.uses_mqtt_source():
-            if not self.sensor_source.configured() or not self.mqtt.client_available():
-                return {'connected': False, 'sensor_ready': False, 'system_ready': False}
-            return {'connected': True, 'sensor_ready': True, 'system_ready': True}
-        if not self.ha.configured():
+        if not self.sensor_source.configured() or not self.mqtt.client_available():
             return {'connected': False, 'sensor_ready': False, 'system_ready': False}
-        try:
-            states = self.ha.get_states()
-        except Exception:
-            return {'connected': False, 'sensor_ready': False, 'system_ready': False}
-        return {'connected': True, 'sensor_ready': isinstance(states, list), 'system_ready': True}
+        return {'connected': True, 'sensor_ready': True, 'system_ready': True}
+
+    def start_mqtt_listener(self) -> None:
+        topics_fn = getattr(self.sensor_source, 'subscription_topics', None)
+        topics = topics_fn() if callable(topics_fn) else [f"{self._zigbee2mqtt_topic('')}#"]
+        self.mqtt.start_listener(topics)
+
+    def stop_mqtt_listener(self) -> None:
+        self.mqtt.stop_listener()
 
     def roles(self, dev: bool = False, include_state: bool = False) -> list[dict[str, Any]]:
         with self.connect() as con:
@@ -120,12 +148,10 @@ class DeviceMappingService:
         return None
 
     def start_pairing(self, role: str, room: str | None, pairing_code: str | None = None) -> dict[str, Any]:
-        ha_url = getattr(self.ha, 'base_url', '')
         try:
             baseline = self.snapshot()
-            ha_reachable = True
         except Exception:
-            logger.exception("Sentero discovery baseline failed. ha_url=%s reachable=no", ha_url)
+            logger.exception("Sentero discovery baseline failed")
             raise
         started_at = now()
         status = 'waiting_for_signal'
@@ -141,79 +167,74 @@ class DeviceMappingService:
             con.commit()
             session_id = int(cur.lastrowid)
         logger.info(
-            "Sentero discovery start session=%s role=%s room=%s ha_url=%s reachable=%s baseline_states=%s status=%s",
+            "Sentero discovery start session=%s role=%s room=%s baseline_states=%s status=%s",
             session_id,
             role,
             room,
-            ha_url,
-            "yes" if ha_reachable else "no",
             len(baseline),
             status,
         )
         return {'session_id': session_id, 'status': status, 'message': message, 'detail': detail}
 
-    def start_zigbee_pairing(self, role: str, room: str | None, duration: int = 60) -> dict[str, Any]:
-        ha_url = getattr(self.ha, 'base_url', '')
+    def start_zigbee_pairing(self, role: str, room: str | None, duration: int = 60, sensor_type: str | None = None) -> dict[str, Any]:
         duration = min(max(int(duration or 60), 10), 300)
         try:
             baseline = self.snapshot()
-            ha_reachable = True
         except Exception:
-            logger.exception("Sentero pairing baseline failed. ha_url=%s reachable=no", ha_url)
+            logger.exception("Sentero pairing baseline failed")
             raise
+        baseline_device_ids = sorted(stable_physical_device_ids(baseline))
         detail = self._open_zigbee_permit_join(duration)
-        homeassistant_fallback = self.source_mode == 'homeassistant' and not detail.get('ok')
-        status = 'pairing_started' if detail.get('ok') else 'waiting_for_signal' if homeassistant_fallback else 'pairing_needs_manual_action'
+        status = 'pairing_started' if detail.get('ok') else 'pairing_needs_manual_action'
         message = (
             'Sensor-Suche gestartet. Bitte aktivieren Sie den Sensor jetzt.'
             if detail.get('ok')
-            else 'Bitte lernen Sie den Sensor in Home Assistant an und aktivieren Sie ihn danach einmal.'
-            if homeassistant_fallback
-            else 'Die Sensor-Einrichtung ist noch nicht bereit.'
+            else str(detail.get('message') or 'Zigbee2MQTT Permit Join ist nicht verfügbar.')
         )
-        if homeassistant_fallback:
-            detail = {
-                **detail,
-                'provider': 'homeassistant',
-                'mode': 'discovery',
-                'permit_join_available': False,
-            }
         with self.connect() as con:
             cur = con.execute(
                 '''insert into sensor_discovery_sessions
-                   (target_role, target_room, started_at, status, baseline_snapshot_json, pairing_code_provided, pairing_detail_json)
-                   values (?, ?, ?, ?, ?, ?, ?)''',
-                (role, room, now(), status, json.dumps(baseline, ensure_ascii=False), 0, json.dumps(detail, ensure_ascii=False)),
+                   (target_role, target_room, target_sensor_type, target_transport, timeout_seconds,
+                    started_at, status, baseline_snapshot_json, baseline_device_ids_json, pairing_code_provided, pairing_detail_json)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (
+                    role,
+                    room,
+                    sensor_type,
+                    SensorTransport.ZIGBEE.value,
+                    duration,
+                    now(),
+                    status,
+                    json.dumps(baseline, ensure_ascii=False),
+                    json.dumps(baseline_device_ids, ensure_ascii=False),
+                    0,
+                    json.dumps(detail, ensure_ascii=False),
+                ),
             )
             con.commit()
             session_id = int(cur.lastrowid)
         logger.info(
-            "Sentero pairing start session=%s role=%s room=%s ha_url=%s reachable=%s baseline_states=%s status=%s provider=%s",
+            "Sentero pairing start session=%s role=%s room=%s baseline_states=%s status=%s provider=%s",
             session_id,
             role,
             room,
-            ha_url,
-            "yes" if ha_reachable else "no",
             len(baseline),
             status,
             detail.get('provider'),
         )
-        if not detail.get('ok') and not homeassistant_fallback:
+        if not detail.get('ok'):
             logger.warning("Sentero pairing unavailable session=%s detail=%s", session_id, detail)
-        elif homeassistant_fallback:
-            logger.info(
-                "Zigbee permit_join unavailable, using Home Assistant discovery",
-                extra={"component": "wizard", "session_id": session_id, "sensor_source": self.source_mode},
-            )
         return {'session_id': session_id, 'status': status, 'message': message, 'detail': detail}
 
-    def start_mqtt_discovery(self, role: str, room: str | None, duration: int = 180) -> dict[str, Any]:
+    def start_mqtt_discovery(self, role: str, room: str | None, duration: int = 180, sensor_type: str | None = None) -> dict[str, Any]:
         duration = min(max(int(duration or DISCOVERY_TIMEOUT_SECONDS), 10), 300)
         try:
             baseline = self._mqtt_snapshot()
         except Exception:
             logger.exception("MQTT discovery baseline failed", extra={"component": "wizard", "sensor_source": self.source_mode})
             baseline = []
+        self.sync_zigbee_inventory(baseline)
+        baseline_device_ids = sorted(stable_physical_device_ids(baseline))
         permit_join = self._open_zigbee_permit_join(duration)
         detail = {
             **permit_join,
@@ -225,9 +246,21 @@ class DeviceMappingService:
         with self.connect() as con:
             cur = con.execute(
                 '''insert into sensor_discovery_sessions
-                   (target_role, target_room, started_at, status, baseline_snapshot_json, pairing_code_provided, pairing_detail_json)
-                   values (?, ?, ?, ?, ?, ?, ?)''',
-                (role, room, now(), status, json.dumps(baseline, ensure_ascii=False), 0, json.dumps(detail, ensure_ascii=False)),
+                   (target_role, target_room, target_sensor_type, target_transport, timeout_seconds,
+                    started_at, status, baseline_snapshot_json, pairing_code_provided, pairing_detail_json)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (
+                    role,
+                    room,
+                    sensor_type,
+                    SensorTransport.ZIGBEE.value,
+                    duration,
+                    now(),
+                    status,
+                    json.dumps(baseline, ensure_ascii=False),
+                    0,
+                    json.dumps(detail, ensure_ascii=False),
+                ),
             )
             con.commit()
             session_id = int(cur.lastrowid)
@@ -240,6 +273,7 @@ class DeviceMappingService:
                 "room_id": room,
                 "sensor_source": self.source_mode,
                 "baseline_states": len(baseline),
+                "baseline_device_ids": baseline_device_ids,
                 "permit_join": bool(permit_join.get('ok')),
             },
         )
@@ -257,11 +291,11 @@ class DeviceMappingService:
             raise ValueError('session not found')
         started_at = parse_time(row['started_at'])
         elapsed_seconds = max((datetime.now(timezone.utc) - started_at).total_seconds(), 0)
+        timeout_seconds = int(row['timeout_seconds'] or DISCOVERY_TIMEOUT_SECONDS)
         if row['status'] == 'pairing_needs_manual_action':
             logger.info(
-                "Sentero discovery poll session=%s skipped status=pairing_needs_manual_action ha_url=%s",
+                "Sentero discovery poll session=%s skipped status=pairing_needs_manual_action",
                 session_id,
-                getattr(self.ha, 'base_url', ''),
             )
             return {
                 'session_id': session_id,
@@ -274,39 +308,98 @@ class DeviceMappingService:
             }
         detail = discovery_detail(row)
         mqtt_discovery = detail.get('mode') == 'mqtt_discovery'
+        require_new_device = discovery_requires_new_physical_device(row, detail)
         baseline = json.loads(row['baseline_snapshot_json'] or '[]')
         cached_candidate_snapshot = json.loads(row['candidate_snapshot_json'] or '[]')
         if row['status'] in {'found', 'signal_detected', 'completed', 'confirmed'} and cached_candidate_snapshot:
             current = cached_candidate_snapshot
         else:
             current = self._mqtt_snapshot() if mqtt_discovery else self.snapshot()
-        scored = score_candidates(baseline, current, row['target_role'], row['target_room'], row['started_at'], require_new=mqtt_discovery)
+        current_device_ids = stable_physical_device_ids(current)
+        baseline_device_ids = stable_physical_device_ids(baseline)
+        new_device_ids = current_device_ids - baseline_device_ids
+        self.sync_zigbee_inventory(current)
+        assigned_identities = self._assigned_sensor_identities()
+        if mqtt_discovery:
+            self._log_discovery_device_sets(int(session_id), baseline, current)
+        scored = score_candidates(
+            baseline,
+            current,
+            row['target_role'],
+            row['target_room'],
+            row['started_at'],
+            require_new=require_new_device,
+            assigned_identities=assigned_identities,
+            discovery_session=int(session_id),
+        )
         raw_changed_count = count_changed_entities(baseline, current, row['started_at'])
         changed_count = len(scored)
         best_scored = scored[0] if scored else None
         best = best_scored if best_scored and best_scored['confidence'] >= DISCOVERY_CONFIDENCE_THRESHOLD else None
-        timed_out = elapsed_seconds >= DISCOVERY_TIMEOUT_SECONDS
-        status = 'found' if best else 'no_signal_detected' if timed_out else 'waiting_for_signal'
+        requested_type = canonical_sensor_type(row['target_sensor_type'] or sensor_type_from_role(row['target_role']))
+        new_groups = grouped_physical_devices([item for item in current if stable_physical_device_id(item) in new_device_ids and is_zigbee2mqtt_entity(item)])
+        wrong_type_device = None
+        unsupported_device = None
+        interviewing_device = None
+        if require_new_device and not best:
+            for device_id, entities in new_groups.items():
+                inventory = self.inventory_device(device_id)
+                if inventory and str(inventory.get('lifecycle_status') or '') == 'ignored':
+                    self._log_pairing_decision(int(session_id), requested_type, None, inventory, 'ignored')
+                    continue
+                classification = classify_sensor_device(entities)
+                public_device = public_inventory_device(inventory or inventory_row_from_entities(device_id, entities, classification))
+                if classification.get('interview_status') == 'interviewing':
+                    interviewing_device = public_device
+                    continue
+                if classification.get('supported') and classification.get('detected_type') != requested_type:
+                    wrong_type_device = public_device
+                    self._log_pairing_decision(int(session_id), requested_type, str(classification.get('detected_type') or ''), inventory or public_device, 'wrong_type')
+                    break
+                if not classification.get('supported'):
+                    unsupported_device = public_device
+                    self._log_pairing_decision(int(session_id), requested_type, str(classification.get('detected_type') or ''), inventory or public_device, 'unsupported')
+                    break
+        timed_out = elapsed_seconds >= timeout_seconds
+        status = (
+            'found' if best
+            else 'wrong_type_found' if wrong_type_device
+            else 'unsupported_device_found' if unsupported_device
+            else 'waiting_for_signal' if interviewing_device and not timed_out
+            else 'no_signal_detected' if timed_out
+            else 'waiting_for_signal'
+        )
         message = (
             'Sensor-Signal erkannt.'
             if best
+            else wrong_type_message(requested_type, str((wrong_type_device or {}).get('detected_type') or 'sensor')) if wrong_type_device
+            else 'Dieses Gerät kann von Sentero derzeit nicht verwendet werden.' if unsupported_device
             else 'Wir konnten den Sensor nicht eindeutig erkennen. Bitte erneut versuchen.'
             if timed_out
             else 'Wir warten noch auf ein eindeutiges Sensorsignal.'
         )
         with self.connect() as con:
             con.execute(
-                '''update sensor_discovery_sessions set ended_at = ?, status = ?, candidate_snapshot_json = ? where id = ?''',
-                (now() if best or timed_out else None, status, json.dumps(current, ensure_ascii=False), session_id),
+                '''update sensor_discovery_sessions
+                   set ended_at = ?, status = ?, candidate_snapshot_json = ?,
+                       current_device_ids_json = ?, new_device_ids_json = ?
+                   where id = ?''',
+                (
+                    now() if best or timed_out else None,
+                    status,
+                    json.dumps(current, ensure_ascii=False),
+                    json.dumps(sorted(current_device_ids), ensure_ascii=False),
+                    json.dumps(sorted(new_device_ids), ensure_ascii=False),
+                    session_id,
+                ),
             )
             con.commit()
         stop_detail = None
-        if best or timed_out:
-            stop_detail = self.stop_zigbee_pairing(session_id=session_id, reason='found' if best else 'timeout')
+        if best or wrong_type_device or unsupported_device or timed_out:
+            stop_detail = self.stop_zigbee_pairing(session_id=session_id, reason='found' if best else status)
         logger.info(
-            "Sentero discovery poll session=%s ha_url=%s baseline_states=%s current_states=%s raw_changed=%s changed_entities=%s best=%s best_score=%s status=%s elapsed=%.1f",
+            "Sentero discovery poll session=%s baseline_states=%s current_states=%s raw_changed=%s changed_entities=%s best=%s best_score=%s status=%s elapsed=%.1f",
             session_id,
-            getattr(self.ha, 'base_url', ''),
             len(baseline),
             len(current),
             raw_changed_count,
@@ -342,8 +435,11 @@ class DeviceMappingService:
             'message': message,
             'candidate': candidate_public(best, dev) if best else None,
             'candidates': public_candidates,
+            'requested_type': requested_type if status in {'wrong_type_found', 'unsupported_device_found'} else None,
+            'detected_type': (wrong_type_device or unsupported_device or {}).get('detected_type'),
+            'device': wrong_type_device or unsupported_device or interviewing_device,
             'elapsed_seconds': elapsed_seconds,
-            'remaining_seconds': max(DISCOVERY_TIMEOUT_SECONDS - elapsed_seconds, 0),
+            'remaining_seconds': max(timeout_seconds - elapsed_seconds, 0),
             'changed_count': changed_count if dev else None,
             'current_state_count': len(current) if dev else None,
             'baseline_state_count': len(baseline) if dev else None,
@@ -359,8 +455,21 @@ class DeviceMappingService:
         baseline = json.loads(session['baseline_snapshot_json'] or '[]')
         detail = discovery_detail(session)
         mqtt_discovery = detail.get('mode') == 'mqtt_discovery'
+        require_new_device = discovery_requires_new_physical_device(session, detail)
         current = json.loads(session['candidate_snapshot_json'] or '[]') or (self._mqtt_snapshot() if mqtt_discovery else self.snapshot())
-        scored = score_candidates(baseline, current, session['target_role'], session['target_room'], session['started_at'], require_new=mqtt_discovery)
+        assigned_identities = self._assigned_sensor_identities()
+        if mqtt_discovery:
+            self._log_discovery_device_sets(int(session_id), baseline, current)
+        scored = score_candidates(
+            baseline,
+            current,
+            session['target_role'],
+            session['target_room'],
+            session['started_at'],
+            require_new=require_new_device,
+            assigned_identities=assigned_identities,
+            discovery_session=int(session_id),
+        )
         entity = next(
             (
                 item for item in scored
@@ -371,29 +480,68 @@ class DeviceMappingService:
         )
         if not entity:
             raise ValueError('entity does not match this pairing session')
+        requested_type = canonical_sensor_type(session['target_sensor_type'] or sensor_type_from_role(session['target_role']))
+        device_group = entities_for_same_physical_device(current, entity)
+        classification = classify_sensor_device(device_group or [entity])
+        detected_type = str(classification.get('detected_type') or '')
+        if classification.get('interview_status') == 'interviewing':
+            raise ValueError('Gerät wird noch erkannt. Bitte warten Sie einen Moment.')
+        if not classification.get('supported') or detected_type != requested_type:
+            self._log_pairing_decision(int(session_id), requested_type, detected_type or None, entity, 'confirm_rejected')
+            raise ValueError('Gerätetyp passt nicht zur ausgewählten Einrichtung.')
+        if require_new_device:
+            selected_device_id = stable_physical_device_id(entity)
+            baseline_device_ids = stable_physical_device_ids(baseline)
+            if not selected_device_id or selected_device_id in baseline_device_ids:
+                logger.warning(
+                    "Discovery confirm rejected baseline device",
+                    extra={
+                        "component": "wizard",
+                        "discovery_session": int(session_id),
+                        "selected_device_id": selected_device_id,
+                        "baseline_device_ids": sorted(baseline_device_ids),
+                    },
+                )
+                raise ValueError("Device existed before this discovery session and cannot be registered as a newly paired sensor.")
         attrs = entity.get('attributes') or {}
         target_room = str(room or session['target_room'] or '').strip() or None
         desired_name = str(name or '').strip() or attrs.get('friendly_name') or entity.get('friendly_name') or 'Sensor'
         source = str(entity.get('source') or entity.get('platform') or '').strip()
         mqtt_candidate = source in {'zigbee2mqtt', 'mqtt'} or bool(entity.get('source_ref') or entity.get('topic'))
-        metadata_detail = self._apply_home_assistant_metadata(entity, desired_name, target_room)
+        metadata_detail = self._apply_sensor_metadata(entity, desired_name, target_room)
         if mqtt_candidate and not metadata_detail.get('ok'):
             raise RuntimeError(str(metadata_detail.get('message') or metadata_detail.get('reason') or 'Sensor konnte nicht umbenannt werden.'))
         source_ref = str(metadata_detail.get('source_ref') or entity.get('source_ref') or entity.get('topic') or entity.get('entity_id') or entity_id).strip()
+        transport = str(session['target_transport'] or SensorTransport.ZIGBEE.value)
+        sensor_type = str(session['target_sensor_type'] or sensor_type_from_role(session['target_role']))
+        device_id = attrs.get('device_id') or entity.get('device_id')
+        primary_entity_id = str(entity.get('entity_id') or entity_id)
+        entity_ids = entity_ids_for_physical_device(current, entity)
         payload = {
             'role': session['target_role'],
             'room': target_room,
             'entity_id': source_ref if mqtt_candidate else str(entity.get('entity_id') or entity_id),
-            'device_id': attrs.get('device_id') or entity.get('device_id'),
+            'device_id': device_id,
             'friendly_name': desired_name,
             'device_class': attrs.get('device_class') or entity.get('device_class'),
             'domain': entity.get('domain') or (entity_id.split('.')[0] if '.' in entity_id else ''),
             'source': source or 'wizard',
             'confidence': 100,
+            'sensor_type': sensor_type,
+            'transport': transport,
+            'primary_entity_id': primary_entity_id,
+            'entity_ids': entity_ids,
+            'last_seen': latest_seen_for_entities(current, entity_ids),
         }
         role = self.upsert_role(payload)
+        self.upsert_sensor_device(payload)
+        if device_id:
+            self.set_inventory_status(str(device_id), 'mapped', mapped_role=session['target_role'])
         with self.connect() as con:
-            con.execute('update sensor_discovery_sessions set status = ?, selected_entity_id = ?, ended_at = ? where id = ?', ('confirmed', entity_id, now(), session_id))
+            con.execute(
+                'update sensor_discovery_sessions set status = ?, selected_entity_id = ?, selected_device_id = ?, ended_at = ? where id = ?',
+                ('confirmed', entity_id, stable_physical_device_id(entity) or entity.get('device_id'), now(), session_id),
+            )
             con.commit()
         logger.info(
             "Sentero discovery confirmed session=%s role=%s room=%s entity=%s device=%s name=%s metadata=%s",
@@ -410,6 +558,210 @@ class DeviceMappingService:
             response['metadata'] = metadata_detail
         return response
 
+    def find_unassigned_devices(self, sensor_type: str) -> list[dict[str, Any]]:
+        sensor_type = canonical_sensor_type(sensor_type)
+        try:
+            self.sync_zigbee_inventory(self._mqtt_snapshot())
+        except Exception:
+            logger.exception("Zigbee inventory sync before discovery failed", extra={"component": "device_mapping"})
+        with self.connect() as con:
+            rows = con.execute(
+                """select * from zigbee_device_inventory
+                   where lifecycle_status = 'unassigned'
+                     and supported = 1
+                     and detected_type = ?
+                   order by last_seen_at desc, first_seen_at desc""",
+                (sensor_type,),
+            ).fetchall()
+        return [public_inventory_device(dict(row)) for row in rows]
+
+    def unassigned_devices(self) -> list[dict[str, Any]]:
+        self.sync_zigbee_inventory(self._mqtt_snapshot())
+        with self.connect() as con:
+            rows = con.execute(
+                """select * from zigbee_device_inventory
+                   where lifecycle_status in ('unassigned', 'unsupported', 'ignored')
+                   order by updated_at desc"""
+            ).fetchall()
+        return [public_inventory_device(dict(row)) for row in rows]
+
+    def assign_unassigned_device(self, device_id: str, role: str, room: str | None, sensor_type: str, name: str | None = None, dev: bool = False) -> dict[str, Any]:
+        clean_id = str(device_id or '').strip()
+        requested_type = canonical_sensor_type(sensor_type or sensor_type_from_role(role))
+        current = self._mqtt_snapshot()
+        self.sync_zigbee_inventory(current)
+        group = [item for item in current if stable_physical_device_id(item) == clean_id]
+        if not group:
+            raise ValueError('Gerät wurde nicht gefunden.')
+        classification = classify_sensor_device(group)
+        if classification.get('interview_status') == 'interviewing':
+            raise ValueError('Gerät wird noch erkannt. Bitte warten Sie einen Moment.')
+        if not classification.get('supported') or classification.get('detected_type') != requested_type:
+            raise ValueError('Gerätetyp passt nicht zur ausgewählten Einrichtung.')
+        selected = sorted(group, key=lambda item: role_state_priority(role, item), reverse=True)[0]
+        target_room = str(room or '').strip() or None
+        desired_name = str(name or '').strip() or selected.get('friendly_name') or 'Sensor'
+        metadata_detail = self._apply_sensor_metadata(selected, desired_name, target_room)
+        source_ref = str(metadata_detail.get('source_ref') or selected.get('source_ref') or selected.get('topic') or selected.get('entity_id')).strip()
+        entity_ids = entity_ids_for_physical_device(current, selected)
+        payload = {
+            'role': role,
+            'room': target_room,
+            'entity_id': source_ref,
+            'device_id': clean_id,
+            'friendly_name': desired_name,
+            'device_class': selected.get('device_class'),
+            'domain': selected.get('domain') or '',
+            'source': selected.get('source') or selected.get('platform') or 'zigbee2mqtt',
+            'confidence': 100,
+            'sensor_type': requested_type,
+            'transport': SensorTransport.ZIGBEE.value,
+            'primary_entity_id': str(selected.get('entity_id') or source_ref),
+            'entity_ids': entity_ids,
+            'last_seen': latest_seen_for_entities(current, entity_ids),
+        }
+        role_row = self.upsert_role(payload)
+        self.upsert_sensor_device(payload)
+        self.set_inventory_status(clean_id, 'mapped', mapped_role=role)
+        self._log_pairing_decision(None, requested_type, requested_type, {**selected, **classification}, 'existing_unassigned')
+        return {'status': 'registered', 'role': role_row if dev else public_role(role_row)}
+
+    def ignore_unassigned_device(self, device_id: str) -> dict[str, Any]:
+        self.set_inventory_status(device_id, 'ignored')
+        row = self.inventory_device(device_id)
+        self._log_pairing_decision(None, None, str((row or {}).get('detected_type') or ''), row or {'device_id': device_id}, 'ignored')
+        return {'status': 'ignored', 'device': public_inventory_device(row or {'device_id': device_id, 'lifecycle_status': 'ignored'})}
+
+    def remove_zigbee_device_by_id(self, device_id: str) -> dict[str, Any]:
+        clean_id = str(device_id or '').strip()
+        if not clean_id:
+            raise ValueError('device_id required')
+        row = self.inventory_device(clean_id) or {'device_id': clean_id, 'entity_id': clean_id, 'source': 'zigbee2mqtt', 'identifiers': [['zigbee2mqtt', clean_id]]}
+        removal = self._remove_zigbee_device(row)
+        if not removal.get('ok'):
+            raise RuntimeError(str(removal.get('message') or 'Gerät konnte nicht entfernt werden.'))
+        with self.connect() as con:
+            con.execute('delete from zigbee_device_inventory where device_id = ?', (clean_id,))
+            con.commit()
+        self._log_pairing_decision(None, None, str(row.get('detected_type') or ''), row, 'removed')
+        return {'deleted': True, 'device_id': clean_id, 'removal': removal}
+
+    def inventory_device(self, device_id: str) -> dict[str, Any] | None:
+        with self.connect() as con:
+            row = con.execute('select * from zigbee_device_inventory where device_id = ?', (str(device_id or '').strip(),)).fetchone()
+        return dict(row) if row else None
+
+    def set_inventory_status(self, device_id: str, lifecycle_status: str, mapped_role: str | None = None) -> None:
+        clean_id = str(device_id or '').strip()
+        if not clean_id:
+            return
+        with self.connect() as con:
+            con.execute(
+                "update zigbee_device_inventory set lifecycle_status = ?, mapped_role = ?, updated_at = ? where device_id = ?",
+                (lifecycle_status, mapped_role, now(), clean_id),
+            )
+            con.commit()
+
+    def sync_zigbee_inventory(self, states: list[dict[str, Any]] | None = None) -> None:
+        states = states if states is not None else self._mqtt_snapshot()
+        groups = grouped_physical_devices(states)
+        if not groups:
+            return
+        mapped = self._mapped_roles_by_device_id()
+        timestamp = now()
+        with self.connect() as con:
+            for device_id, entities in groups.items():
+                if not any(is_zigbee2mqtt_entity(item) for item in entities):
+                    continue
+                classification = classify_sensor_device(entities)
+                row = con.execute('select lifecycle_status from zigbee_device_inventory where device_id = ?', (device_id,)).fetchone()
+                existing_status = str(row['lifecycle_status'] or '') if row else ''
+                role = mapped.get(device_id)
+                if role:
+                    lifecycle = 'mapped'
+                elif classification.get('interview_status') == 'interviewing':
+                    lifecycle = existing_status or 'unassigned'
+                elif classification.get('supported'):
+                    lifecycle = 'unassigned'
+                elif existing_status == 'ignored':
+                    lifecycle = 'ignored'
+                else:
+                    lifecycle = 'unsupported'
+                friendly = next((str(item.get('device_name') or item.get('original_name') or item.get('friendly_name') or '').strip() for item in entities if item.get('device_name') or item.get('original_name') or item.get('friendly_name')), device_id)
+                manufacturer = next((item.get('manufacturer') for item in entities if item.get('manufacturer')), None)
+                model = next((item.get('model') for item in entities if item.get('model')), None)
+                con.execute(
+                    """insert into zigbee_device_inventory
+                       (device_id, friendly_name, manufacturer, model, capabilities_json, detected_type, supported,
+                        interview_status, lifecycle_status, mapped_role, first_seen_at, last_seen_at, updated_at)
+                       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       on conflict(device_id) do update set
+                         friendly_name = excluded.friendly_name,
+                         manufacturer = excluded.manufacturer,
+                         model = excluded.model,
+                         capabilities_json = excluded.capabilities_json,
+                         detected_type = excluded.detected_type,
+                         supported = excluded.supported,
+                         interview_status = excluded.interview_status,
+                         lifecycle_status = excluded.lifecycle_status,
+                         mapped_role = excluded.mapped_role,
+                         last_seen_at = excluded.last_seen_at,
+                         updated_at = excluded.updated_at""",
+                    (
+                        device_id,
+                        friendly,
+                        manufacturer,
+                        model,
+                        json.dumps(classification.get('capabilities') or [], ensure_ascii=False, sort_keys=True),
+                        classification.get('detected_type'),
+                        1 if classification.get('supported') else 0,
+                        classification.get('interview_status') or 'completed',
+                        lifecycle,
+                        role,
+                        timestamp,
+                        latest_seen_for_entities(states, [str(item.get('entity_id') or '') for item in entities]) or timestamp,
+                        timestamp,
+                    ),
+                )
+            con.commit()
+
+    def _mapped_roles_by_device_id(self) -> dict[str, str]:
+        with self.connect() as con:
+            rows = con.execute('select role, device_id from sensor_roles where active = 1').fetchall()
+        return {str(row['device_id']).strip(): str(row['role']) for row in rows if str(row['device_id'] or '').strip()}
+
+    def _log_pairing_decision(self, session_id: int | None, requested_type: str | None, detected_type: str | None, device: dict[str, Any], decision: str) -> None:
+        logger.info(
+            "Zigbee pairing device decision",
+            extra={
+                "component": "wizard",
+                "pairing_session": session_id,
+                "requested_type": requested_type,
+                "detected_type": detected_type,
+                "device_id": device.get('device_id'),
+                "manufacturer": device.get('manufacturer'),
+                "model": device.get('model'),
+                "supported": device.get('supported'),
+                "interview_status": device.get('interview_status'),
+                "lifecycle_status": device.get('lifecycle_status'),
+                "decision": decision,
+            },
+        )
+
+    def _log_discovery_device_sets(self, session_id: int, baseline: list[dict[str, Any]], current: list[dict[str, Any]]) -> None:
+        baseline_device_ids = stable_physical_device_ids(baseline)
+        current_device_ids = stable_physical_device_ids(current)
+        logger.info(
+            "Discovery physical device sets",
+            extra={
+                "component": "wizard",
+                "discovery_session": session_id,
+                "baseline_device_ids": sorted(baseline_device_ids),
+                "current_device_ids": sorted(current_device_ids),
+                "new_device_ids": sorted(current_device_ids - baseline_device_ids),
+            },
+        )
+
     def cancel_discovery(self, session_id: int | None = None) -> dict[str, Any]:
         return self.stop_zigbee_pairing(session_id=session_id, reason='cancel')
 
@@ -423,16 +775,81 @@ class DeviceMappingService:
         if not role_candidate_matches(role, data, allow_missing_device_class=True):
             raise ValueError('entity does not match expected sensor class for role')
         timestamp = now()
+        entity_ids = data.get('entity_ids')
+        if not isinstance(entity_ids, list):
+            entity_ids = [data.get('primary_entity_id') or entity_id]
+        entity_ids_json = json.dumps([str(item) for item in entity_ids if item], ensure_ascii=False)
+        sensor_type = str(data.get('sensor_type') or sensor_type_from_role(role))
+        transport = normalize_transport(data.get('transport'), data.get('source'))
         with self.connect() as con:
             con.execute('update sensor_roles set active = 0, updated_at = ? where role = ?', (timestamp, role))
             con.execute(
                 '''insert into sensor_roles
-                   (role, room, entity_id, device_id, friendly_name, device_class, domain, source, confidence, active, created_at, updated_at)
-                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)''',
-                (role, data.get('room'), entity_id, data.get('device_id'), data.get('friendly_name'), data.get('device_class'), data.get('domain'), data.get('source'), float(data.get('confidence') or 0), timestamp, timestamp),
+                   (role, room, entity_id, device_id, friendly_name, device_class, domain, source, confidence,
+                    sensor_type, transport, primary_entity_id, entity_ids_json, last_seen, enabled, active, created_at, updated_at)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)''',
+                (
+                    role,
+                    data.get('room'),
+                    entity_id,
+                    data.get('device_id'),
+                    data.get('friendly_name'),
+                    data.get('device_class'),
+                    data.get('domain'),
+                    data.get('source'),
+                    float(data.get('confidence') or 0),
+                    sensor_type,
+                    transport,
+                    data.get('primary_entity_id') or entity_id,
+                    entity_ids_json,
+                    data.get('last_seen'),
+                    timestamp,
+                    timestamp,
+                ),
             )
             con.commit()
         return self.get_role(role, dev=True) or {}
+
+    def upsert_sensor_device(self, data: dict[str, Any]) -> dict[str, Any]:
+        primary_entity_id = str(data.get('primary_entity_id') or data.get('entity_id') or '').strip()
+        if not primary_entity_id:
+            raise ValueError('primary_entity_id required')
+        sensor_type = str(data.get('sensor_type') or sensor_type_from_role(str(data.get('role') or ''))).strip()
+        transport = normalize_transport(data.get('transport'), data.get('source'))
+        entity_ids = data.get('entity_ids')
+        if not isinstance(entity_ids, list):
+            entity_ids = [primary_entity_id]
+        entity_ids_json = json.dumps([str(item) for item in entity_ids if item], ensure_ascii=False)
+        timestamp = now()
+        device_id = str(data.get('device_id') or '').strip()
+        room_id = data.get('room')
+        with self.connect() as con:
+            if device_id:
+                con.execute('update sensor_devices set enabled = 0, updated_at = ? where room_id is ? and sensor_type = ? and enabled = 1', (timestamp, room_id, sensor_type))
+            else:
+                con.execute('update sensor_devices set enabled = 0, updated_at = ? where room_id is ? and sensor_type = ? and primary_entity_id = ? and enabled = 1', (timestamp, room_id, sensor_type, primary_entity_id))
+            cur = con.execute(
+                '''insert into sensor_devices
+                   (room_id, sensor_type, transport, device_id, primary_entity_id, entity_ids_json,
+                    friendly_name, connected_at, last_seen, enabled, created_at, updated_at)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)''',
+                (
+                    room_id,
+                    sensor_type,
+                    transport,
+                    device_id or None,
+                    primary_entity_id,
+                    entity_ids_json,
+                    data.get('friendly_name'),
+                    timestamp,
+                    data.get('last_seen'),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            con.commit()
+            device_row = con.execute('select * from sensor_devices where id = ?', (int(cur.lastrowid),)).fetchone()
+        return dict(device_row) if device_row else {}
 
     def get_role(self, role: str, dev: bool = False) -> dict[str, Any] | None:
         with self.connect() as con:
@@ -447,8 +864,8 @@ class DeviceMappingService:
         if not mapped:
             raise ValueError('sensor role not found')
         source = str(mapped.get('source') or '').strip()
-        zigbee_sensor = source == 'zigbee2mqtt' or str(mapped.get('entity_id') or '').startswith('zigbee2mqtt/')
-        esp32_sensor = source == 'mqtt' and not zigbee_sensor
+        zigbee_sensor = is_zigbee2mqtt_mapping(mapped)
+        esp32_sensor = is_esp32_mqtt_mapping(mapped) and not zigbee_sensor
         if local_only:
             removal = {
                 'ok': True,
@@ -632,7 +1049,7 @@ class DeviceMappingService:
             'device_id': mapped.get('device_id'),
             'domain': mapped.get('domain') or entity_id.split('.')[0],
         }
-        metadata = self._apply_home_assistant_metadata(entity, clean_name, mapped.get('room'))
+        metadata = self._apply_sensor_metadata(entity, clean_name, mapped.get('room'))
         timestamp = now()
         with self.connect() as con:
             con.execute(
@@ -674,40 +1091,19 @@ class DeviceMappingService:
         resolved_state = resolve_role_state(mapped, states, by_entity)
         if not resolved_state and self.uses_mqtt_source():
             resolved_state = self._cached_discovery_state(mapped)
-        identify = find_identify_entity(states, device_id, entity_id) if not self.uses_mqtt_source() else None
-        if identify:
-            try:
-                response = self.ha.call_service('button', 'press', {'entity_id': identify['entity_id']})
-                logger.info(
-                    "Sentero sensor test identify role=%s entity=%s identify_entity=%s device=%s",
-                    role,
-                    entity_id,
-                    identify.get('entity_id'),
-                    device_id,
-                )
-                return {
-                    'ok': True,
-                    'mode': 'identify',
-                    'message': 'Sensor wurde identifiziert.',
-                    'entity_id': identify.get('entity_id'),
-                    'response': response,
-                }
-            except Exception as exc:
-                logger.info(
-                    "Sentero sensor test identify failed role=%s entity=%s identify_entity=%s device=%s error=%s",
-                    role,
-                    entity_id,
-                    identify.get('entity_id'),
-                    device_id,
-                    exc,
-                )
         device_entities = [item for item in states if device_id and str(item.get('device_id') or '') == device_id]
         if not device_entities:
             device_entities = [item for item in states if str(item.get('entity_id') or '') == entity_id]
         if resolved_state and resolved_state not in device_entities:
             device_entities.append(resolved_state)
         usable_entities = [item for item in device_entities if testable_state_entity(item)]
-        reachable = [item for item in usable_entities if state_is_reachable(item.get('state')) or sensor_reachable_status(item) is True]
+        stale_entities = [item for item in device_entities if presence_live_state_is_stale(mapped, item)]
+        unreachable_stale_entities = [item for item in device_entities if presence_live_state_is_unreachable(mapped, item)]
+        reachable = [
+            item for item in usable_entities
+            if not presence_live_state_is_unreachable(mapped, item)
+            and (state_is_reachable(item.get('state')) or sensor_reachable_status(item) is True)
+        ]
         if not reachable:
             logger.info(
                 "Sentero sensor test unreachable role=%s entity=%s device=%s device_entities=%s usable_entities=%s",
@@ -720,9 +1116,10 @@ class DeviceMappingService:
             return {
                 'ok': False,
                 'mode': 'state_check',
-                'message': 'Sensor ist aktuell nicht erreichbar.',
+                'message': 'Sensor meldet seit längerer Zeit keine neuen Daten.' if unreachable_stale_entities else 'Sensor ist aktuell nicht erreichbar.',
                 'entity_id': entity_id,
                 'entity_count': len(device_entities),
+                'stale': bool(stale_entities),
             }
         primary = next((item for item in reachable if str(item.get('entity_id') or '') == entity_id), reachable[0])
         logger.info(
@@ -740,6 +1137,7 @@ class DeviceMappingService:
             'entity_id': primary.get('entity_id'),
             'state': primary.get('state'),
             'entity_count': len(device_entities),
+            'stale': presence_live_state_is_stale(mapped, primary),
         }
 
     def _remove_zigbee_device(self, mapped: dict[str, Any]) -> dict[str, Any]:
@@ -750,29 +1148,21 @@ class DeviceMappingService:
         except Exception:
             logger.exception("Zigbee2MQTT remove snapshot failed", extra={"component": "device_mapping", "source_ref": entity_id, "device_id": device_id})
             states = []
-        device_entities = [item for item in states if device_id and str(item.get('device_id') or '') == device_id]
-        if not device_entities:
-            mapped_identities = mqtt_identity_values(mapped)
-            device_entities = [item for item in states if mapped_identities.intersection(mqtt_identity_values(item))]
-        identifiers = []
+        mapped_identities = mqtt_identity_values(mapped)
+        device_entities = []
+        for item in states:
+            item_entity_id = str(item.get('entity_id') or '').strip()
+            same_device = bool(device_id and str(item.get('device_id') or '').strip() == device_id)
+            same_entity = bool(entity_id and item_entity_id == entity_id)
+            same_identity = bool(mapped_identities and mapped_identities.intersection(mqtt_identity_values(item)))
+            if same_device or same_entity or same_identity:
+                device_entities.append(item)
+        identifiers = parse_identifiers(mapped.get('identifiers'))
         for item in device_entities:
             identifiers.extend(parse_identifiers(item.get('identifiers')))
-        ieee = first_identifier_value(identifiers, {'zha'})
         mqtt_ids = zigbee2mqtt_identifiers(identifiers, [mapped, *device_entities])
         attempts: list[dict[str, Any]] = []
         for provider in zigbee_provider_order():
-            if self.uses_mqtt_source() and provider == 'zha':
-                continue
-            if provider == 'zha':
-                if not ieee:
-                    continue
-                try:
-                    response = self.ha.call_service('zha', 'remove', {'ieee': ieee})
-                    return {'ok': True, 'provider': 'zha', 'ieee': ieee, 'response': response, 'attempts': attempts}
-                except Exception as exc:
-                    attempts.append({'provider': 'zha', 'ieee': ieee, 'error': str(exc)})
-                    logger.warning("Device remove attempt failed", extra={"component": "device_mapping", "provider": "zha", "device_id": device_id, "source_ref": entity_id})
-                continue
             if provider == 'zigbee2mqtt':
                 try:
                     permit_join = self._disable_zigbee2mqtt_permit_join_confirmed(reason='remove', device_id=device_id or None)
@@ -816,7 +1206,7 @@ class DeviceMappingService:
         try:
             states = self.snapshot()
         except Exception:
-            logger.exception("Sentero sensor state refresh failed. ha_url=%s", getattr(self.ha, 'base_url', ''))
+            logger.exception("Sentero sensor state refresh failed")
             return [{**row, 'reachable': False, 'state': None, 'last_changed': None, 'last_updated': None, 'battery_level': None} for row in rows]
         by_entity = {str(item.get('entity_id') or ''): item for item in states}
         result = []
@@ -830,10 +1220,48 @@ class DeviceMappingService:
             availability = find_mqtt_availability_state({**row, **(state or {})}, states)
             if availability is not None:
                 reachable = availability
-            battery_entity = find_battery_entity(dict(row), states) or find_battery_entity(state or {}, states)
-            battery_level = parse_battery(battery_entity.get('state')) if battery_entity else battery_level_from_state(state)
-            power_source = power_source_from_state(state)
-            c1001_telemetry = c1001_telemetry_from_state(state)
+            telemetry_state = combined_mqtt_telemetry_state(dict(row), state, states)
+            if reachable is None and mqtt_item_has_telemetry(telemetry_state):
+                reachable = True
+            stale = mqtt_state_is_health_stale(dict(row), telemetry_state)
+            stale_seconds = sensor_state_age_seconds(telemetry_state) if stale else None
+            stale_unreachable = mqtt_state_is_health_unreachable(dict(row), telemetry_state)
+            # An explicit Zigbee2MQTT `availability` signal is authoritative and
+            # must not be overridden by the timestamp-based staleness fallback.
+            # The fallback exists only for devices/setups without a working
+            # availability topic; without this guard, a presence sensor that is
+            # confirmed "online" but simply had no motion to report would still
+            # be flagged unreachable after just 15 minutes of inactivity.
+            if stale_unreachable and availability is None:
+                reachable = False
+            direct_battery_level = battery_level_from_state(telemetry_state)
+            battery_entity = find_battery_entity(dict(row), states) if direct_battery_level is None else None
+            battery_level = direct_battery_level if direct_battery_level is not None else parse_battery(battery_entity.get('state')) if battery_entity else None
+            power_source = power_source_from_state(telemetry_state)
+            environmental = environmental_metrics_from_state({**dict(row), **(telemetry_state or {})}, states)
+            # Same reasoning as the reachable/availability guard above: the
+            # presence-specific 5-minute staleness TTL exists only as a fallback
+            # for devices without a working availability topic. A confirmed
+            # `online` device that simply has nothing new to report (no motion
+            # change) must keep showing its last known presence/motion value
+            # instead of being blanked to "unknown" every few minutes.
+            confirmed_online = availability is True
+            live_telemetry_state = None if (stale and not confirmed_online) else telemetry_state
+            c1001_telemetry = c1001_telemetry_from_state(live_telemetry_state)
+            generic_presence = generic_presence_telemetry_from_state(dict(row), live_telemetry_state, states if (not stale or confirmed_online) else [])
+            data_age_seconds = sensor_state_age_seconds(telemetry_state)
+            soft_warning_threshold_seconds = soft_stale_warning_threshold_seconds(dict(row))
+            stale_warning = (
+                reachable is not False
+                and data_age_seconds is not None
+                and data_age_seconds > soft_warning_threshold_seconds
+            )
+            motion = c1001_telemetry.get('motion') if c1001_telemetry.get('motion') is not None else generic_presence.get('motion')
+            motion_state = motion_state_from_state(live_telemetry_state)
+            explicit_presence = c1001_telemetry.get('presence')
+            inferred_presence = generic_presence.get('presence')
+            presence = effective_presence_value(explicit_presence, inferred_presence, motion_state, motion)
+            smoke = smoke_value_from_state(live_telemetry_state)
             logger.debug(
                 "Sensor health resolved",
                 extra={
@@ -846,9 +1274,16 @@ class DeviceMappingService:
                     "battery_entity": battery_entity.get('entity_id') if battery_entity else None,
                     "battery_level": battery_level,
                     "power_source": power_source,
-                    "presence": c1001_telemetry.get('presence'),
+                    "temperature": environmental.get('temperature'),
+                    "humidity": environmental.get('humidity'),
+                    "illuminance": environmental.get('illuminance'),
+                    "presence": presence,
                     "fall_detected": c1001_telemetry.get('fall_detected'),
-                    "motion": c1001_telemetry.get('motion'),
+                    "motion": motion,
+                    "motion_state": motion_state,
+                    "smoke": smoke,
+                    "stale": stale,
+                    "stale_seconds": stale_seconds,
                 },
             )
             result.append({
@@ -869,9 +1304,18 @@ class DeviceMappingService:
                 'last_updated': state.get('last_updated') if state else None,
                 'battery_level': battery_level,
                 'power_source': power_source,
-                'presence': c1001_telemetry.get('presence'),
+                'temperature': environmental.get('temperature'),
+                'humidity': environmental.get('humidity'),
+                'illuminance': environmental.get('illuminance'),
+                'presence': presence,
                 'fall_detected': c1001_telemetry.get('fall_detected'),
-                'motion': c1001_telemetry.get('motion'),
+                'motion': motion,
+                'motion_state': motion_state,
+                'smoke': smoke,
+                'stale': stale,
+                'stale_seconds': stale_seconds,
+                'data_age_seconds': data_age_seconds,
+                'stale_warning': stale_warning,
                 'hp_led': c1001_telemetry.get('hp_led'),
                 'fall_led': c1001_telemetry.get('fall_led'),
                 'led_status': c1001_telemetry.get('led_status'),
@@ -910,39 +1354,24 @@ class DeviceMappingService:
         return None
 
     def snapshot(self) -> list[dict[str, Any]]:
-        if self.uses_mqtt_source():
-            return [normalize_snapshot_item(item) for item in self.sensor_source.snapshot()]
-        states = self.ha.get_states()
-        entity_registry = self._entity_registry_by_entity_id()
-        device_registry = self._device_registry_by_id()
-        result = []
-        for item in states:
-            entity_id = str(item.get('entity_id') or '')
-            attrs = item.get('attributes') or {}
-            registry = entity_registry.get(entity_id, {})
-            device_id = registry.get('device_id') or attrs.get('device_id')
-            device = device_registry.get(str(device_id or ''), {})
-            result.append({
-                'entity_id': entity_id,
-                'domain': entity_id.split('.')[0] if '.' in entity_id else '',
-                'state': item.get('state'),
-                'friendly_name': attrs.get('friendly_name'),
-                'device_class': attrs.get('device_class'),
-                'unit': attrs.get('unit_of_measurement'),
-                'unit_of_measurement': attrs.get('unit_of_measurement'),
-                'device_id': device_id,
-                'area_id': registry.get('area_id') or device.get('area_id'),
-                'platform': registry.get('platform'),
-                'unique_id': registry.get('unique_id'),
-                'original_name': registry.get('original_name'),
-                'device_name': device.get('name_by_user') or device.get('name'),
-                'manufacturer': device.get('manufacturer'),
-                'model': device.get('model'),
-                'identifiers': device.get('identifiers'),
-                'last_changed': item.get('last_changed'),
-                'last_updated': item.get('last_updated'),
-            })
-        return result
+        local_rows = self._local_ecotracker_snapshot()
+        mqtt_rows = [normalize_snapshot_item(item) for item in self.sensor_source.snapshot()]
+        return [*local_rows, *mqtt_rows]
+
+    def _local_ecotracker_snapshot(self) -> list[dict[str, Any]]:
+        try:
+            with self.connect() as con:
+                row = con.execute("select host, enabled from ecotracker_settings where id = 1").fetchone()
+        except sqlite3.OperationalError:
+            return []
+        if not row or not bool(row["enabled"]) or not str(row["host"] or "").strip():
+            return []
+        try:
+            payload = EcoTrackerClient(str(row["host"])).read()
+        except Exception:
+            logger.exception("EcoTracker local snapshot failed", extra={"component": "device_mapping", "source": "ecotracker"})
+            return []
+        return [normalize_snapshot_item(item) for item in ecotracker_snapshot_rows(str(row["host"]), payload)]
 
     def _mqtt_snapshot(self) -> list[dict[str, Any]]:
         sources = getattr(self.sensor_source, 'sources', None)
@@ -957,32 +1386,19 @@ class DeviceMappingService:
             return rows
         return [normalize_snapshot_item(item) for item in self.sensor_source.snapshot()]
 
+    def _assigned_sensor_identities(self) -> set[str]:
+        with self.connect() as con:
+            rows = con.execute('select * from sensor_roles where active = 1').fetchall()
+        identities: set[str] = set()
+        for row in rows:
+            identities.update(mqtt_identity_values(dict(row)))
+        return identities
+
     def uses_mqtt_source(self) -> bool:
-        return self.source_mode in {'mqtt', 'zigbee2mqtt', 'z2m', 'mixed'}
+        return True
 
     def _mqtt_publish(self, topic: str, payload: Any) -> dict[str, Any]:
-        try:
-            return self.mqtt.publish(topic, payload)
-        except Exception as direct_exc:
-            if self.source_mode not in {'homeassistant', 'mixed'}:
-                raise
-            try:
-                response = self.ha.call_service(
-                    'mqtt',
-                    'publish',
-                    {
-                        'topic': topic,
-                        'payload': json.dumps(payload, ensure_ascii=False),
-                    },
-                )
-                logger.info(
-                    "MQTT publish sent through Home Assistant",
-                    extra={"component": "mqtt", "topic": topic, "sensor_source": self.source_mode},
-                )
-                return {'ok': True, 'provider': 'homeassistant_mqtt', 'topic': topic, 'payload': payload, 'response': response}
-            except Exception:
-                logger.exception("MQTT publish failed through direct MQTT and Home Assistant", extra={"component": "mqtt", "topic": topic})
-                raise direct_exc
+        return self.mqtt.publish(topic, payload)
 
     def _zigbee2mqtt_topic(self, suffix: str) -> str:
         prefix = os.getenv('SENTERO_ZIGBEE2MQTT_TOPIC_PREFIX') or os.getenv('ZIGBEE2MQTT_TOPIC_PREFIX') or config_str('mqtt.topic_prefix', '') or config_str('mqtt.zigbee2mqtt_topic_prefix', 'zigbee2mqtt') or 'zigbee2mqtt'
@@ -990,103 +1406,21 @@ class DeviceMappingService:
         clean_suffix = str(suffix or '').strip().strip('/')
         return f'{clean_prefix}/{clean_suffix}' if clean_suffix else clean_prefix
 
-    def _entity_registry_by_entity_id(self) -> dict[str, dict[str, Any]]:
-        try:
-            response = self.ha.websocket_command({'type': 'config/entity_registry/list'}, timeout=12)
-            rows = registry_result_list(response)
-        except Exception as exc:
-            logger.warning("HA entity registry unavailable", extra={"component": "homeassistant", "ha_url": getattr(self.ha, 'base_url', '')})
-            return {}
-        return {str(item.get('entity_id') or ''): item for item in rows if item.get('entity_id')}
-
-    def _device_registry_by_id(self) -> dict[str, dict[str, Any]]:
-        try:
-            response = self.ha.websocket_command({'type': 'config/device_registry/list'}, timeout=12)
-            rows = registry_result_list(response)
-        except Exception as exc:
-            logger.warning("HA device registry unavailable", extra={"component": "homeassistant", "ha_url": getattr(self.ha, 'base_url', '')})
-            return {}
-        return {str(item.get('id') or ''): item for item in rows if item.get('id')}
-
-    def _area_registry(self) -> list[dict[str, Any]]:
-        try:
-            response = self.ha.websocket_command({'type': 'config/area_registry/list'}, timeout=12)
-            return registry_result_list(response)
-        except Exception as exc:
-            logger.warning("HA area registry unavailable", extra={"component": "homeassistant", "ha_url": getattr(self.ha, 'base_url', '')})
-            return []
-
-    def _ensure_home_assistant_area(self, room: str | None) -> str | None:
-        if not room:
-            return None
-        wanted = normalize(room)
-        terms = {wanted, *[normalize(term) for term in ROOM_TERMS.get(room, [room])]}
-        for area in self._area_registry():
-            area_id = str(area.get('area_id') or area.get('id') or '')
-            name = str(area.get('name') or '')
-            if normalize(area_id) in terms or normalize(name) in terms:
-                return area_id
-        label = ROOM_LABELS.get(room) or str(room).replace('_', ' ').strip().title()
-        try:
-            response = assert_ha_success(self.ha.websocket_command({'type': 'config/area_registry/create', 'name': label}, timeout=12))
-            result = response.get('result') if isinstance(response, dict) else None
-            if isinstance(result, dict):
-                return result.get('area_id') or result.get('id')
-        except Exception as exc:
-            logger.warning("HA area create failed", extra={"component": "homeassistant", "room_id": room})
-        return None
-
-    def _apply_home_assistant_metadata(self, entity: dict[str, Any], name: str, room: str | None) -> dict[str, Any]:
+    def _apply_sensor_metadata(self, entity: dict[str, Any], name: str, room: str | None) -> dict[str, Any]:
         entity_id = str(entity.get('entity_id') or '').strip()
         device_id = str(entity.get('device_id') or '').strip()
-        if self.uses_mqtt_source():
-            rename = self._rename_zigbee2mqtt_device(entity, name)
-            return {
-                'entity_id': entity_id,
-                'device_id': device_id or None,
-                'name': name,
-                'room': room,
-                'updated': ['zigbee2mqtt'] if rename.get('ok') else [],
-                'ok': bool(rename.get('ok')),
-                'source_ref': rename.get('source_ref') or entity.get('source_ref') or entity.get('topic') or entity_id,
-                'zigbee2mqtt': rename,
-            }
-        area_id = self._ensure_home_assistant_area(room)
-        detail: dict[str, Any] = {'entity_id': entity_id, 'device_id': device_id or None, 'name': name, 'room': room, 'area_id': area_id, 'updated': []}
-        if not entity_id:
-            detail['ok'] = False
-            detail['reason'] = 'missing_entity_id'
-            return detail
-        if device_id and (area_id or name):
-            payload: dict[str, Any] = {'type': 'config/device_registry/update', 'device_id': device_id}
-            if area_id:
-                payload['area_id'] = area_id
-            if name:
-                payload['name_by_user'] = name
-            try:
-                assert_ha_success(self.ha.websocket_command(payload, timeout=12))
-                detail['updated'].append('device_registry')
-            except Exception as exc:
-                detail.setdefault('errors', []).append({'target': 'device_registry', 'error': str(exc)})
-                logger.warning("HA device metadata update failed", extra={"component": "homeassistant", "device_id": device_id, "source_ref": entity_id, "room_id": area_id})
-        payload = {'type': 'config/entity_registry/update', 'entity_id': entity_id}
-        if name:
-            payload['name'] = name
-        if area_id:
-            payload['area_id'] = area_id
-        try:
-            assert_ha_success(self.ha.websocket_command(payload, timeout=12))
-            detail['updated'].append('entity_registry')
-        except Exception as exc:
-            detail.setdefault('errors', []).append({'target': 'entity_registry', 'error': str(exc)})
-            logger.warning("HA entity metadata update failed", extra={"component": "homeassistant", "source_ref": entity_id, "room_id": area_id})
-        zigbee2mqtt_rename = self._rename_zigbee2mqtt_device(entity, name)
-        if zigbee2mqtt_rename.get('ok'):
-            detail['updated'].append('zigbee2mqtt')
-        elif zigbee2mqtt_rename.get('reason') != 'no_zigbee2mqtt_id':
-            detail.setdefault('errors', []).append({'target': 'zigbee2mqtt', 'error': zigbee2mqtt_rename})
-        detail['ok'] = bool(detail['updated'])
-        return detail
+        rename = self._rename_zigbee2mqtt_device(entity, name)
+        return {
+            'entity_id': entity_id,
+            'device_id': device_id or None,
+            'name': name,
+            'room': room,
+            'updated': ['zigbee2mqtt'] if rename.get('ok') else [],
+            'ok': True,
+            'rename_optional': True,
+            'source_ref': rename.get('source_ref') or entity.get('source_ref') or entity.get('topic') or entity_id,
+            'zigbee2mqtt': rename,
+        }
 
     def _rename_zigbee2mqtt_device(self, entity: dict[str, Any], name: str) -> dict[str, Any]:
         clean_name = str(name or '').strip()
@@ -1101,7 +1435,7 @@ class DeviceMappingService:
         try:
             response = self._zigbee2mqtt_request(
                 'device/rename',
-                {'from': source_id, 'to': clean_name, 'homeassistant_rename': not self.uses_mqtt_source()},
+                {'from': source_id, 'to': clean_name},
                 lambda payload: z2m_rename_response_matches(payload, source_id, clean_name),
             )
             source_ref = self._zigbee2mqtt_topic(clean_name)
@@ -1118,8 +1452,12 @@ class DeviceMappingService:
             "Zigbee2MQTT request",
             extra={"component": "device_mapping", "topic": request_topic, "action": action, "payload": payload},
         )
-        response = self.mqtt.request_response(request_topic, response_topic, payload, timeout=8.0, response_filter=response_filter)
-        response_payload = response.payload if isinstance(response.payload, dict) else {}
+        try:
+            response = self.mqtt.request_response(request_topic, response_topic, payload, timeout=8.0, response_filter=response_filter)
+            response_payload = response.payload if isinstance(response.payload, dict) else {}
+        except Exception:
+            logger.exception("Zigbee2MQTT request failed", extra={"component": "device_mapping", "action": action, "topic": request_topic})
+            raise
         if response_payload.get('status') != 'ok':
             message = str(response_payload.get('error') or response_payload or 'Zigbee2MQTT request failed')
             logger.warning("Zigbee2MQTT request not confirmed", extra={"component": "device_mapping", "action": action, "response": response_payload})
@@ -1173,17 +1511,6 @@ class DeviceMappingService:
     def _open_zigbee_permit_join(self, duration: int) -> dict[str, Any]:
         attempts: list[dict[str, Any]] = []
         for provider in zigbee_provider_order():
-            if self.uses_mqtt_source() and provider == 'zha':
-                continue
-            if provider == 'zha':
-                try:
-                    response = self.ha.call_service('zha', 'permit', {'duration': duration})
-                    logger.info("Zigbee pairing started", extra={"component": "wizard", "provider": "zha", "duration": duration})
-                    return {'ok': True, 'provider': 'zha', 'duration': duration, 'response': response, 'attempts': attempts}
-                except Exception as exc:
-                    attempts.append({'provider': 'zha', 'error': str(exc)})
-                    logger.warning("Zigbee permit_join failed", extra={"component": "wizard", "provider": "zha", "duration": duration})
-                continue
             if provider == 'zigbee2mqtt':
                 try:
                     response = self._mqtt_publish(
@@ -1195,7 +1522,7 @@ class DeviceMappingService:
                 except Exception as exc:
                     attempts.append({'provider': 'zigbee2mqtt', 'error': str(exc)})
                     logger.warning("Zigbee permit_join failed", extra={"component": "wizard", "provider": "zigbee2mqtt", "duration": duration})
-        return {'ok': False, 'reason': 'zigbee_pairing_unavailable', 'message': 'Zigbee-Anlernen nicht verfuegbar', 'attempts': attempts}
+        return {'ok': False, 'provider': 'zigbee2mqtt', 'reason': 'zigbee_pairing_unavailable', 'message': 'Zigbee-Anlernen nicht verfuegbar', 'attempts': attempts}
 
     def stop_zigbee_pairing(self, session_id: int | None = None, reason: str = 'stop') -> dict[str, Any]:
         attempts: list[dict[str, Any]] = []
@@ -1207,9 +1534,9 @@ class DeviceMappingService:
                     raise ValueError('session not found')
                 detail = discovery_detail(row)
         provider = str(detail.get('provider') or '').strip()
-        providers = [provider] if provider in {'zigbee2mqtt', 'zha', 'homeassistant'} else zigbee_provider_order()
+        providers = [provider] if provider == 'zigbee2mqtt' else zigbee_provider_order()
         for candidate_provider in providers:
-            if candidate_provider in {'zigbee2mqtt', 'homeassistant'}:
+            if candidate_provider == 'zigbee2mqtt':
                 try:
                     payload = zigbee2mqtt_permit_join_payloads(False)[0]
                     logger.debug(
@@ -1236,19 +1563,11 @@ class DeviceMappingService:
                         extra={"component": "wizard", "provider": "zigbee2mqtt", "session_id": session_id, "reason": reason},
                     )
                 continue
-            if candidate_provider == 'zha':
-                try:
-                    response = self.ha.call_service('zha', 'permit', {'duration': 0})
-                    logger.info("Zigbee pairing stopped", extra={"component": "wizard", "provider": "zha", "session_id": session_id, "reason": reason})
-                    return {'ok': True, 'provider': 'zha', 'reason': reason, 'response': response, 'attempts': attempts}
-                except Exception as exc:
-                    attempts.append({'provider': 'zha', 'error': str(exc)})
-                    logger.warning("Permit Join konnte nicht deaktiviert werden", extra={"component": "wizard", "provider": "zha", "session_id": session_id, "reason": reason})
         return {'ok': False, 'reason': 'permit_join_stop_failed', 'attempts': attempts}
 
 
 def sensor_source_mode() -> str:
-    return (os.getenv('SENTERO_SENSOR_SOURCE') or config_str('sensor_sources.source', 'homeassistant') or 'homeassistant').strip().lower()
+    return 'mqtt'
 
 
 def normalize_snapshot_item(item: Any) -> dict[str, Any]:
@@ -1307,11 +1626,15 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     for statement in [
         "alter table trusted_contacts add column phone text",
         "alter table trusted_contacts add column telegram_chat_id text",
+        "alter table trusted_contacts add column telegram_invite_code text",
+        "alter table trusted_contacts add column telegram_linked_at text",
         "alter table trusted_contacts add column whatsapp_phone_number text",
         "alter table trusted_contacts add column preferred_channels text not null default '[\"email\"]'",
         "alter table trusted_contacts add column notification_enabled integer not null default 1",
         "alter table trusted_contacts add column primary_contact integer not null default 0",
         "alter table trusted_contacts add column actor_role text not null default 'relative'",
+        "alter table trusted_contacts add column email_queries_enabled integer not null default 0",
+        "alter table trusted_contacts add column email_permissions text not null default '[]'",
     ]:
         try:
             con.execute(statement)
@@ -1328,6 +1651,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     )''')
     con.execute('''create table if not exists notification_logs (
         id integer primary key autoincrement,
+        incident_key text,
         contact_id integer,
         channel text not null,
         severity text not null,
@@ -1336,6 +1660,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         error_message text,
         data_class text not null default 'health_adjacent',
         aggregation_level text not null default 'summary',
+        outgoing_message_id text,
         created_at text not null
     )''')
     try:
@@ -1344,6 +1669,14 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         pass
     try:
         con.execute("alter table notification_logs add column aggregation_level text not null default 'summary'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        con.execute("alter table notification_logs add column outgoing_message_id text")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        con.execute("alter table notification_logs add column incident_key text")
     except sqlite3.OperationalError:
         pass
     con.execute('''create table if not exists data_consents (
@@ -1361,13 +1694,34 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     con.execute('create index if not exists idx_data_consents_contact_purpose on data_consents(contact_id, purpose, revoked_at)')
     con.execute('''create table if not exists system_warning_state (
         warning_key text primary key,
+        incident_key text,
+        category text,
+        subject_id text,
         status text not null,
+        severity text,
         first_seen_at text not null,
         last_seen_at text not null,
         last_sent_at text,
+        last_notified_severity text,
         resolved_at text,
+        consecutive_healthy_checks integer not null default 0,
+        reminder_count integer not null default 0,
         payload_json text not null default '{}'
     )''')
+    for statement in [
+        "alter table system_warning_state add column incident_key text",
+        "alter table system_warning_state add column category text",
+        "alter table system_warning_state add column subject_id text",
+        "alter table system_warning_state add column severity text",
+        "alter table system_warning_state add column last_notified_severity text",
+        "alter table system_warning_state add column consecutive_healthy_checks integer not null default 0",
+        "alter table system_warning_state add column reminder_count integer not null default 0",
+    ]:
+        try:
+            con.execute(statement)
+        except sqlite3.OperationalError:
+            pass
+    con.execute("update system_warning_state set incident_key = warning_key where incident_key is null or trim(incident_key) = ''")
     con.execute('''create table if not exists sentero_users (
         id integer primary key autoincrement,
         email text not null unique,
@@ -1405,11 +1759,63 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     )''')
     con.execute('create index if not exists idx_sentero_password_reset_tokens_hash on sentero_password_reset_tokens(token_hash)')
     con.execute('''create table if not exists sensor_roles (id integer primary key autoincrement, role text not null, room text, entity_id text not null, device_id text, friendly_name text, device_class text, domain text, source text, confidence real, active integer not null default 1, created_at text not null, updated_at text not null)''')
+    for statement in [
+        "alter table sensor_roles add column sensor_type text",
+        "alter table sensor_roles add column transport text",
+        "alter table sensor_roles add column primary_entity_id text",
+        "alter table sensor_roles add column entity_ids_json text",
+        "alter table sensor_roles add column last_seen text",
+        "alter table sensor_roles add column enabled integer not null default 1",
+    ]:
+        try:
+            con.execute(statement)
+        except sqlite3.OperationalError:
+            pass
     con.execute('create unique index if not exists idx_sensor_roles_active_role on sensor_roles(role) where active = 1')
+    con.execute('''create table if not exists sensor_devices (
+        id integer primary key autoincrement,
+        room_id text,
+        sensor_type text not null,
+        transport text not null,
+        device_id text,
+        primary_entity_id text not null,
+        entity_ids_json text not null,
+        friendly_name text,
+        connected_at text not null,
+        last_seen text,
+        enabled integer not null default 1,
+        created_at text not null,
+        updated_at text not null
+    )''')
+    con.execute('create index if not exists idx_sensor_devices_room_type on sensor_devices(room_id, sensor_type)')
+    con.execute('create index if not exists idx_sensor_devices_device_id on sensor_devices(device_id)')
+    con.execute('''create table if not exists zigbee_device_inventory (
+        device_id text primary key,
+        friendly_name text,
+        manufacturer text,
+        model text,
+        capabilities_json text not null default '[]',
+        detected_type text,
+        supported integer not null default 0,
+        interview_status text not null default 'unknown',
+        lifecycle_status text not null default 'unassigned',
+        mapped_role text,
+        first_seen_at text not null,
+        last_seen_at text not null,
+        updated_at text not null
+    )''')
+    con.execute('create index if not exists idx_zigbee_inventory_lifecycle_type on zigbee_device_inventory(lifecycle_status, detected_type)')
     con.execute('''create table if not exists sensor_discovery_sessions (id integer primary key autoincrement, target_role text not null, target_room text, started_at text not null, ended_at text, status text not null, baseline_snapshot_json text, candidate_snapshot_json text, selected_entity_id text)''')
     for statement in [
         "alter table sensor_discovery_sessions add column pairing_code_provided integer not null default 0",
         "alter table sensor_discovery_sessions add column pairing_detail_json text",
+        "alter table sensor_discovery_sessions add column target_sensor_type text",
+        "alter table sensor_discovery_sessions add column target_transport text",
+        "alter table sensor_discovery_sessions add column timeout_seconds integer",
+        "alter table sensor_discovery_sessions add column baseline_device_ids_json text",
+        "alter table sensor_discovery_sessions add column current_device_ids_json text",
+        "alter table sensor_discovery_sessions add column new_device_ids_json text",
+        "alter table sensor_discovery_sessions add column selected_device_id text",
     ]:
         try:
             con.execute(statement)
@@ -1437,24 +1843,318 @@ def discovery_detail(row: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def score_candidates(baseline: list[dict[str, Any]], current: list[dict[str, Any]], role: str, room: str | None, started_at: str | datetime, require_new: bool = False) -> list[dict[str, Any]]:
+def discovery_requires_new_physical_device(row: Any, detail: dict[str, Any] | None = None) -> bool:
+    detail = detail or discovery_detail(row)
+    if detail.get('mode') == 'mqtt_discovery':
+        return True
+    try:
+        transport = str(row['target_transport'] or '').strip()
+    except (KeyError, IndexError, TypeError):
+        transport = ''
+    return transport == SensorTransport.ZIGBEE.value
+
+
+def classify_sensor_device(device: Any) -> dict[str, Any]:
+    entities = [normalize_snapshot_item(item) for item in (device if isinstance(device, list) else [device]) if isinstance(item, dict)]
+    capabilities: set[str] = set()
+    has_completed_hint = False
+    has_interviewing_hint = False
+    z2m_supported = None
+    for item in entities:
+        attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+        for raw in (
+            item.get('payload_key'),
+            item.get('device_class'),
+            attrs.get('payload_key'),
+            attrs.get('device_class'),
+        ):
+            key = normalize_capability(raw)
+            if key:
+                capabilities.add(key)
+        for holder in (item, attrs):
+            for key in (
+                'contact', 'open', 'presence', 'occupancy', 'motion', 'motion_state', 'moving_target', 'static_target',
+                'smoke', 'smoke_alarm', 'smoke_state', 'action', 'button', 'power', 'energy', 'electricity',
+                'water', 'water_consumption', 'gas', 'gas_consumption', 'battery', 'linkquality', 'temperature', 'humidity',
+            ):
+                if key in holder:
+                    capabilities.add(normalize_capability(key))
+            for key in extract_expose_keys(holder.get('exposes')):
+                capabilities.add(key)
+            definition = holder.get('definition') if isinstance(holder.get('definition'), dict) else {}
+            for key in extract_expose_keys(definition.get('exposes')):
+                capabilities.add(key)
+            if 'interview_completed' in holder:
+                completed = parse_bool_value(holder.get('interview_completed'))
+                has_completed_hint = has_completed_hint or completed is True
+                has_interviewing_hint = has_interviewing_hint or completed is False
+            if 'supported' in holder:
+                parsed_supported = parse_bool_value(holder.get('supported'))
+                if parsed_supported is not None:
+                    z2m_supported = parsed_supported
+
+    if has_interviewing_hint and not has_completed_hint and not determining_capabilities(capabilities):
+        return {
+            'detected_type': None,
+            'supported': False,
+            'confidence': 0,
+            'capabilities': sorted(capabilities),
+            'reason': 'zigbee_interview_running',
+            'interview_status': 'interviewing',
+        }
+
+    detected_type, confidence, reason = detected_type_from_capabilities(capabilities)
+    supported = detected_type in SUPPORTED_SENSOR_TYPES and z2m_supported is not False
+    if not detected_type and z2m_supported is False:
+        reason = 'zigbee2mqtt_unsupported'
+    return {
+        'detected_type': detected_type,
+        'supported': bool(supported),
+        'confidence': confidence if supported else 0,
+        'capabilities': sorted(capabilities),
+        'reason': reason or 'no_supported_capability',
+        'interview_status': 'completed' if has_completed_hint or capabilities else 'unknown',
+    }
+
+
+def detected_type_from_capabilities(capabilities: set[str]) -> tuple[str | None, int, str]:
+    if capabilities.intersection({'contact', 'open', 'opening'}):
+        return 'door_contact', 95, 'contact_capability'
+    if capabilities.intersection({'smoke', 'smoke_alarm', 'smoke_state'}):
+        return 'smoke_detector', 95, 'smoke_capability'
+    if capabilities.intersection({'presence', 'occupancy', 'motion', 'motion_state', 'moving_target', 'static_target'}):
+        return 'presence_sensor', 90, 'presence_capability'
+    if capabilities.intersection({'action', 'button'}):
+        return 'button', 90, 'button_capability'
+    if capabilities.intersection({'power', 'energy', 'electricity', 'energy_consumption', 'electricity_consumption', 'power_usage'}):
+        return 'electricity_meter', 90, 'electricity_capability'
+    if capabilities.intersection({'water', 'water_consumption'}):
+        return 'water_meter', 90, 'water_capability'
+    if capabilities.intersection({'gas', 'gas_consumption'}):
+        return 'gas_meter', 90, 'gas_capability'
+    return None, 0, ''
+
+
+def determining_capabilities(capabilities: set[str]) -> set[str]:
+    return capabilities - EXTRA_CAPABILITY_KEYS
+
+
+def normalize_capability(value: Any) -> str:
+    key = normalize(str(value or '')).strip('_')
+    aliases = {
+        'opening': 'open',
+        'occupy': 'occupancy',
+        'smoke_alarm_state': 'smoke_alarm',
+        'button_action': 'action',
+    }
+    return aliases.get(key, key)
+
+
+def extract_expose_keys(exposes: Any) -> list[str]:
+    keys: list[str] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        raw = value.get('property') or value.get('name')
+        key = normalize_capability(raw)
+        if key == 'alarm':
+            text = normalize(' '.join(str(value.get(part) or '') for part in ('name', 'property', 'label', 'description')))
+            if any(term in text for term in ('smoke', 'fire', 'rauch')):
+                key = 'smoke'
+        if key:
+            keys.append(key)
+        visit(value.get('features'))
+
+    visit(exposes)
+    return unique_ordered(keys)
+
+
+def grouped_physical_devices(states: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in states:
+        device_id = stable_physical_device_id(item)
+        if device_id:
+            groups.setdefault(device_id, []).append(item)
+    return groups
+
+
+def entities_for_same_physical_device(states: list[dict[str, Any]], selected: dict[str, Any]) -> list[dict[str, Any]]:
+    device_id = stable_physical_device_id(selected)
+    if not device_id:
+        return [selected]
+    return [item for item in states if stable_physical_device_id(item) == device_id]
+
+
+def canonical_sensor_type(value: Any) -> str:
+    text = str(value or '').strip().lower()
+    if text in {'door', 'contact'}:
+        return 'door_contact'
+    if text in {'presence', 'motion'}:
+        return 'presence_sensor'
+    return text
+
+
+def inventory_row_from_entities(device_id: str, entities: list[dict[str, Any]], classification: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'device_id': device_id,
+        'friendly_name': next((item.get('device_name') or item.get('original_name') or item.get('friendly_name') for item in entities if item.get('friendly_name') or item.get('device_name')), device_id),
+        'manufacturer': next((item.get('manufacturer') for item in entities if item.get('manufacturer')), None),
+        'model': next((item.get('model') for item in entities if item.get('model')), None),
+        'capabilities_json': json.dumps(classification.get('capabilities') or [], ensure_ascii=False),
+        'detected_type': classification.get('detected_type'),
+        'supported': 1 if classification.get('supported') else 0,
+        'interview_status': classification.get('interview_status'),
+        'lifecycle_status': 'unassigned' if classification.get('supported') else 'unsupported',
+    }
+
+
+def public_inventory_device(row: dict[str, Any]) -> dict[str, Any]:
+    try:
+        capabilities = json.loads(str(row.get('capabilities_json') or '[]'))
+    except (TypeError, json.JSONDecodeError):
+        capabilities = []
+    return {
+        'id': row.get('device_id'),
+        'device_id': row.get('device_id'),
+        'name': row.get('friendly_name') or row.get('device_id') or 'Sensor',
+        'manufacturer': row.get('manufacturer'),
+        'model': row.get('model'),
+        'detected_type': row.get('detected_type'),
+        'type': row.get('detected_type') or 'sensor',
+        'supported': bool(row.get('supported')),
+        'confidence': 100 if bool(row.get('supported')) else 0,
+        'capabilities': capabilities if isinstance(capabilities, list) else [],
+        'interview_status': row.get('interview_status'),
+        'lifecycle_status': row.get('lifecycle_status'),
+        'mapped_role': row.get('mapped_role'),
+    }
+
+
+def wrong_type_message(requested_type: str, detected_type: str) -> str:
+    return f"Es wurde ein {sensor_type_label(detected_type)} erkannt. Er wurde nicht als {sensor_type_label(requested_type)} hinzugefügt."
+
+
+def sensor_type_label(sensor_type: str) -> str:
+    return {
+        'door_contact': 'Türsensor',
+        'presence_sensor': 'Präsenzsensor',
+        'smoke_detector': 'Rauchmelder',
+        'button': 'Taster',
+        'electricity_meter': 'Stromzähler',
+        'water_meter': 'Wasserzähler',
+        'gas_meter': 'Gaszähler',
+    }.get(str(sensor_type or ''), 'Sensor')
+
+
+def score_candidates(
+    baseline: list[dict[str, Any]],
+    current: list[dict[str, Any]],
+    role: str,
+    room: str | None,
+    started_at: str | datetime,
+    require_new: bool = False,
+    assigned_identities: set[str] | None = None,
+    discovery_session: int | None = None,
+) -> list[dict[str, Any]]:
     before = {item.get('entity_id'): item for item in baseline}
-    baseline_device_ids = {str(item.get('device_id') or '') for item in baseline if item.get('device_id')}
+    baseline_device_ids = stable_physical_device_ids(baseline)
+    current_device_ids = stable_physical_device_ids(current)
+    new_device_ids = current_device_ids - baseline_device_ids
+    assigned_identities = assigned_identities or set()
     started = parse_time(started_at)
+    requested_type = canonical_sensor_type(sensor_type_from_role(role))
+    device_groups = grouped_physical_devices(current)
     scored = []
     for item in current:
         entity_id = str(item.get('entity_id') or '')
         if not entity_id:
             continue
-        device_id = str(item.get('device_id') or '')
+        stable_device_id = stable_physical_device_id(item)
+        physical_identities = physical_device_identity_values(item)
+        identities = mqtt_identity_values(item)
+        if identities and identities.intersection(assigned_identities):
+            continue
         old = before.get(entity_id, {})
         is_new = entity_id not in before
-        is_new_device = bool(device_id and device_id not in baseline_device_ids)
+        is_new_device = bool(stable_device_id and stable_device_id in new_device_ids)
+        if require_new:
+            if not stable_device_id:
+                logger.info(
+                    "Discovery candidate rejected",
+                    extra={
+                        "component": "wizard",
+                        "discovery_session": discovery_session,
+                        "candidate_device_id": None,
+                        "candidate_entity_id": entity_id,
+                        "candidate_is_new": False,
+                        "candidate_rejected_reason": "missing_stable_device_id",
+                    },
+                )
+                continue
+            if stable_device_id in baseline_device_ids:
+                logger.info(
+                    "Discovery candidate rejected",
+                    extra={
+                        "component": "wizard",
+                        "discovery_session": discovery_session,
+                        "candidate_device_id": stable_device_id,
+                        "candidate_entity_id": entity_id,
+                        "candidate_is_new": False,
+                        "candidate_rejected_reason": "device_existed_before_discovery",
+                    },
+                )
+                continue
+            if stable_device_id not in new_device_ids:
+                logger.info(
+                    "Discovery candidate rejected",
+                    extra={
+                        "component": "wizard",
+                        "discovery_session": discovery_session,
+                        "candidate_device_id": stable_device_id,
+                        "candidate_entity_id": entity_id,
+                        "candidate_is_new": False,
+                        "candidate_rejected_reason": "device_not_in_current_new_device_set",
+                    },
+                )
+                continue
+            logger.info(
+                "Discovery candidate accepted for scoring",
+                extra={
+                    "component": "wizard",
+                    "discovery_session": discovery_session,
+                    "candidate_device_id": stable_device_id,
+                    "candidate_entity_id": entity_id,
+                    "candidate_is_new": True,
+                },
+            )
+        classification = classify_sensor_device(device_groups.get(stable_device_id, [item]))
+        detected_type = str(classification.get('detected_type') or '')
+        if classification.get('interview_status') == 'interviewing':
+            continue
+        if not classification.get('supported') or detected_type != requested_type:
+            logger.info(
+                "Discovery candidate rejected",
+                extra={
+                    "component": "wizard",
+                    "discovery_session": discovery_session,
+                    "candidate_device_id": stable_device_id,
+                    "candidate_entity_id": entity_id,
+                    "requested_type": requested_type,
+                    "detected_type": detected_type or None,
+                    "supported": bool(classification.get('supported')),
+                    "interview_status": classification.get('interview_status'),
+                    "candidate_rejected_reason": "device_type_mismatch" if classification.get('supported') else "unsupported_device",
+                },
+            )
+            continue
         state_changed = bool(old) and item.get('state') != old.get('state')
         last_changed_updated = is_after(item.get('last_changed'), started)
         last_updated_updated = is_after(item.get('last_updated'), started)
-        if require_new and not (is_new or is_new_device):
-            continue
         changed = is_new or is_new_device or state_changed or last_changed_updated or last_updated_updated
         if not changed:
             continue
@@ -1462,7 +2162,7 @@ def score_candidates(baseline: list[dict[str, Any]], current: list[dict[str, Any
         priority = candidate_entity_priority(role, item)
         if priority <= -50:
             continue
-        discovery_match = role_candidate_matches(role, item, allow_missing_device_class=True, allow_device_class_mismatch=is_new_device or is_new)
+        discovery_match = role_candidate_matches(role, item, allow_missing_device_class=True, allow_device_class_mismatch=False)
         state_match = role_state_matches(role, item)
         if not discovery_match and not state_match:
             continue
@@ -1504,8 +2204,11 @@ def score_candidates(baseline: list[dict[str, Any]], current: list[dict[str, Any
             confidence -= 10
             reasons.append(f'state_{state_value}')
         if confidence >= 40:
-            scored.append({**item, 'confidence': confidence, 'reasons': reasons, 'is_new': is_new, 'is_new_device': is_new_device, 'entity_priority': priority})
-    return sorted(scored, key=lambda x: (bool(x.get('is_new_device')), role_state_priority(role, x), bool(x.get('is_new')), x['confidence'], parse_time(x.get('last_updated')).timestamp()), reverse=True)
+            scored.append({**item, 'confidence': confidence, 'reasons': reasons, 'is_new': is_new, 'is_new_device': is_new_device, 'stable_device_id': stable_device_id, 'entity_priority': priority})
+    sorted_scored = sorted(scored, key=lambda x: (bool(x.get('is_new_device')), role_state_priority(role, x), bool(x.get('is_new')), x['confidence'], parse_time(x.get('last_updated')).timestamp()), reverse=True)
+    if require_new:
+        return best_candidate_per_physical_device(sorted_scored, current)
+    return sorted_scored
 
 
 def count_changed_entities(baseline: list[dict[str, Any]], current: list[dict[str, Any]], started_at: str | datetime) -> int:
@@ -1526,7 +2229,7 @@ def count_changed_entities(baseline: list[dict[str, Any]], current: list[dict[st
 
 
 def domain_matches(role: str, domain: Any) -> bool:
-    if role_is_presence(role) or role_is_contact(role):
+    if role_is_presence(role) or role_is_contact(role) or role_is_smoke_detector(role):
         return str(domain or '') in {'binary_sensor', 'sensor', 'lock', 'switch'}
     if role_is_button(role):
         return str(domain or '') in {'button', 'sensor'}
@@ -1561,6 +2264,18 @@ def role_candidate_matches(role: str, item: dict[str, Any], allow_missing_device
     domain = str(item.get('domain') or '')
     device_class = item.get('device_class')
     has_device_class = bool(str(device_class or '').strip())
+    if role_is_presence(role) and has_presence_telemetry(item):
+        return True
+    if role_is_smoke_detector(role) and has_smoke_telemetry(item):
+        return True
+    source = str(item.get('source') or item.get('platform') or '').strip().lower()
+    if (
+        role_is_presence(role)
+        and allow_missing_device_class
+        and source in {'zigbee2mqtt', 'mqtt'}
+        and (item.get('source_ref') or item.get('topic') or '/' in str(item.get('entity_id') or ''))
+    ):
+        return True
     if role_is_smart_meter(role):
         return (
             domain == 'sensor'
@@ -1573,6 +2288,12 @@ def role_candidate_matches(role: str, item: dict[str, Any], allow_missing_device
             or str(item.get('payload_key') or '').lower() in {'action', 'button'}
             or role_keyword_matches(role, item, include_model=True)
         )
+    if role_is_smoke_detector(role):
+        return (
+            (domain == 'binary_sensor' and (allow_device_class_mismatch or class_matches(role, device_class)))
+            or (domain == 'sensor' and has_smoke_telemetry(item))
+            or (domain == 'mqtt' and source in {'zigbee2mqtt', 'mqtt'} and has_smoke_telemetry(item))
+        )
     if role_is_presence(role):
         return (
             (domain == 'binary_sensor' and (allow_device_class_mismatch or class_matches(role, device_class) or (allow_missing_device_class and not has_device_class)))
@@ -1582,6 +2303,7 @@ def role_candidate_matches(role: str, item: dict[str, Any], allow_missing_device
         return (
             (domain == 'binary_sensor' and (allow_device_class_mismatch or class_matches(role, device_class) or (allow_missing_device_class and not has_device_class)))
             or (domain == 'sensor' and contact_sensor_candidate_matches(item, include_model=allow_device_class_mismatch))
+            or (domain == 'mqtt' and source in {'zigbee2mqtt', 'mqtt'} and (class_matches(role, device_class) or has_contact_telemetry(item)))
             or (domain in {'lock', 'switch'} and role_keyword_matches(role, item, include_model=True))
         )
     return domain == 'binary_sensor'
@@ -1593,6 +2315,8 @@ def class_matches(role: str, device_class: Any) -> bool:
         return dc in PRESENCE_CLASSES
     if role_is_contact(role):
         return dc in CONTACT_CLASSES
+    if role_is_smoke_detector(role):
+        return dc in SMOKE_CLASSES
     if role_is_button(role):
         return dc == 'button'
     if role_is_smart_meter(role):
@@ -1620,6 +2344,8 @@ def role_keyword_matches(role: str, item: dict[str, Any], include_model: bool = 
         return any(term in haystack for term in ['occupy', 'occupancy', 'motion', 'presence', 'bewegung', 'praesenz', 'präsenz'])
     if role_is_contact(role):
         return any(term in haystack for term in ['contact', 'door', 'window', 'opening', 'tuer', 'tür', 'tuerschloss', 'türschloss', 'fenster'])
+    if role_is_smoke_detector(role):
+        return has_smoke_telemetry(item)
     if role_is_button(role):
         return any(term in haystack for term in ['button', 'action', 'knopf', 'taster'])
     return False
@@ -1657,6 +2383,8 @@ def candidate_entity_priority(role: str, item: dict[str, Any]) -> int:
     if device_class in {'battery', 'signal_strength'} or any(term in haystack for term in ['batterie', 'battery', 'rssi', 'lqi', 'firmware', 'identifizieren']):
         return -50
     if role_is_presence(role):
+        if has_presence_telemetry(item):
+            return 60
         if domain == 'binary_sensor' and class_matches(role, device_class):
             return 40
         if any(term in haystack for term in ['occupy', 'occupancy', 'presence', 'praesenz', 'präsenz', 'motion', 'bewegung']):
@@ -1670,6 +2398,11 @@ def candidate_entity_priority(role: str, item: dict[str, Any]) -> int:
             return 35
         if domain == 'switch' and any(term in haystack for term in ['door', 'tuer', 'tür']):
             return 20
+    if role_is_smoke_detector(role):
+        if has_smoke_telemetry(item):
+            return 60
+        if domain == 'binary_sensor' and class_matches(role, device_class):
+            return 45
     if role_is_button(role):
         if domain == 'button' or device_class == 'button':
             return 40
@@ -1686,60 +2419,118 @@ def candidate_entity_priority(role: str, item: dict[str, Any]) -> int:
 
 
 def resolve_role_state(row: dict[str, Any], states: list[dict[str, Any]], by_entity: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
-    entity_id = str(row.get('entity_id') or '')
+    entity_id = str(row.get('entity_id') or '').strip()
+    role = str(row.get('role') or '')
+
+    # MQTT device state: the exact physical topic is authoritative.  Do this
+    # before the generic identity matching because bridge/devices expose rows use
+    # the device topic as source_ref even though their actual topic is
+    # zigbee2mqtt/bridge/devices.  Those rows are metadata, not live telemetry.
+    exact_device_state = next(
+        (
+            item
+            for item in states
+            if is_live_mqtt_state(item)
+            and exact_mqtt_device_topic_match(row, item)
+            and role_state_matches(role, item)
+        ),
+        None,
+    )
+    if exact_device_state is not None:
+        return exact_device_state
+
     direct = by_entity.get(entity_id)
-    if direct and state_is_reachable(direct.get('state')) and role_state_matches(str(row.get('role') or ''), direct):
+    if (
+        direct
+        and not is_metadata_only_state(direct)
+        and sensor_reachable_status(direct) is not False
+        and role_state_matches(role, direct)
+    ):
         return direct
-    source = str(row.get('source') or '').strip()
-    if source in {'zigbee2mqtt', 'mqtt'} and entity_id:
-        wanted_ids = mqtt_identity_values(row)
+
+    wanted_ids = mqtt_identity_values(row)
+    if wanted_ids:
         candidates = [
-            item for item in states
-            if wanted_ids.intersection(mqtt_identity_values(item))
-            and role_state_matches(str(row.get('role') or ''), item)
+            item
+            for item in states
+            if not is_metadata_only_state(item)
+            and wanted_ids.intersection(mqtt_identity_values(item))
+            and role_state_matches(role, item)
         ]
         selected = sorted(
             candidates,
             key=lambda item: (
-                state_is_reachable(item.get('state')),
-                str(item.get('source') or item.get('platform') or '') == 'homeassistant',
-                role_state_priority(str(row.get('role') or ''), item),
+                exact_mqtt_device_topic_match(row, item),
+                is_live_mqtt_state(item),
+                sensor_reachable_status(item) is True,
+                has_presence_telemetry(item) if role_is_presence(role) else False,
+                has_smoke_telemetry(item) if role_is_smoke_detector(role) else False,
+                role_state_priority(role, item),
             ),
             reverse=True,
         )
         if selected:
             return selected[0]
+
     device_id = str(row.get('device_id') or '').strip()
-    candidates = []
+    candidates: list[dict[str, Any]] = []
     if device_id:
-        candidates = [item for item in states if str(item.get('device_id') or '') == device_id and role_state_matches(str(row.get('role') or ''), item)]
+        candidates = [
+            item
+            for item in states
+            if not is_metadata_only_state(item)
+            and str(item.get('device_id') or '') == device_id
+            and role_state_matches(role, item)
+        ]
     if not candidates and entity_id:
         prefix = entity_id.rsplit('_', 1)[0] if '_' in entity_id else entity_id.rsplit('.', 1)[-1]
-        candidates = [item for item in states if prefix and str(item.get('entity_id') or '').startswith(prefix) and role_state_matches(str(row.get('role') or ''), item)]
+        candidates = [
+            item
+            for item in states
+            if not is_metadata_only_state(item)
+            and prefix
+            and str(item.get('entity_id') or '').startswith(prefix)
+            and role_state_matches(role, item)
+        ]
     if not candidates:
         room = str(row.get('room') or '')
         label = str(row.get('friendly_name') or row.get('role') or '')
         candidates = [
-            item for item in states
-            if role_state_matches(str(row.get('role') or ''), item)
+            item
+            for item in states
+            if not is_metadata_only_state(item)
+            and role_state_matches(role, item)
             and (
                 room_matches(room, str(item.get('entity_id') or ''), item.get('friendly_name'))
                 or (label and normalize(label).split('_')[0] in normalize(f"{item.get('entity_id') or ''} {item.get('friendly_name') or ''}"))
             )
         ]
     reachable = [item for item in candidates if state_is_reachable(item.get('state'))]
-    selected = sorted(reachable or candidates, key=lambda item: role_state_priority(str(row.get('role') or ''), item), reverse=True)
+    selected = sorted(
+        reachable or candidates,
+        key=lambda item: (
+            is_live_mqtt_state(item),
+            role_state_priority(role, item),
+        ),
+        reverse=True,
+    )
     if selected:
         return selected[0]
-    return direct
+    return direct if direct and not is_metadata_only_state(direct) else None
 
 
 def role_state_matches(role: str, item: dict[str, Any]) -> bool:
     domain = str(item.get('domain') or str(item.get('entity_id') or '').split('.', 1)[0])
+    if role_is_presence(role) and has_presence_telemetry(item):
+        return True
+    if role_is_smoke_detector(role) and has_smoke_telemetry(item):
+        return True
     if role_is_button(role):
         return domain == 'button' or str(item.get('device_class') or '').lower() == 'button' or str(item.get('payload_key') or '').lower() in {'action', 'button'}
     if role_is_smart_meter(role):
         return role_candidate_matches(role, item, allow_missing_device_class=True, allow_device_class_mismatch=False)
+    if role_is_smoke_detector(role):
+        return role_candidate_matches(role, item, allow_missing_device_class=False, allow_device_class_mismatch=False)
     if domain in {'button', 'update', 'number', 'select'}:
         return False
     haystack = normalize(' '.join(str(item.get(key) or '') for key in ['entity_id', 'friendly_name', 'original_name', 'device_name']))
@@ -1764,6 +2555,11 @@ def role_state_priority(role: str, item: dict[str, Any]) -> int:
             score += 25
         if device_class in CONTACT_CLASSES:
             score += 20
+    if role_is_smoke_detector(role):
+        if 'smoke' in entity_id or 'rauch' in entity_id:
+            score += 25
+        if device_class in SMOKE_CLASSES:
+            score += 25
     if role_is_smart_meter(role):
         if any(term in entity_id for term in ['energy', 'electricity', 'strom', 'power', 'water', 'wasser', 'gas']):
             score += 25
@@ -1772,15 +2568,84 @@ def role_state_priority(role: str, item: dict[str, Any]) -> int:
     return score
 
 
+def normalize_transport(value: Any, source: Any = None) -> str:
+    text = str(value or '').strip().lower()
+    if text in {SensorTransport.ZIGBEE.value, 'zigbee2mqtt'}:
+        return SensorTransport.ZIGBEE.value
+    if text in {SensorTransport.WIFI_ESPHOME.value, 'wifi', 'esp32', 'mqtt'}:
+        return SensorTransport.WIFI_ESPHOME.value if str(source or '').strip() == 'mqtt' else SensorTransport.ZIGBEE.value
+    source_text = str(source or '').strip().lower()
+    if source_text == 'mqtt':
+        return SensorTransport.WIFI_ESPHOME.value
+    return SensorTransport.ZIGBEE.value
+
+
+def sensor_type_from_role(role: str) -> str:
+    if role_is_contact(role):
+        return 'door'
+    if role_is_presence(role):
+        return 'presence'
+    if role_is_smoke_detector(role):
+        return 'smoke_detector'
+    if role_is_electricity_meter(role):
+        return 'electricity_meter'
+    if 'water' in normalize(role):
+        return 'water_meter'
+    if 'gas' in normalize(role):
+        return 'gas_meter'
+    if role_is_button(role):
+        return 'button'
+    return 'sensor'
+
+
+def entity_ids_for_physical_device(states: list[dict[str, Any]], selected: dict[str, Any]) -> list[str]:
+    selected_entity_id = str(selected.get('entity_id') or '').strip()
+    device_id = stable_physical_device_id(selected) or str(selected.get('device_id') or '').strip()
+    identities = mqtt_identity_values(selected)
+    grouped: list[str] = []
+    for item in states:
+        if is_metadata_only_state(item):
+            continue
+        entity_id = str(item.get('entity_id') or '').strip()
+        if not entity_id:
+            continue
+        if str(item.get('domain') or '') == 'mqtt' and str(item.get('payload_key') or '') == 'state':
+            continue
+        item_device_id = stable_physical_device_id(item) or str(item.get('device_id') or '').strip()
+        same_device = bool(device_id and item_device_id == device_id)
+        same_mqtt_device = bool(identities and identities.intersection(mqtt_identity_values(item)))
+        if same_device or same_mqtt_device or entity_id == selected_entity_id:
+            grouped.append(entity_id)
+    if selected_entity_id and selected_entity_id not in grouped:
+        grouped.insert(0, selected_entity_id)
+    return sorted(set(grouped), key=lambda value: (value != selected_entity_id, value))
+
+
+def latest_seen_for_entities(states: list[dict[str, Any]], entity_ids: list[str]) -> str | None:
+    wanted = set(entity_ids)
+    timestamps = [
+        parse_time(item.get('last_updated') or item.get('last_changed'))
+        for item in states
+        if str(item.get('entity_id') or '') in wanted and (item.get('last_updated') or item.get('last_changed'))
+    ]
+    if not timestamps:
+        return None
+    return max(timestamps).isoformat(timespec='seconds')
+
+
 def testable_state_entity(item: dict[str, Any]) -> bool:
     entity_id = str(item.get('entity_id') or '')
     domain = str(item.get('domain') or entity_id.split('.', 1)[0] if '.' in entity_id else '')
+    source = str(item.get('source') or item.get('platform') or '').strip().lower()
+    payload_key = str(item.get('payload_key') or '').strip().lower()
     if domain in {'button', 'update'}:
         return False
     haystack = normalize(f"{entity_id} {item.get('friendly_name') or ''} {item.get('original_name') or ''}")
     if any(term in haystack for term in ['identifizieren', 'identify', 'firmware']):
         return False
-    return domain in {'binary_sensor', 'sensor', 'lock', 'switch'}
+    if payload_key == 'state' and source in {'zigbee2mqtt', 'mqtt'} and (item.get('topic') or item.get('source_ref')):
+        return True
+    return domain in {'binary_sensor', 'sensor', 'lock', 'switch', 'mqtt'}
 
 
 def sensor_reachable_status(state: dict[str, Any] | None) -> bool | None:
@@ -1796,19 +2661,219 @@ def sensor_reachable_status(state: dict[str, Any] | None) -> bool | None:
     return True
 
 
+def presence_live_state_ttl_seconds() -> int:
+    raw = os.getenv('SENTERO_PRESENCE_LIVE_STATE_TTL_SECONDS')
+    try:
+        value = int(raw) if raw is not None else config_int('sensors.presence_live_state_ttl_seconds', DEFAULT_PRESENCE_LIVE_STATE_TTL_SECONDS)
+    except (TypeError, ValueError):
+        value = DEFAULT_PRESENCE_LIVE_STATE_TTL_SECONDS
+    return max(value, 30)
+
+
+def presence_unreachable_grace_seconds() -> int:
+    raw = os.getenv('SENTERO_PRESENCE_UNREACHABLE_GRACE_SECONDS')
+    try:
+        value = int(raw) if raw is not None else config_int('sensors.presence_unreachable_grace_seconds', DEFAULT_PRESENCE_UNREACHABLE_GRACE_SECONDS)
+    except (TypeError, ValueError):
+        value = DEFAULT_PRESENCE_UNREACHABLE_GRACE_SECONDS
+    return max(value, presence_live_state_ttl_seconds())
+
+
+def sensor_health_stale_seconds() -> int:
+    raw = os.getenv('SENTERO_SENSOR_HEALTH_STALE_SECONDS')
+    try:
+        value = int(raw) if raw is not None else config_int('sensors.health_stale_seconds', DEFAULT_SENSOR_HEALTH_STALE_SECONDS)
+    except (TypeError, ValueError):
+        value = DEFAULT_SENSOR_HEALTH_STALE_SECONDS
+    return max(value, presence_live_state_ttl_seconds())
+
+
+def sensor_unreachable_grace_seconds() -> int:
+    raw = os.getenv('SENTERO_SENSOR_UNREACHABLE_GRACE_SECONDS')
+    try:
+        value = int(raw) if raw is not None else config_int('sensors.unreachable_grace_seconds', DEFAULT_SENSOR_UNREACHABLE_GRACE_SECONDS)
+    except (TypeError, ValueError):
+        value = DEFAULT_SENSOR_UNREACHABLE_GRACE_SECONDS
+    return max(value, sensor_health_stale_seconds())
+
+
+def sensor_state_age_seconds(state: dict[str, Any] | None) -> int | None:
+    if not state:
+        return None
+    timestamp = state.get('last_updated') or state.get('last_changed')
+    if not timestamp:
+        return None
+    return max(0, int((datetime.now(timezone.utc) - parse_time(timestamp)).total_seconds()))
+
+
+def presence_live_state_is_stale(role: dict[str, Any], state: dict[str, Any] | None) -> bool:
+    if not state or not role_is_presence(str(role.get('role') or '')):
+        return False
+    source = str(state.get('source') or state.get('platform') or role.get('source') or '').strip().lower()
+    if source not in {'zigbee2mqtt', 'mqtt'} and not (state.get('topic') or state.get('source_ref') or role.get('entity_id')):
+        return False
+    age = sensor_state_age_seconds(state)
+    return age is not None and age > presence_live_state_ttl_seconds()
+
+
+def presence_live_state_is_unreachable(role: dict[str, Any], state: dict[str, Any] | None) -> bool:
+    if not presence_live_state_is_stale(role, state):
+        return False
+    age = sensor_state_age_seconds(state)
+    return age is not None and age > presence_unreachable_grace_seconds()
+
+
+def mqtt_state_is_health_stale(role: dict[str, Any], state: dict[str, Any] | None) -> bool:
+    if not state:
+        return False
+    if role_is_presence(str(role.get('role') or '')):
+        return presence_live_state_is_stale(role, state)
+    source = str(state.get('source') or state.get('platform') or role.get('source') or '').strip().lower()
+    if source not in {'zigbee2mqtt', 'mqtt'} and not (state.get('topic') or state.get('source_ref') or role.get('entity_id')):
+        return False
+    age = sensor_state_age_seconds(state)
+    return age is not None and age > sensor_health_stale_seconds()
+
+
+def mqtt_state_is_health_unreachable(role: dict[str, Any], state: dict[str, Any] | None) -> bool:
+    if not state:
+        return False
+    if role_is_presence(str(role.get('role') or '')):
+        return presence_live_state_is_unreachable(role, state)
+    if not mqtt_state_is_health_stale(role, state):
+        return False
+    age = sensor_state_age_seconds(state)
+    return age is not None and age > sensor_unreachable_grace_seconds()
+
+
 def state_is_reachable(value: Any) -> bool:
     return str(value or '').strip().lower() not in {'', 'unknown', 'unavailable', 'none'}
 
 
-def mqtt_item_has_telemetry(item: dict[str, Any] | None) -> bool:
+def is_metadata_only_state(item: dict[str, Any] | None) -> bool:
     if not item:
+        return False
+    if item.get('metadata_only') is True:
+        return True
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    return attrs.get('metadata_only') is True
+
+
+def is_live_mqtt_state(item: dict[str, Any] | None) -> bool:
+    if not item or is_metadata_only_state(item):
+        return False
+    return (
+        str(item.get('domain') or '').strip().lower() == 'mqtt'
+        and str(item.get('payload_key') or '').strip().lower() == 'state'
+        and bool(str(item.get('topic') or '').strip())
+    )
+
+
+def exact_mqtt_device_topic_match(role: dict[str, Any], state: dict[str, Any]) -> bool:
+    """Match the registered MQTT device topic against the message's real topic.
+
+    Deliberately do not use state.source_ref here. bridge/devices metadata rows
+    carry source_ref=zigbee2mqtt/<friendly_name> and would otherwise look like
+    exact live-state matches even though their real topic is bridge/devices.
+    """
+    if is_metadata_only_state(state):
+        return False
+    wanted = mqtt_topic_values(role)
+    actual_topic = str(state.get('topic') or '').strip().strip('/').lower()
+    return bool(actual_topic and actual_topic in wanted)
+
+
+def mqtt_telemetry_value_is_valid(value: Any) -> bool:
+    # False and numeric zero are real sensor values and must never be rejected.
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() not in {'', 'unknown', 'unavailable', 'none', 'null'}
+    return True
+
+
+def mqtt_item_has_telemetry(item: dict[str, Any] | None) -> bool:
+    if not item or item.get('metadata_only') is True:
         return False
     source = str(item.get('source') or item.get('platform') or '').strip().lower()
     if source not in {'zigbee2mqtt', 'mqtt'} and not (item.get('topic') or item.get('source_ref')):
         return False
     attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
-    telemetry_keys = {'battery', 'battery_low', 'linkquality', 'signal_quality', 'voltage', 'tamper', 'last_seen'}
-    return any(key in attrs and attrs.get(key) is not None for key in telemetry_keys) or any(item.get(key) is not None for key in telemetry_keys)
+    if attrs.get('metadata_only') is True:
+        return False
+    telemetry_keys = {
+        'battery',
+        'battery_low',
+        'humidity',
+        'illuminance',
+        'illuminance_lux',
+        'linkquality',
+        'motion',
+        'motion_state',
+        'occupancy',
+        'presence',
+        'smoke',
+        'smoke_alarm',
+        'smoke_state',
+        'signal_quality',
+        'temperature',
+        'voltage',
+        'tamper',
+        'last_seen',
+    }
+    return any(key in attrs and mqtt_telemetry_value_is_valid(attrs.get(key)) for key in telemetry_keys) or any(
+        key in item and mqtt_telemetry_value_is_valid(item.get(key)) for key in telemetry_keys
+    )
+
+
+def has_presence_telemetry(item: dict[str, Any] | None) -> bool:
+    if not item or item.get('metadata_only') is True:
+        return False
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    if attrs.get('metadata_only') is True:
+        return False
+    return any(
+        (key in item and mqtt_telemetry_value_is_valid(item.get(key)))
+        or (key in attrs and mqtt_telemetry_value_is_valid(attrs.get(key)))
+        for key in (
+            'presence',
+            'occupancy',
+            'motion',
+            'motion_state',
+            'moving_target',
+            'static_target',
+        )
+    )
+
+
+def has_contact_telemetry(item: dict[str, Any] | None) -> bool:
+    if not item or item.get('metadata_only') is True:
+        return False
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    if attrs.get('metadata_only') is True:
+        return False
+    return any(
+        (key in item and mqtt_telemetry_value_is_valid(item.get(key)))
+        or (key in attrs and mqtt_telemetry_value_is_valid(attrs.get(key)))
+        for key in ('contact', 'open')
+    )
+
+
+def has_smoke_telemetry(item: dict[str, Any] | None) -> bool:
+    if not item or item.get('metadata_only') is True:
+        return False
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    if attrs.get('metadata_only') is True:
+        return False
+    device_class = str(item.get('device_class') or attrs.get('device_class') or '').strip().lower()
+    payload_key = str(item.get('payload_key') or attrs.get('payload_key') or '').strip().lower()
+    if device_class == 'smoke' or payload_key in SMOKE_KEYS:
+        return True
+    return any(
+        (key in item and mqtt_telemetry_value_is_valid(item.get(key)))
+        or (key in attrs and mqtt_telemetry_value_is_valid(attrs.get(key)))
+        for key in SMOKE_KEYS
+    )
 
 
 def battery_level_from_state(state: dict[str, Any] | None) -> int | None:
@@ -1820,6 +2885,168 @@ def battery_level_from_state(state: dict[str, Any] | None) -> int | None:
         if parsed is not None:
             return parsed
     return None
+
+
+def combined_mqtt_telemetry_state(role: dict[str, Any], state: dict[str, Any] | None, states: list[dict[str, Any]]) -> dict[str, Any] | None:
+    raw_candidates = [item for item in [state, *bound_mqtt_sensor_states(role, states)] if isinstance(item, dict)]
+    candidates = [candidate for candidate in unique_state_candidates(raw_candidates) if not is_metadata_only_state(candidate)]
+    if not candidates:
+        return state if state and not is_metadata_only_state(state) else None
+
+    # The exact device-topic JSON state is the primary source.  Individual
+    # telemetry rows may supplement it but must never replace it or overwrite a
+    # valid False/0 value with unknown metadata.
+    primary = next(
+        (
+            candidate
+            for candidate in candidates
+            if is_live_mqtt_state(candidate)
+            and exact_mqtt_device_topic_match(role, candidate)
+        ),
+        None,
+    )
+    primary = primary or next((candidate for candidate in candidates if is_live_mqtt_state(candidate)), None)
+    primary = primary or candidates[0]
+
+    # Merge the primary first, then supplemental rows.  Invalid telemetry values
+    # (unknown/unavailable/none/null) are ignored. False and 0 remain valid.
+    ordered = [primary, *[candidate for candidate in candidates if candidate is not primary]]
+    merged_attrs: dict[str, Any] = {}
+    merged: dict[str, Any] = {}
+    telemetry_keys = (
+        'battery',
+        'battery_low',
+        'humidity',
+        'illuminance',
+        'illuminance_lux',
+        'linkquality',
+        'motion',
+        'motion_state',
+        'occupancy',
+        'presence',
+        'smoke',
+        'smoke_alarm',
+        'smoke_state',
+        'signal_quality',
+        'temperature',
+        'voltage',
+        'last_seen',
+    )
+
+    for candidate in ordered:
+        attrs = candidate.get('attributes') if isinstance(candidate.get('attributes'), dict) else {}
+        for key, value in attrs.items():
+            if key == 'metadata_only':
+                continue
+            if key in telemetry_keys and not mqtt_telemetry_value_is_valid(value):
+                continue
+            if value is not None:
+                merged_attrs[key] = value
+
+        for key in telemetry_keys:
+            if key in candidate and mqtt_telemetry_value_is_valid(candidate.get(key)):
+                merged[key] = candidate.get(key)
+
+        payload_key = str(candidate.get('payload_key') or '').strip()
+        payload_value = candidate.get('state')
+        if payload_key and payload_key not in {'state', 'availability'} and mqtt_telemetry_value_is_valid(payload_value):
+            merged[payload_key] = payload_value
+
+    # Re-apply values from the authoritative exact-topic state last, so a
+    # supplemental entity cannot overwrite current device JSON telemetry.
+    primary_attrs = primary.get('attributes') if isinstance(primary.get('attributes'), dict) else {}
+    for key in telemetry_keys:
+        primary_value = primary.get(key)
+        if mqtt_telemetry_value_is_valid(primary_value):
+            merged[key] = primary_value
+        elif key in primary_attrs and mqtt_telemetry_value_is_valid(primary_attrs.get(key)):
+            merged[key] = primary_attrs.get(key)
+
+    return {
+        **primary,
+        **merged,
+        'attributes': {
+            **primary_attrs,
+            **merged_attrs,
+            **merged,
+        },
+    }
+
+
+def environmental_metrics_from_state(role: dict[str, Any], states: list[dict[str, Any]]) -> dict[str, float | None]:
+    return {
+        'temperature': find_numeric_metric(role, states, {'temperature'}, {'temperature', 'temperatur'}),
+        'humidity': find_numeric_metric(role, states, {'humidity'}, {'humidity', 'luftfeuchtigkeit'}),
+        'illuminance': find_numeric_metric(role, states, {'illuminance', 'illuminance_lux'}, {'illuminance', 'illuminance_lux', 'beleuchtungsstaerke', 'beleuchtungsstarke', 'helligkeit'}),
+    }
+
+
+def find_numeric_metric(role: dict[str, Any], states: list[dict[str, Any]], keys: set[str], name_terms: set[str]) -> float | None:
+    direct = metric_from_item(role, keys)
+    if direct is not None:
+        return direct
+    candidates = bound_mqtt_sensor_states(role, states)
+    for state in candidates:
+        if not metric_entity_allowed(state):
+            continue
+        payload_key = normalize(str(state.get('payload_key') or ''))
+        device_class = normalize(str(state.get('device_class') or ''))
+        entity_id = normalize(str(state.get('entity_id') or ''))
+        friendly_name = normalize(str(state.get('friendly_name') or state.get('original_name') or ''))
+        if payload_key not in keys and device_class not in keys and not any(term in entity_id or term in friendly_name for term in name_terms):
+            continue
+        value = metric_from_item(state, keys)
+        if value is None:
+            value = parse_float(state.get('state'))
+        if value is not None:
+            return value
+    return None
+
+
+def metric_entity_allowed(state: dict[str, Any]) -> bool:
+    domain = normalize(str(state.get('domain') or ''))
+    if domain and domain != 'sensor':
+        return False
+    haystack = normalize(' '.join(str(state.get(key) or '') for key in ('entity_id', 'friendly_name', 'original_name', 'device_name', 'payload_key')))
+    return not any(term in haystack for term in {
+        'calibration',
+        'kalibrierung',
+        'interval',
+        'sensitivity',
+        'sensitivitaet',
+        'sensitivity',
+        'distance',
+        'distanz',
+        'mode',
+    })
+
+
+def metric_from_item(item: dict[str, Any], keys: set[str]) -> float | None:
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    for key in keys:
+        value = parse_float(item.get(key))
+        if value is not None:
+            return value
+        value = parse_float(attrs.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def parse_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(',', '.')
+    if not text or text.lower() in {'none', 'unknown', 'unavailable', 'nan'}:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def power_source_from_state(state: dict[str, Any] | None) -> str | None:
@@ -1843,8 +3070,10 @@ def c1001_telemetry_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
         presence = parse_bool_value(state.get('state'))
     fall_detected = parse_bool_value(first_present(state, attrs, 'fall_detected'))
     motion = first_present(state, attrs, 'motion')
+    if motion is None:
+        motion = first_present(state, attrs, 'motion_state')
     if motion is not None:
-        motion = str(motion)
+        motion = normalize_motion_state(motion) or str(motion)
     hp_led = parse_bool_value(first_present(state, attrs, 'hp_led'))
     fall_led = parse_bool_value(first_present(state, attrs, 'fall_led'))
     raw_led_status = first_present(state, attrs, 'led_status')
@@ -1867,12 +3096,261 @@ def c1001_telemetry_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
     return {'presence': presence, 'fall_detected': fall_detected, 'motion': motion, 'hp_led': hp_led, 'fall_led': fall_led, 'led_status': led_status, 'writable_settings': writable_settings}
 
 
+def generic_presence_telemetry_from_state(role: dict[str, Any], state: dict[str, Any] | None, states: list[dict[str, Any]]) -> dict[str, Any]:
+    if not role_is_presence(str(role.get('role') or '')):
+        return {'presence': None, 'motion': None}
+    presence = generic_presence_value(state)
+    if presence is None:
+        presence_state = find_presence_state(role, states)
+        presence = generic_presence_value(presence_state)
+    motion_state = find_motion_state(role, states)
+    if presence is False:
+        return {'presence': False, 'motion': 'None'}
+    if presence is True:
+        return {'presence': True, 'motion': normalize_motion_state(motion_state, default='Still')}
+    return {'presence': None, 'motion': normalize_motion_state(motion_state)}
+
+
+def motion_state_implies_presence(value: Any) -> bool:
+    text = normalize(str(value or ''))
+    return text in {
+        'move', 'moving', 'movement', 'active', 'motion', 'detected', 'moving_target',
+        'static', 'static_target', 'presence', 'present', 'still', 'stationary', 'standstill',
+    }
+
+
+def effective_presence_value(
+    explicit_presence: Any,
+    inferred_presence: Any = None,
+    motion_state: Any = None,
+    motion: Any = None,
+) -> bool | None:
+    """Resolve room presence conservatively for combined radar/PIR sensors.
+
+    A sensor can briefly publish presence=false while its motion_state still says
+    moving/static/still. Those states are direct evidence that somebody is in the
+    room, so they must win over a contradictory false presence bit. A true
+    presence bit always remains true. Only when no positive motion/presence hint
+    exists do we accept false/None.
+    """
+    explicit = parse_bool_value(explicit_presence)
+    inferred = parse_bool_value(inferred_presence)
+    if explicit is True or inferred is True:
+        return True
+    if motion_state_implies_presence(motion_state) or motion_state_implies_presence(motion):
+        return True
+    if explicit is False or inferred is False:
+        return False
+    return None
+
+
+def smoke_value_from_state(state: dict[str, Any] | None) -> bool | None:
+    if not state:
+        return None
+    attrs = state.get('attributes') if isinstance(state.get('attributes'), dict) else {}
+    for key in ('smoke', 'smoke_alarm', 'smoke_state'):
+        parsed = parse_smoke_bool(first_present(state, attrs, key))
+        if parsed is not None:
+            return parsed
+    if str(state.get('payload_key') or '').strip().lower() in SMOKE_KEYS:
+        return parse_smoke_bool(state.get('state'))
+    if str(state.get('device_class') or attrs.get('device_class') or '').strip().lower() == 'smoke':
+        return parse_smoke_bool(state.get('state'))
+    return None
+
+
+def parse_smoke_bool(value: Any) -> bool | None:
+    parsed = parse_bool_value(value)
+    if parsed is not None:
+        return parsed
+    text = normalize(str(value or ''))
+    if text in {'alarm', 'alert', 'smoke', 'smoke_detected', 'detected', 'fire'}:
+        return True
+    if text in {'clear', 'ok', 'normal', 'none', 'no_smoke', 'not_detected'}:
+        return False
+    return None
+
+
+def generic_presence_value(state: dict[str, Any] | None) -> bool | None:
+    if not state:
+        return None
+    attrs = state.get('attributes') if isinstance(state.get('attributes'), dict) else {}
+
+    explicit = None
+    for key in ('presence', 'occupancy'):
+        value = parse_bool_value(first_present(state, attrs, key))
+        if value is not None:
+            explicit = value
+            if value is True:
+                return True
+            break
+
+    motion_state = first_present(state, attrs, 'motion_state')
+    motion = first_present(state, attrs, 'motion')
+    if motion_state_implies_presence(motion_state) or motion_state_implies_presence(motion):
+        return True
+
+    if explicit is not None:
+        return explicit
+
+    motion_bool = parse_bool_value(motion)
+    if motion_bool is not None:
+        return motion_bool
+
+    normalized_motion_state = normalize(str(motion_state or ''))
+    if normalized_motion_state in {'none', 'clear', 'off', 'false', '0', 'no_motion', 'no motion'}:
+        return False
+
+    payload_key = normalize(str(state.get('payload_key') or ''))
+    device_class = normalize(str(state.get('device_class') or ''))
+    if payload_key in {'occupancy', 'presence'} or device_class in {'occupancy', 'presence'}:
+        return parse_bool_value(state.get('state'))
+    return None
+
+
+def find_presence_state(role: dict[str, Any], states: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates = []
+    for state in bound_mqtt_sensor_states(role, states):
+        payload_key = normalize(str(state.get('payload_key') or ''))
+        device_class = normalize(str(state.get('device_class') or ''))
+        if payload_key in {'occupancy', 'presence'} or device_class in {'occupancy', 'presence'}:
+            candidates.append(state)
+    return sorted(candidates, key=lambda item: role_state_priority(str(role.get('role') or ''), item), reverse=True)[0] if candidates else None
+
+
+def find_motion_state(role: dict[str, Any], states: list[dict[str, Any]]) -> str | None:
+    for state in bound_mqtt_sensor_states(role, states):
+        attrs = state.get('attributes') if isinstance(state.get('attributes'), dict) else {}
+        direct = first_present(state, attrs, 'motion_state')
+        if direct is None:
+            direct = first_present(state, attrs, 'motion')
+        if direct is not None:
+            return str(direct).strip()
+        payload_key = normalize(str(state.get('payload_key') or ''))
+        device_class = normalize(str(state.get('device_class') or ''))
+        haystack = normalize(' '.join(str(state.get(key) or '') for key in ('entity_id', 'friendly_name', 'original_name', 'device_name')))
+        if payload_key not in {'motion_state', 'motion'} and device_class not in {'motion_state', 'motion'} and 'motion_state' not in haystack:
+            continue
+        return str(state.get('state') or '').strip()
+    return None
+
+
+def bound_mqtt_sensor_states(role: dict[str, Any], states: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # bridge/devices expose rows are useful for discovery but must never
+    # participate in runtime telemetry resolution.
+    live_states = [state for state in states if not is_metadata_only_state(state)]
+
+    topic_values = mqtt_topic_values(role)
+    if topic_values:
+        exact_device_matches = [
+            state
+            for state in live_states
+            if exact_mqtt_device_topic_match(role, state)
+        ]
+        # Prefer real device JSON state before any related per-property MQTT rows.
+        exact_device_matches = sorted(
+            exact_device_matches,
+            key=lambda state: is_live_mqtt_state(state),
+            reverse=True,
+        )
+
+        identities = physical_device_identity_values(role)
+        identity_matches = [
+            state
+            for state in live_states
+            if identities and identities.intersection(hard_mqtt_identity_values(state))
+        ]
+        return unique_state_candidates([*exact_device_matches, *identity_matches])
+
+    identities = physical_device_identity_values(role)
+    if not identities:
+        identities = hard_mqtt_identity_values(role)
+    if not identities:
+        return []
+    return [
+        state
+        for state in live_states
+        if identities.intersection(hard_mqtt_identity_values(state))
+    ]
+
+
+def unique_state_candidates(states: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for state in states:
+        key = "|".join(str(state.get(item) or '') for item in ('entity_id', 'topic', 'source_ref', 'payload_key'))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(state)
+    return result
+
+
+def exact_mqtt_topic_match(role: dict[str, Any], state: dict[str, Any]) -> bool:
+    wanted = mqtt_topic_values(role)
+    current = mqtt_topic_values(state)
+    return bool(wanted and current and wanted.intersection(current))
+
+
+def mqtt_topic_values(item: dict[str, Any]) -> set[str]:
+    values: set[str] = set()
+    has_topic_binding = False
+    for key in ('topic', 'source_ref', 'entity_id'):
+        raw = str(item.get(key) or '').strip().strip('/')
+        if '/' in raw:
+            has_topic_binding = True
+            values.add(raw.lower())
+    source = str(item.get('source') or item.get('platform') or '').strip().lower()
+    friendly_name = str(item.get('friendly_name') or '').strip()
+    if has_topic_binding and friendly_name and source in {'zigbee2mqtt', 'mqtt'}:
+        values.add(f"zigbee2mqtt/{friendly_name}".strip('/').lower())
+    return values
+
+
+def hard_mqtt_identity_values(item: dict[str, Any]) -> set[str]:
+    values = physical_device_identity_values(item)
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    for raw in (
+        item.get('device_id'),
+        attrs.get('device_id'),
+        item.get('entity_id'),
+        item.get('source_ref'),
+        item.get('topic'),
+        item.get('unique_id'),
+    ):
+        add_physical_identity(values, raw)
+    return {value for value in values if value}
+
+
+def normalize_motion_state(value: Any, default: str | None = None) -> str | None:
+    text = normalize(str(value or ''))
+    if not text:
+        return default
+    if text in {'move', 'moving', 'movement', 'active', 'motion', 'detected', 'large', 'small'}:
+        return 'Active'
+    if text in {'still', 'static', 'stationary', 'standstill', 'presence'}:
+        return 'Still'
+    if text in {'none', 'clear', 'off', 'false', '0', 'no_motion', 'no motion'}:
+        return 'None'
+    return default
+
+
 def first_present(item: dict[str, Any], attrs: dict[str, Any], key: str) -> Any:
     if key in item and item.get(key) is not None:
         return item.get(key)
     if key in attrs and attrs.get(key) is not None:
         return attrs.get(key)
     return None
+
+
+def motion_state_from_state(state: dict[str, Any] | None) -> str | None:
+    if not state:
+        return None
+    attrs = state.get('attributes') if isinstance(state.get('attributes'), dict) else {}
+    value = first_present(state, attrs, 'motion_state')
+    if value is None:
+        value = first_present(state, attrs, 'motion')
+    return str(value).strip() if value is not None else None
 
 
 def find_mqtt_availability_state(role: dict[str, Any], states: list[dict[str, Any]]) -> bool | None:
@@ -1964,8 +3442,169 @@ def mqtt_identity_values(item: dict[str, Any]) -> set[str]:
     return {value for value in values if value}
 
 
+def physical_device_identity_values(item: dict[str, Any]) -> set[str]:
+    values: set[str] = set()
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    for raw in (
+        item.get('device_id'),
+        attrs.get('device_id'),
+        item.get('ieee_address'),
+        attrs.get('ieee_address'),
+    ):
+        add_physical_identity(values, raw)
+    for domain, value in parse_identifiers(item.get('identifiers')):
+        if normalize(domain) in {'mqtt', 'zigbee2mqtt'}:
+            add_physical_identity(values, value)
+    return {value for value in values if value}
+
+
+def is_zigbee2mqtt_mapping(item: dict[str, Any]) -> bool:
+    source = str(item.get('source') or '').strip().lower()
+    if source == 'zigbee2mqtt':
+        return True
+    for field in ('device_id', 'entity_id', 'primary_entity_id', 'source_ref', 'topic'):
+        value = str(item.get(field) or '').strip()
+        if value.startswith('zigbee2mqtt/'):
+            return True
+        if is_ieee_address(value) or ieee_address_from_value(value):
+            return True
+    entity_ids = item.get('entity_ids')
+    if isinstance(entity_ids, list) and any(is_ieee_address(value) or ieee_address_from_value(value) or str(value).startswith('zigbee2mqtt/') for value in entity_ids):
+        return True
+    try:
+        entity_ids_json = json.loads(str(item.get('entity_ids_json') or '[]'))
+    except (TypeError, json.JSONDecodeError):
+        entity_ids_json = []
+    if isinstance(entity_ids_json, list) and any(is_ieee_address(value) or ieee_address_from_value(value) or str(value).startswith('zigbee2mqtt/') for value in entity_ids_json):
+        return True
+    for _domain, value in parse_identifiers(item.get('identifiers')):
+        if is_ieee_address(value) or ieee_address_from_value(value):
+            return True
+    return False
+
+
+def is_zigbee2mqtt_entity(item: dict[str, Any]) -> bool:
+    source = str(item.get('source') or item.get('platform') or '').strip().lower()
+    if source == 'zigbee2mqtt':
+        return True
+    for field in ('entity_id', 'primary_entity_id', 'source_ref', 'topic'):
+        value = str(item.get(field) or '').strip().strip('/')
+        if value.startswith('zigbee2mqtt/'):
+            return True
+    for domain, value in parse_identifiers(item.get('identifiers')):
+        if normalize(domain) == 'zigbee2mqtt' or is_ieee_address(value) or ieee_address_from_value(value):
+            return True
+    return False
+
+
+def is_esp32_mqtt_mapping(item: dict[str, Any]) -> bool:
+    source = str(item.get('source') or '').strip().lower()
+    if source != 'mqtt':
+        return False
+    prefix = esp32_topic_prefix().strip('/')
+    for field in ('entity_id', 'primary_entity_id', 'source_ref', 'topic'):
+        value = str(item.get(field) or '').strip().strip('/')
+        if value.startswith(f'{prefix}/') or value.startswith('sentero/'):
+            return True
+    return False
+
+
+def stable_physical_device_ids(items: list[dict[str, Any]]) -> set[str]:
+    return {device_id for item in items if (device_id := stable_physical_device_id(item))}
+
+
+def stable_physical_device_id(item: dict[str, Any]) -> str:
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    for raw in (
+        item.get('ieee_address'),
+        attrs.get('ieee_address'),
+        item.get('ieee'),
+        attrs.get('ieee'),
+        item.get('device_id'),
+        attrs.get('device_id'),
+    ):
+        ieee = ieee_address_from_value(raw)
+        if ieee:
+            return ieee
+    for _domain, value in parse_identifiers(item.get('identifiers')):
+        ieee = ieee_address_from_value(value)
+        if ieee:
+            return ieee
+    device_id = str(item.get('device_id') or attrs.get('device_id') or '').strip()
+    return device_id.lower() if device_id else ""
+
+
+def ieee_address_from_value(value: Any) -> str:
+    match = re.search(r'0x[0-9a-fA-F]{8,16}', str(value or ''))
+    return match.group(0).lower() if match else ""
+
+
+def best_candidate_per_physical_device(candidates: list[dict[str, Any]], current: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped_entities: dict[str, list[str]] = {}
+    for item in current:
+        if is_metadata_only_state(item):
+            continue
+        device_id = stable_physical_device_id(item)
+        entity_id = str(item.get('entity_id') or '').strip()
+        if device_id and entity_id:
+            grouped_entities.setdefault(device_id, []).append(entity_id)
+    result: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        device_id = stable_physical_device_id(candidate)
+        if not device_id:
+            continue
+        display_device_id = str(candidate.get('device_id') or device_id).strip() or device_id
+        enriched = {**candidate, 'device_id': display_device_id, 'stable_device_id': device_id, 'entity_ids': sorted(set(grouped_entities.get(device_id, [])))}
+        existing = result.get(device_id)
+        if not existing or float(enriched.get('confidence') or 0) > float(existing.get('confidence') or 0):
+            result[device_id] = enriched
+    return sorted(result.values(), key=lambda x: (x['confidence'], role_state_priority(str(x.get('role') or ''), x), parse_time(x.get('last_updated')).timestamp()), reverse=True)
+
+
+def add_physical_identity(values: set[str], raw: Any) -> None:
+    text = str(raw or '').strip()
+    if not text:
+        return
+    values.add(text)
+    values.add(text.lower())
+    match = re.search(r'0x[0-9a-fA-F]{8,16}', text)
+    if match:
+        values.add(match.group(0).lower())
+
+
 def slug_identity(value: str) -> str:
     return re.sub(r'[^a-z0-9_]+', '_', value.lower()).strip('_')
+
+
+def role_is_smoke_detector(role: str) -> bool:
+    text = normalize(role)
+    return 'smoke' in text or 'rauch' in text
+
+
+# Soft pre-warning thresholds, in hours, per sensor type. These are
+# independent of (and always shorter than) the Zigbee2MQTT `availability`
+# passive timeout that ultimately flips `reachable` to False. The point is to
+# give an early, low-severity heads-up while the sensor is still confirmed
+# online, tuned per sensor type since a smoke detector going quiet deserves
+# earlier attention than a rarely-used window contact.
+DEFAULT_SOFT_WARNING_HOURS_SMOKE = 12
+DEFAULT_SOFT_WARNING_HOURS_CONTACT = 24
+DEFAULT_SOFT_WARNING_HOURS_PRESENCE = 6
+DEFAULT_SOFT_WARNING_HOURS_GENERIC = 24
+
+
+def soft_stale_warning_threshold_seconds(row: dict[str, Any]) -> int:
+    role = str(row.get('role') or '')
+    if role_is_smoke_detector(role):
+        default_hours, key = DEFAULT_SOFT_WARNING_HOURS_SMOKE, 'sensors.soft_warning_hours.smoke_detector'
+    elif role_is_contact(role):
+        default_hours, key = DEFAULT_SOFT_WARNING_HOURS_CONTACT, 'sensors.soft_warning_hours.door_window_contact'
+    elif role_is_presence(role):
+        default_hours, key = DEFAULT_SOFT_WARNING_HOURS_PRESENCE, 'sensors.soft_warning_hours.presence'
+    else:
+        default_hours, key = DEFAULT_SOFT_WARNING_HOURS_GENERIC, 'sensors.soft_warning_hours.generic'
+    hours = config_float(key, float(default_hours))
+    return int(max(hours, 0.1) * 3600)
 
 
 def role_is_presence(role: str) -> bool:
@@ -2044,27 +3683,13 @@ def candidate_public(item: dict[str, Any] | None, dev: bool) -> dict[str, Any] |
         'domain': item.get('domain'),
         'source': item.get('source') or item.get('platform'),
         'source_ref': item.get('source_ref') or item.get('topic'),
+        'entity_ids': item.get('entity_ids'),
         'topic': item.get('topic'),
         'payload_key': item.get('payload_key'),
     }
     if dev:
         data.update(item)
     return data
-
-
-def find_identify_entity(states: list[dict[str, Any]], device_id: str, entity_id: str) -> dict[str, Any] | None:
-    entity_prefix = entity_id.rsplit('_', 1)[0] if '_' in entity_id else entity_id.rsplit('.', 1)[-1]
-    candidates = []
-    for item in states:
-        current_entity = str(item.get('entity_id') or '')
-        if not current_entity.startswith('button.'):
-            continue
-        haystack = normalize(f"{current_entity} {item.get('friendly_name') or ''} {item.get('device_class') or ''}")
-        same_device = bool(device_id and str(item.get('device_id') or '') == device_id)
-        same_prefix = bool(entity_prefix and normalize(entity_prefix) in normalize(current_entity))
-        if (same_device or same_prefix) and any(term in haystack for term in ['identify', 'identifizieren']):
-            candidates.append(item)
-    return candidates[0] if candidates else None
 
 
 def parse_identifiers(value: Any) -> list[tuple[str, str]]:
@@ -2086,21 +3711,8 @@ def parse_identifiers(value: Any) -> list[tuple[str, str]]:
     return result
 
 
-def first_identifier_value(identifiers: list[tuple[str, str]], domains: set[str]) -> str | None:
-    wanted = {normalize(domain) for domain in domains}
-    for domain, value in identifiers:
-        if normalize(domain) in wanted and value:
-            return value
-    return None
-
-
 def zigbee_provider_order() -> list[str]:
-    configured = normalize(os.getenv('SENTERO_ZIGBEE_PROVIDER') or os.getenv('ZIGBEE_PROVIDER') or config_str('zigbee.provider', 'auto') or 'auto')
-    if configured in {'zigbee2mqtt', 'z2m', 'mqtt'}:
-        return ['zigbee2mqtt', 'zha']
-    if configured == 'zha':
-        return ['zha', 'zigbee2mqtt']
-    return ['zigbee2mqtt', 'zha']
+    return ['zigbee2mqtt']
 
 
 def zigbee2mqtt_identifiers(identifiers: list[tuple[str, str]], entities: list[dict[str, Any]]) -> list[str]:
@@ -2126,9 +3738,9 @@ def expand_zigbee2mqtt_id(value: Any) -> list[str]:
     text = str(value or '').strip()
     if not text:
         return []
-    ieee_match = re.search(r'0x[0-9a-fA-F]{12,16}', text)
-    if ieee_match:
-        return [ieee_match.group(0)]
+    ieee_matches = [match.group(0).lower() for match in re.finditer(r'0x[0-9a-fA-F]{12,16}', text)]
+    if ieee_matches:
+        return dedupe(ieee_matches)
     normalized = text
     for prefix in ('zigbee2mqtt_', 'mqtt_'):
         if normalized.startswith(prefix):
@@ -2226,24 +3838,6 @@ def dedupe(values: list[str]) -> list[str]:
     return result
 
 
-def registry_result_list(response: dict[str, Any]) -> list[dict[str, Any]]:
-    result = response.get('result') if isinstance(response, dict) else None
-    if isinstance(result, list):
-        return [item for item in result if isinstance(item, dict)]
-    if isinstance(result, dict):
-        for key in ('entities', 'devices', 'areas', 'items'):
-            value = result.get(key)
-            if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
-    return []
-
-
-def assert_ha_success(response: dict[str, Any]) -> dict[str, Any]:
-    if isinstance(response, dict) and response.get('success') is False:
-        raise RuntimeError(str(response.get('error') or response))
-    return response
-
-
 def public_role(data: dict[str, Any]) -> dict[str, Any]:
     return {
         'role': data.get('role'),
@@ -2257,9 +3851,18 @@ def public_role(data: dict[str, Any]) -> dict[str, Any]:
         'last_updated': data.get('last_updated'),
         'battery_level': data.get('battery_level'),
         'power_source': data.get('power_source'),
+        'temperature': data.get('temperature'),
+        'humidity': data.get('humidity'),
+        'illuminance': data.get('illuminance'),
         'presence': data.get('presence'),
+        'smoke': data.get('smoke'),
         'fall_detected': data.get('fall_detected'),
         'motion': data.get('motion'),
+        'motion_state': data.get('motion_state'),
+        'stale': data.get('stale'),
+        'stale_seconds': data.get('stale_seconds'),
+        'data_age_seconds': data.get('data_age_seconds'),
+        'stale_warning': data.get('stale_warning'),
         'hp_led': data.get('hp_led'),
         'fall_led': data.get('fall_led'),
         'led_status': data.get('led_status'),
@@ -2280,23 +3883,20 @@ def find_battery_level(role: dict[str, Any], states: list[dict[str, Any]]) -> in
 
 
 def find_battery_entity(role: dict[str, Any], states: list[dict[str, Any]]) -> dict[str, Any] | None:
-    device_id = str(role.get('device_id') or '').strip()
     role_entity = str(role.get('entity_id') or '')
     role_prefixes = battery_lookup_prefixes(role_entity)
-    role_identities = mqtt_identity_values(role)
-    for state in states:
+    candidates = bound_mqtt_sensor_states(role, states)
+    if not candidates and role_prefixes:
+        candidates = states
+    for state in candidates:
         entity_id = str(state.get('entity_id') or '')
         if not is_battery_entity(state):
             continue
-        if device_id and str(state.get('device_id') or '') == device_id:
-            if parse_battery(state.get('state')) is not None:
-                return state
-        if role_identities.intersection(mqtt_identity_values(state)):
-            if parse_battery(state.get('state')) is not None:
-                return state
         if any(entity_id.startswith(prefix) for prefix in role_prefixes):
             if parse_battery(state.get('state')) is not None:
                 return state
+        if parse_battery(state.get('state')) is not None:
+            return state
     return None
 
 
@@ -2313,6 +3913,7 @@ def battery_lookup_prefixes(entity_id: str) -> list[str]:
         '_presence',
         '_occupancy',
         '_motion',
+        '_smoke',
         '_bewegung',
         '_praesenz',
         '_präsenz',

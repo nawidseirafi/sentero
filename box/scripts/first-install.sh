@@ -1,0 +1,424 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Sentero Box one-command first installer.
+# Run as root from the copied build/sentero-box directory:
+#   ./scripts/first-install.sh --serial STB-00001234
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Bitte als root ausfuehren: sudo ./scripts/first-install.sh" >&2
+  exit 1
+fi
+
+SOURCE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+TARGET_DIR="/opt/sentero/box"
+SERIAL_NUMBER=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --serial)
+      if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+        echo "FEHLER: --serial benötigt eine Seriennummer im Format STB-XXXXXXXX." >&2
+        exit 2
+      fi
+      SERIAL_NUMBER="$2"
+      shift 2
+      ;;
+    --serial=*)
+      SERIAL_NUMBER="${1#--serial=}"
+      shift
+      ;;
+    -h|--help)
+      echo "Nutzung: sudo ./scripts/first-install.sh [--serial STB-XXXXXXXX]"
+      exit 0
+      ;;
+    *)
+      echo "FEHLER: Unbekannter Parameter: $1" >&2
+      echo "Nutzung: sudo ./scripts/first-install.sh [--serial STB-XXXXXXXX]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# Make /opt/sentero/box the canonical installation directory. When this script
+# is started from /root/sentero-box or a USB stick, copy the complete package
+# there and continue from the installed copy.
+if [ "$SOURCE_DIR" != "$TARGET_DIR" ]; then
+  echo "[1/10] Sentero nach $TARGET_DIR installieren ..."
+  mkdir -p /opt/sentero
+  DEVICE_PRESERVE_DIR=""
+  if [ -d "$TARGET_DIR/device" ]; then
+    DEVICE_PRESERVE_DIR="/opt/sentero/.sentero-device-preserve.$$"
+    rm -rf "$DEVICE_PRESERVE_DIR"
+    cp -a "$TARGET_DIR/device" "$DEVICE_PRESERVE_DIR"
+  fi
+  rm -rf "$TARGET_DIR"
+  cp -a "$SOURCE_DIR" "$TARGET_DIR"
+  if [ -n "$DEVICE_PRESERVE_DIR" ] && [ -d "$DEVICE_PRESERVE_DIR" ]; then
+    rm -rf "$TARGET_DIR/device"
+    mv "$DEVICE_PRESERVE_DIR" "$TARGET_DIR/device"
+  fi
+  find "$TARGET_DIR/scripts" -type f -name "*.sh" -exec chmod +x {} +
+  chmod +x "$TARGET_DIR"/scripts/*.py 2>/dev/null || true
+  chmod +x "$TARGET_DIR"/sentero-updater/*.py 2>/dev/null || true
+  chmod +x "$TARGET_DIR"/sentero-network/*.py 2>/dev/null || true
+  if [ -n "$SERIAL_NUMBER" ]; then
+    exec "$TARGET_DIR/scripts/first-install.sh" --serial "$SERIAL_NUMBER"
+  fi
+  exec "$TARGET_DIR/scripts/first-install.sh"
+fi
+
+cd "$TARGET_DIR"
+
+echo "[1/10] Geräteidentität prüfen ..."
+chmod +x scripts/*.py 2>/dev/null || true
+if [ -n "$SERIAL_NUMBER" ]; then
+  if ! python3 scripts/set-device-identity.py --serial "$SERIAL_NUMBER"; then
+    exit 1
+  fi
+else
+  IDENTITY_CHECK_STATUS=0
+  python3 scripts/sentero_device_identity.py --check-provisioned >/tmp/sentero-identity-check.log 2>&1 || IDENTITY_CHECK_STATUS=$?
+  if [ "$IDENTITY_CHECK_STATUS" -eq 0 ]; then
+    echo "Vorhandene Geräteidentität wird verwendet."
+  elif [ "$IDENTITY_CHECK_STATUS" -eq 1 ]; then
+    echo "FEHLER: Geräteidentität beschädigt." >&2
+    cat /tmp/sentero-identity-check.log >&2 || true
+    exit 1
+  elif [ -t 0 ]; then
+    echo
+    echo "Sentero Box Installation"
+    printf "Seriennummer: "
+    read -r SERIAL_NUMBER
+    if ! python3 scripts/set-device-identity.py --serial "$SERIAL_NUMBER"; then
+      exit 1
+    fi
+  else
+    echo "FEHLER: --serial STB-XXXXXXXX ist erforderlich." >&2
+    echo "Beispiel: sudo ./scripts/first-install.sh --serial STB-00001234" >&2
+    exit 2
+  fi
+fi
+
+echo "[2/10] Docker und Systempakete pruefen ..."
+if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
+  ./scripts/install-docker-debian.sh
+fi
+systemctl enable --now docker
+
+echo "[3/10] Host-Netzwerk, Hotspot und sentero.local vorbereiten ..."
+# NetworkManager owns WiFi/AP changes on the Debian host. The application in
+# Docker talks to a small privileged Unix-socket service instead of running
+# nmcli inside the container.
+NEEDED_PACKAGES=(network-manager iw dnsmasq-base nftables avahi-daemon gettext-base python3)
+MISSING=()
+for pkg in "${NEEDED_PACKAGES[@]}"; do
+  dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || MISSING+=("$pkg")
+done
+if [ "${#MISSING[@]}" -gt 0 ]; then
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y "${MISSING[@]}"
+fi
+# Debian installer images often configure Wi-Fi through /etc/network/interfaces.
+# In that case NetworkManager reports it as "unmanaged" and cannot create the
+# Sentero setup AP. Back up and migrate that configuration before onboarding.
+./scripts/prepare-networkmanager.sh
+hostnamectl set-hostname sentero
+systemctl enable --now avahi-daemon
+
+if [ ! -f sentero-image.tar ]; then
+  echo "FEHLER: $TARGET_DIR/sentero-image.tar fehlt." >&2
+  echo "Baue das Kundenpaket neu mit deployment_build.py und kopiere den kompletten" >&2
+  echo "Ordner build/sentero-box auf diese Box." >&2
+  exit 1
+fi
+
+if [ ! -f .env ]; then
+  cp .env.example .env
+fi
+
+set_env() {
+  local key="$1" value="$2"
+  if grep -q "^${key}=" .env; then
+    sed -i "s|^${key}=.*|${key}=${value}|" .env
+  else
+    printf '%s=%s\n' "$key" "$value" >> .env
+  fi
+}
+
+# Create local MQTT credentials automatically. They never leave this box.
+MQTT_USER="$(grep '^SENTERO_MQTT_USERNAME=' .env | cut -d= -f2- || true)"
+MQTT_PASS="$(grep '^SENTERO_MQTT_PASSWORD=' .env | cut -d= -f2- || true)"
+[ -n "$MQTT_USER" ] || MQTT_USER="sentero"
+if [ -z "$MQTT_PASS" ] || [ "$MQTT_PASS" = "change-me" ]; then
+  MQTT_PASS="$(python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+)"
+fi
+set_env SENTERO_MQTT_USERNAME "$MQTT_USER"
+set_env SENTERO_MQTT_PASSWORD "$MQTT_PASS"
+
+# Auto-detect the Zigbee serial device where possible.
+ZIGBEE_HOST="$(grep '^ZIGBEE_ADAPTER_HOST=' .env | cut -d= -f2- || true)"
+if [ -z "$ZIGBEE_HOST" ] || [ ! -e "$ZIGBEE_HOST" ]; then
+  ZIGBEE_HOST="$(find /dev/serial/by-id -maxdepth 1 -type l 2>/dev/null | head -n 1 || true)"
+  if [ -z "$ZIGBEE_HOST" ]; then
+    for candidate in /dev/ttyACM0 /dev/ttyUSB0; do
+      if [ -e "$candidate" ]; then
+        ZIGBEE_HOST="$candidate"
+        break
+      fi
+    done
+  fi
+fi
+
+if [ -z "$ZIGBEE_HOST" ] || [ ! -e "$ZIGBEE_HOST" ]; then
+  echo "HINWEIS: Kein Zigbee-Adapter gefunden. Zigbee2MQTT bleibt vorerst deaktiviert."
+  ZIGBEE_HOST=""
+  set_env ZIGBEE_ADAPTER_HOST ""
+  set_env COMPOSE_PROFILES ""
+else
+  set_env ZIGBEE_ADAPTER_HOST "$ZIGBEE_HOST"
+  set_env COMPOSE_PROFILES "zigbee"
+fi
+
+# Keep existing adapter settings, otherwise use the Sentero defaults. The type
+# can still be changed in .env before rerunning if different hardware is used.
+ZIGBEE_CONTAINER="$(grep '^ZIGBEE_ADAPTER_CONTAINER=' .env | cut -d= -f2- || true)"
+ZIGBEE_TYPE="$(grep '^ZIGBEE_ADAPTER_TYPE=' .env | cut -d= -f2- || true)"
+ZIGBEE_TOPIC="$(grep '^ZIGBEE2MQTT_TOPIC_PREFIX=' .env | cut -d= -f2- || true)"
+[ -n "$ZIGBEE_CONTAINER" ] || ZIGBEE_CONTAINER="/dev/ttyACM0"
+[ -n "$ZIGBEE_TYPE" ] || ZIGBEE_TYPE="ember"
+[ -n "$ZIGBEE_TOPIC" ] || ZIGBEE_TOPIC="zigbee2mqtt"
+set_env ZIGBEE_ADAPTER_CONTAINER "$ZIGBEE_CONTAINER"
+set_env ZIGBEE_ADAPTER_TYPE "$ZIGBEE_TYPE"
+set_env ZIGBEE2MQTT_TOPIC_PREFIX "$ZIGBEE_TOPIC"
+
+echo "[4/10] Sentero Docker-Image laden ..."
+docker load -i sentero-image.tar
+
+set -a
+# shellcheck disable=SC1091
+. ./.env
+set +a
+SENTERO_IMAGE="${SENTERO_IMAGE:-sentero/app}"
+SENTERO_VERSION="${SENTERO_VERSION:-dev}"
+export SENTERO_IMAGE SENTERO_VERSION
+
+case "${SENTERO_IMAGE##*/}" in
+  *:*)
+    echo "FEHLER: SENTERO_IMAGE darf keinen Docker-Tag enthalten: $SENTERO_IMAGE" >&2
+    exit 1
+    ;;
+esac
+
+EXPECTED_IMAGE="${SENTERO_IMAGE}:${SENTERO_VERSION}"
+if ! docker image inspect "$EXPECTED_IMAGE" >/dev/null 2>&1; then
+  echo "FEHLER: Erwartetes Image $EXPECTED_IMAGE wurde nicht aus sentero-image.tar geladen." >&2
+  docker image ls --format '{{.Repository}}:{{.Tag}}' | grep '^sentero/' || true
+  exit 1
+fi
+
+PLATFORM="$(docker image inspect "$EXPECTED_IMAGE" --format '{{.Os}}/{{.Architecture}}')"
+if [ "$PLATFORM" != "linux/amd64" ]; then
+  echo "FEHLER: Falsche Image-Plattform: $PLATFORM (erwartet linux/amd64)." >&2
+  exit 1
+fi
+
+echo "[5/10] Laufzeitverzeichnisse und Konfiguration vorbereiten ..."
+mkdir -p data/sentero config backups mosquitto/config mosquitto/data mosquitto/log zigbee2mqtt/data ollama
+# The Sentero container intentionally runs as UID 10001. Ensure its persistent
+# SQLite volume is writable on a fresh root-owned installation.
+chown -R 10001:10001 data/sentero
+chmod -R u+rwX data/sentero
+
+if [ ! -f config/sentero.yaml ]; then
+  echo "FEHLER: config/sentero.yaml fehlt im Kundenpaket." >&2
+  exit 1
+fi
+
+if [ ! -f zigbee2mqtt/data/configuration.yaml.example ]; then
+  echo "FEHLER: zigbee2mqtt/data/configuration.yaml.example fehlt." >&2
+  exit 1
+fi
+
+envsubst < zigbee2mqtt/data/configuration.yaml.example > zigbee2mqtt/data/configuration.yaml
+
+echo "[6/10] MQTT-Zugangsdaten einrichten ..."
+docker run --rm \
+  -v "$PWD/mosquitto/config:/mosquitto/config" \
+  eclipse-mosquitto:2 \
+  mosquitto_passwd -b -c /mosquitto/config/passwords "$SENTERO_MQTT_USERNAME" "$SENTERO_MQTT_PASSWORD"
+MOSQ_UID="$(docker run --rm --entrypoint sh eclipse-mosquitto:2 -c 'id -u mosquitto')"
+MOSQ_GID="$(docker run --rm --entrypoint sh eclipse-mosquitto:2 -c 'id -g mosquitto')"
+chown "${MOSQ_UID}:${MOSQ_GID}" mosquitto/config/passwords
+chmod 600 mosquitto/config/passwords
+
+echo "[7/10] Host-Dienste installieren ..."
+install -m 0644 systemd/sentero-box.service /etc/systemd/system/sentero-box.service
+install -m 0644 systemd/sentero-updater.service /etc/systemd/system/sentero-updater.service
+install -m 0644 systemd/sentero-network.service /etc/systemd/system/sentero-network.service
+chmod +x scripts/start-box.sh scripts/prepare-networkmanager.sh sentero-network/sentero_network.py
+systemctl daemon-reload
+systemctl enable --now sentero-network.service
+systemctl enable --now sentero-updater.service
+systemctl enable sentero-box.service
+
+# Both host sockets must exist before Docker bind-mounts their runtime dirs.
+for _ in $(seq 1 40); do
+  [ -S /run/sentero-updater/updater.sock ] && [ -S /run/sentero-network/network.sock ] && break
+  sleep 0.25
+done
+if [ ! -S /run/sentero-updater/updater.sock ]; then
+  echo "FEHLER: Updater-Socket wurde nicht erstellt." >&2
+  systemctl status sentero-updater.service --no-pager || true
+  exit 1
+fi
+if [ ! -S /run/sentero-network/network.sock ]; then
+  echo "FEHLER: Netzwerk-Socket wurde nicht erstellt." >&2
+  systemctl status sentero-network.service --no-pager || true
+  exit 1
+fi
+
+set_env SENTERO_BOX_SETUP_MODE auto
+set_env SENTERO_BOX_HOSTNAME sentero
+set_env SENTERO_NETWORK_SOCKET /run/sentero-network/network.sock
+
+echo "[8/10] Sentero starten ..."
+export LC_ALL=C
+export LANG=C
+device_global_ipv4() {
+  local dev="$1" ip
+  # Kernel address state is authoritative. NetworkManager may call a perfectly
+  # usable installer-managed Ethernet link "connected (externally)".
+  ip="$(ip -o -4 addr show dev "$dev" scope global 2>/dev/null | awk '$3 == "inet" {split($4,a,"/"); if (a[1] !~ /^169\.254\./) {print a[1]; exit}}')"
+  if [ -n "$ip" ]; then
+    printf '%s\n' "$ip"
+    return 0
+  fi
+  ip="$(nmcli -g IP4.ADDRESS device show "$dev" 2>/dev/null | head -n1 | cut -d/ -f1 || true)"
+  [ -n "$ip" ] && [[ "$ip" != 169.254.* ]] && printf '%s\n' "$ip"
+}
+
+local_network_state() {
+  local dev typ state conn ip
+  while IFS=: read -r dev typ state conn; do
+    [ -n "${dev:-}" ] || continue
+    [ "$conn" != "sentero-setup-ap" ] || continue
+    case "$typ" in
+      ethernet|wifi)
+        ip="$(device_global_ipv4 "$dev" || true)"
+        if [ -n "$ip" ]; then
+          printf '%s|%s|%s\n' "$typ" "$dev" "$ip"
+          return 0
+        fi
+        ;;
+    esac
+  done < <(nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null || true)
+  return 1
+}
+
+NETWORK_STATE=""
+for _ in $(seq 1 20); do
+  NETWORK_STATE="$(local_network_state || true)"
+  [ -n "$NETWORK_STATE" ] && break
+  sleep 1
+done
+
+if [ -n "$NETWORK_STATE" ]; then
+  IFS='|' read -r NETWORK_TYPE NETWORK_DEVICE NETWORK_IP <<<"$NETWORK_STATE"
+  nmcli connection down sentero-setup-ap >/dev/null 2>&1 || true
+  echo "Lokales Netzwerk aktiv (${NETWORK_TYPE}, ${NETWORK_IP}). Setup-WLAN bleibt aus."
+  docker compose up -d
+else
+  echo "Kein LAN/WLAN mit lokaler IPv4-Adresse: starte zunächst nur die Sentero-App für die Provisionierung."
+  docker compose up -d --no-deps sentero
+  # Start the setup AP explicitly.  The host agent intentionally does not
+  # create an AP merely because it is running; the LAN-first decision belongs
+  # to this installation/state-machine branch.
+  if AP_START_RESULT="$(python3 - <<'PYCODE'
+import json
+import socket
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+    client.settimeout(35)
+    client.connect("/run/sentero-network/network.sock")
+    client.sendall(b'{"action":"start_setup_ap"}\n')
+    raw = b""
+    while b"\n" not in raw:
+        chunk = client.recv(65536)
+        if not chunk:
+            break
+        raw += chunk
+response = json.loads(raw.split(b"\n", 1)[0] or b"{}")
+if not response.get("ok"):
+    raise SystemExit(str(response.get("message") or "Setup-WLAN konnte nicht gestartet werden."))
+print(response.get("ssid") or "Sentero-Setup")
+PYCODE
+)"; then
+    echo "Setup-WLAN aktiv: ${AP_START_RESULT}"
+  else
+    echo "WARNUNG: Setup-WLAN konnte nicht automatisch gestartet werden." >&2
+  fi
+fi
+
+echo "[9/10] Setup-Etikett erzeugen ..."
+LABEL_OUTPUT="$(python3 "$BOX_DIR/scripts/generate-setup-label.py" 2>&1 || true)"
+if printf '%s\n' "$LABEL_OUTPUT" | grep -q '^LABEL='; then
+  SETUP_LABEL_PATH="$(printf '%s\n' "$LABEL_OUTPUT" | sed -n 's/^LABEL=//p' | tail -n1)"
+  SETUP_LABEL_SSID="$(printf '%s\n' "$LABEL_OUTPUT" | sed -n 's/^SSID=//p' | tail -n1)"
+  echo "Setup-Aufkleber: ${SETUP_LABEL_PATH} (${SETUP_LABEL_SSID})"
+else
+  echo "WARNUNG: Setup-Aufkleber konnte nicht erzeugt werden: ${LABEL_OUTPUT}" >&2
+fi
+
+echo "[9/10] Netzwerk-Onboarding pruefen ..."
+# Only boxes without a usable local LAN/Wi-Fi path should expose the setup AP.
+for _ in $(seq 1 20); do
+  AP_SSID="$(nmcli -g 802-11-wireless.ssid connection show sentero-setup-ap 2>/dev/null | head -n1 || true)"
+  [ -n "$NETWORK_STATE" ] && break
+  [ -n "$AP_SSID" ] && break
+  sleep 1
+done
+
+echo "[10/10] Healthcheck ..."
+for _ in $(seq 1 60); do
+  if docker inspect sentero --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' 2>/dev/null | grep -q '^healthy$'; then
+    IP="$(hostname -I | awk '{print $1}')"
+    echo
+    echo "============================================================"
+    echo " Sentero Box ist betriebsbereit"
+    echo " Version:  ${SENTERO_VERSION}"
+    echo " Image:    ${EXPECTED_IMAGE} (${PLATFORM})"
+    if [ -n "${ZIGBEE_HOST}" ]; then
+      echo " Zigbee:   ${ZIGBEE_HOST}"
+    else
+      echo " Zigbee:   nicht angeschlossen (optional)"
+    fi
+    if [ -n "$NETWORK_STATE" ]; then
+      echo " Netzwerk: ${NETWORK_TYPE} (${NETWORK_IP})"
+      echo " Web:      http://sentero.local:${SENTERO_HTTP_PORT:-8080}"
+      echo " Fallback: http://${NETWORK_IP}:${SENTERO_HTTP_PORT:-8080}"
+    else
+      AP_SSID="${AP_SSID:-$(nmcli -g 802-11-wireless.ssid connection show sentero-setup-ap 2>/dev/null | head -n1 || true)}"
+      echo " Setup-WLAN: ${AP_SSID:-Sentero-Setup-XXXX} (offen, nur waehrend Einrichtung)"
+      echo " Setup:      http://192.168.50.1:${SENTERO_HTTP_PORT:-8080}"
+      echo " Portal:     oeffnet sich auf Handy/Mac normalerweise automatisch"
+      if [ -n "${SETUP_LABEL_PATH:-}" ]; then
+        echo " QR-Aufkleber: ${SETUP_LABEL_PATH}"
+      fi
+      echo " Danach:     http://sentero.local:${SENTERO_HTTP_PORT:-8080}"
+    fi
+    echo "============================================================"
+    exit 0
+  fi
+  sleep 2
+done
+
+echo "FEHLER: Sentero wurde nicht rechtzeitig healthy." >&2
+docker compose ps >&2 || true
+docker logs sentero --tail 100 >&2 || true
+exit 1

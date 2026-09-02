@@ -1,0 +1,31 @@
+{
+  "version": "V22",
+  "policy": "unit tests must not use real MQTT/network services",
+  "device_mapping_tests_patched": [
+    "test_sensor_onboarding.py",
+    "test_network_service.py",
+    "test_smart_meter_behavior.py",
+    "test_notifications.py",
+    "test_telegram_assistant.py",
+    "test_export_service.py",
+    "test_mqtt_sensor_source.py",
+    "test_mail_assistant.py",
+    "test_audit_service.py",
+    "test_box_network_service.py",
+    "test_ecotracker_service.py"
+  ],
+  "sqlite_files_patched": [
+    "test_notifications.py",
+    "test_human_activity_score.py"
+  ],
+  "added": [
+    "tests/fakes.py",
+    "tests/test_no_network_policy.py"
+  ],
+  "notes": [
+    "DeviceMappingService instances receive NoNetworkSensorSource where directly constructed.",
+    "SQLite connections created directly in TestCase methods are registered with addCleanup().",
+    "Direct network-call references are reported but not blindly removed when they are part of mocked client tests."
+  ],
+  "direct_network_call_references_for_review": {}
+}

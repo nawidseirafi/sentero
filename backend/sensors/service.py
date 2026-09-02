@@ -30,7 +30,7 @@ class SenteroSensorService:
             "sensor_ready": bool(detail.get("sensor_ready")),
             "mode": mode,
             "mqtt_prepared": True,
-            "homeassistant_available": mode in {"homeassistant", "mixed"},
+            "mqtt_available": bool(detail.get("connected")),
         }
 
     def devices(self, include_internal: bool = False) -> dict[str, Any]:
@@ -72,6 +72,11 @@ class SenteroSensorService:
         active_rooms = len({event.room_id for event in events if event.room_id and event.value in {"active", "open", "suspected", "detected"}})
         last_activity = max((event.occurred_at for event in events), default=None)
         smart_meter_events = [event for event in events if event.event_type in {"energy_consumption", "power_usage", "water_consumption", "gas_consumption"}]
+        configured_roles = [role for role in self.mapping.roles(dev=True, include_state=True) if role.get("active", True) and role.get("enabled", True)]
+        present_roles = [role for role in configured_roles if role.get("presence") is True]
+        present_roles.sort(key=lambda role: str(role.get("last_updated") or role.get("last_changed") or role.get("updated_at") or ""), reverse=True)
+        current_presence = present_roles[0] if present_roles else None
+        current_room = current_presence.get("room") if current_presence else None
         dashboard = {
             "summary": {
                 "status": "learning",
@@ -82,6 +87,11 @@ class SenteroSensorService:
                 "fall_alerts": fall_alerts,
                 "low_batteries": low_batteries,
                 "smart_meter_readings": len(smart_meter_events),
+                "configured_sensor_count": len(configured_roles),
+                "present": bool(current_presence),
+                "current_room": current_room,
+                "current_location": f"Im {ROOM_LABELS.get(str(current_room), str(current_room).replace('_', ' ').title())}" if current_room else "Nicht im Haus",
+                "current_motion_state": current_presence.get("motion_state") if current_presence else None,
             },
             "rooms": public_rooms,
             "utility_usage": self._utility_usage(smart_meter_events),

@@ -172,8 +172,16 @@ def resolve_provider_config(config: dict[str, Any]) -> ProviderConfig | None:
     return ProviderConfig(
         provider="anthropic" if provider == "claude" else provider,
         api_key=api_key,
-        model=str(provider_block.get("model") or default_model(provider)),
-        base_url=str(provider_block.get("base_url") or "").rstrip("/"),
+        model=str(
+            os.getenv("SENTERO_LLM_MODEL")
+            or provider_block.get("model")
+            or default_model(provider)
+        ),
+        base_url=str(
+            os.getenv("SENTERO_LLM_BASE_URL")
+            or provider_block.get("base_url")
+            or ""
+        ).rstrip("/"),
         timeout_seconds=timeout_seconds,
     )
 
