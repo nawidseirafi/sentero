@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Prepare the Debian host so NetworkManager owns the Wi-Fi interfaces used by
-# Sentero for both client mode and the first-boot setup access point.
+# Prepare the Debian host so NetworkManager owns the physical network
+# interfaces used by Sentero. A mixed ifupdown/NetworkManager setup can start
+# two DHCP clients on the same Ethernet link and give the box two LAN addresses.
 # Safe defaults:
 # - back up ifupdown configuration before changing anything
-# - keep an active legacy Wi-Fi stanza during this run to avoid killing SSH
-# - remove stale/inactive Wi-Fi stanzas so a fresh box is cleanly NM-managed
+# - remove legacy physical-interface stanzas so each link has one DHCP owner
+# - preserve loopback, aliases, bridges, VLANs and other non-physical stanzas
 # - enforce ifupdown managed=true through a Sentero drop-in
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -44,8 +45,22 @@ managed=true
 EONM
 chmod 0644 "$NM_DROPIN"
 
-# Discover physical Wi-Fi interfaces without depending on NetworkManager's
-# current managed/unmanaged state.
+# Discover physical interfaces without depending on NetworkManager's current
+# managed/unmanaged state.
+mapfile -t ETHERNET_DEVS < <(
+  for p in /sys/class/net/*; do
+    [ -e "$p" ] || continue
+    dev="$(basename "$p")"
+    [ "$dev" != "lo" ] || continue
+    [ ! -d "$p/wireless" ] || continue
+    [ -e "$p/device" ] || continue
+    if [[ "$dev" == docker* || "$dev" == br-* || "$dev" == veth* || "$dev" == virbr* || "$dev" == tun* || "$dev" == tap* || "$dev" == wg* || "$dev" == tailscale* || "$dev" == zt* || "$dev" == wl* || "$dev" == wlan* ]]; then
+      continue
+    fi
+    printf '%s\n' "$dev"
+  done | sort -u
+)
+
 mapfile -t WIFI_DEVS < <(
   for p in /sys/class/net/*/wireless; do
     [ -d "$p" ] || continue
@@ -57,39 +72,28 @@ if [ "${#WIFI_DEVS[@]}" -eq 0 ] && command -v iw >/dev/null 2>&1; then
   mapfile -t WIFI_DEVS < <(iw dev 2>/dev/null | awk '$1=="Interface" {print $2}' | sort -u)
 fi
 
+if [ "${#ETHERNET_DEVS[@]}" -gt 0 ]; then
+  echo "Ethernet-Interface(s): ${ETHERNET_DEVS[*]}"
+fi
+
 if [ "${#WIFI_DEVS[@]}" -eq 0 ]; then
   echo "WARNUNG: Kein WLAN-Interface gefunden. NetworkManager wurde trotzdem vorbereitet." >&2
 else
   echo "WLAN-Interface(s): ${WIFI_DEVS[*]}"
 fi
 
-# If the installer itself is currently using a legacy ifupdown Wi-Fi link,
-# preserve its stanza for this run. managed=true is enough to hand ownership to
-# NetworkManager, while removing the stanza mid-SSH-session could sever access.
-ACTIVE_WIFI=""
-for dev in "${WIFI_DEVS[@]}"; do
-  if ip -4 addr show dev "$dev" 2>/dev/null | grep -q 'inet '; then
-    ACTIVE_WIFI="$dev"
-    break
-  fi
-done
-
-if [ -n "$ACTIVE_WIFI" ]; then
-  echo "Aktives WLAN $ACTIVE_WIFI erkannt; legacy /etc/network/interfaces wird fuer diese Sitzung beibehalten."
-  echo "NetworkManager uebernimmt es via managed=true."
-else
-  # On a fresh/offline box remove only Wi-Fi-related ifupdown declarations.
-  # Ethernet and loopback configuration are preserved.
-  WIFI_LIST="$(IFS=,; echo "${WIFI_DEVS[*]:-}")"
-  export SENTERO_WIFI_DEVICES="$WIFI_LIST"
-  python3 - <<'PY'
+# Remove ifupdown ownership for physical appliance links. NetworkManager then
+# becomes the only DHCP client for those devices.
+NETWORK_LIST="$(IFS=,; echo "${ETHERNET_DEVS[*]:-},${WIFI_DEVS[*]:-}")"
+export SENTERO_NETWORK_DEVICES="$NETWORK_LIST"
+python3 - <<'PY'
 from __future__ import annotations
 import os
 import re
 from pathlib import Path
 
-wifi = {x for x in os.environ.get("SENTERO_WIFI_DEVICES", "").split(",") if x}
-if not wifi:
+devices = {x for x in os.environ.get("SENTERO_NETWORK_DEVICES", "").split(",") if x}
+if not devices:
     raise SystemExit(0)
 
 paths = [Path("/etc/network/interfaces")]
@@ -111,7 +115,7 @@ for path in paths:
         line = original[i]
         stripped = line.strip()
         m = iface_re.match(line)
-        if m and m.group(1) in wifi:
+        if m and m.group(1) in devices:
             changed = True
             i += 1
             # Continuation/options belong to this iface stanza until the next
@@ -126,7 +130,7 @@ for path in paths:
         m = auto_re.match(line)
         if m:
             names = m.group(3).split()
-            kept = [n for n in names if n not in wifi]
+            kept = [n for n in names if n not in devices]
             if len(kept) != len(names):
                 changed = True
                 if kept:
@@ -139,13 +143,12 @@ for path in paths:
         path.write_text("".join(out), encoding="utf-8")
         print(f"Bereinigt: {path}")
 PY
-fi
 
 systemctl enable NetworkManager.service >/dev/null 2>&1 || true
 systemctl restart NetworkManager.service
 
-# Force each Wi-Fi device into managed mode as a final guard and verify it.
-for dev in "${WIFI_DEVS[@]}"; do
+# Force each physical device into managed mode as a final guard and verify it.
+for dev in "${ETHERNET_DEVS[@]}" "${WIFI_DEVS[@]}"; do
   nmcli device set "$dev" managed yes >/dev/null 2>&1 || true
   for _ in $(seq 1 20); do
     STATE="$(nmcli -g GENERAL.STATE device show "$dev" 2>/dev/null | head -n1 || true)"
