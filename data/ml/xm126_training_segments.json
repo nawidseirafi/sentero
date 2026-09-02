@@ -1,0 +1,178 @@
+{
+  "20260824_114603_xm126-00124a_ml_segment_empty_enter_sit_leave_empty_wall_buffered_retry2_330s.jsonl": [
+    { "start_s": 0, "end_s": 30, "label": "empty" },
+    { "start_s": 35, "end_s": 60, "label": "motion" },
+    { "start_s": 60, "end_s": 240, "label": "present_still" },
+    { "start_s": 240, "end_s": 255, "label": "motion" },
+    { "start_s": 285, "end_s": 322, "label": "empty" }
+  ],
+  "20260824_115656_xm126-00124a_ml_segment_empty_pc_normal_leave_empty_wall_330s.jsonl": [
+    { "start_s": 1, "end_s": 30, "label": "empty" },
+    { "start_s": 35, "end_s": 60, "label": "motion" },
+    { "start_s": 60, "end_s": 240, "label": "present_still" },
+    { "start_s": 240, "end_s": 255, "label": "motion" },
+    { "start_s": 285, "end_s": 322, "label": "empty" }
+  ],
+  "20260825_211903_xm126-00124a_validation_10min_light_on_room_initial_empty.jsonl": [
+    { "start_s": 0, "end_s": 57, "label": "empty" },
+    { "start_s": 57, "end_s": 117, "label": "motion" },
+    { "start_s": 117, "end_s": 237, "label": "empty" },
+    { "start_s": 237, "end_s": 297, "label": "present_still" },
+    { "start_s": 297, "end_s": 567, "label": "empty" }
+  ],
+  "20260825_214208_xm126-00124a_validation_present_then_exit_5min.jsonl": [
+    { "start_s": 0, "end_s": 30, "label": "motion" },
+    { "start_s": 35, "end_s": 295, "label": "empty" }
+  ],
+  "20260825_220913_xm126-00124a_fall_wall_controlled_simulation_3min.jsonl": [
+    { "start_s": 0, "end_s": 25, "label": "motion" },
+    { "start_s": 25, "end_s": 40, "label": "fall" },
+    { "start_s": 40, "end_s": 65, "label": "present_still" },
+    { "start_s": 65, "end_s": 90, "label": "motion" },
+    { "start_s": 90, "end_s": 105, "label": "fall" },
+    { "start_s": 105, "end_s": 135, "label": "present_still" },
+    { "start_s": 135, "end_s": 180, "label": "motion" }
+  ],
+  "20260825_222730_xm126-00124a_fall_wall_validation_score85_3min.jsonl": [
+    { "start_s": 0, "end_s": 30, "label": "motion" },
+    { "start_s": 30, "end_s": 45, "label": "fall" },
+    { "start_s": 45, "end_s": 70, "label": "present_still" },
+    { "start_s": 70, "end_s": 95, "label": "motion" },
+    { "start_s": 95, "end_s": 115, "label": "fall" },
+    { "start_s": 115, "end_s": 145, "label": "present_still" },
+    { "start_s": 145, "end_s": 180, "label": "motion" }
+  ],
+  "20260825_223442_xm126-00124a_false_positive_hectic_motion_no_fall_3min.jsonl": [
+    { "start_s": 0, "end_s": 175, "label": "motion" }
+  ],
+  "20260827_075800_xm126-00124a_hybrid_alternate_still_motion_wall_170cm_180s.jsonl": [
+    { "start_s": 0, "end_s": 30, "label": "present_still" },
+    { "start_s": 30, "end_s": 60, "label": "motion" },
+    { "start_s": 60, "end_s": 90, "label": "present_still" },
+    { "start_s": 90, "end_s": 120, "label": "motion" },
+    { "start_s": 120, "end_s": 150, "label": "present_still" },
+    { "start_s": 150, "end_s": 175, "label": "motion" }
+  ],
+  "20260827_080346_xm126-00124a_hybrid_alternate_still_motion_wall_170cm_after_fix_180s.jsonl": [
+    { "start_s": 0, "end_s": 30, "label": "present_still" },
+    { "start_s": 30, "end_s": 60, "label": "motion" },
+    { "start_s": 60, "end_s": 90, "label": "present_still" },
+    { "start_s": 90, "end_s": 120, "label": "motion" },
+    { "start_s": 120, "end_s": 150, "label": "present_still" },
+    { "start_s": 150, "end_s": 175, "label": "motion" }
+  ],
+  "20260827_084410_xm126-00124a_empty_enter_still_baseline_logic_180s.jsonl": [
+    { "start_s": 0, "end_s": 10, "label": "empty" },
+    { "start_s": 12, "end_s": 32, "label": "motion" },
+    { "start_s": 40, "end_s": 175, "label": "present_still" }
+  ],
+  "20260827_085228_xm126-00124a_alternate_still_move_positions_wall_170cm_after_motion_fall_fix_180s.jsonl": [
+    { "start_s": 8, "end_s": 30, "label": "present_still" },
+    { "start_s": 38, "end_s": 60, "label": "motion" },
+    { "start_s": 68, "end_s": 90, "label": "present_still" },
+    { "start_s": 98, "end_s": 120, "label": "motion" },
+    { "start_s": 128, "end_s": 150, "label": "present_still" },
+    { "start_s": 158, "end_s": 175, "label": "motion" }
+  ],
+  "20260827_102610_xm126-00124a_alternate_still_move_positions_wall_170cm_motion_retune_180s.jsonl": [
+    { "start_s": 8, "end_s": 30, "label": "present_still" },
+    { "start_s": 38, "end_s": 60, "label": "motion" },
+    { "start_s": 68, "end_s": 90, "label": "present_still" },
+    { "start_s": 98, "end_s": 120, "label": "motion" },
+    { "start_s": 128, "end_s": 150, "label": "present_still" },
+    { "start_s": 158, "end_s": 175, "label": "motion" }
+  ],
+  "20260827_103339_xm126-00124a_alternate_still_move_positions_wall_170cm_motion_basis_fix_180s.jsonl": [
+    { "start_s": 8, "end_s": 30, "label": "present_still" },
+    { "start_s": 38, "end_s": 60, "label": "motion" },
+    { "start_s": 68, "end_s": 90, "label": "present_still" },
+    { "start_s": 98, "end_s": 120, "label": "motion" },
+    { "start_s": 128, "end_s": 150, "label": "present_still" },
+    { "start_s": 158, "end_s": 175, "label": "motion" }
+  ],
+  "20260827_125653_xm126-00124a_alternate_still_move_positions_wall_170cm_after_ml_retrain_180s.jsonl": [
+    { "start_s": 8, "end_s": 30, "label": "present_still" },
+    { "start_s": 38, "end_s": 60, "label": "motion" },
+    { "start_s": 68, "end_s": 90, "label": "present_still" },
+    { "start_s": 98, "end_s": 120, "label": "motion" },
+    { "start_s": 128, "end_s": 150, "label": "present_still" },
+    { "start_s": 158, "end_s": 175, "label": "motion" }
+  ],
+  "20260827_154303_xm126-00124a_alternate_still_move_positions_wall_170cm_activity_score_180s.jsonl": [
+    { "start_s": 8, "end_s": 30, "label": "present_still" },
+    { "start_s": 38, "end_s": 60, "label": "motion" },
+    { "start_s": 68, "end_s": 90, "label": "present_still" },
+    { "start_s": 98, "end_s": 120, "label": "motion" },
+    { "start_s": 128, "end_s": 150, "label": "present_still" },
+    { "start_s": 158, "end_s": 175, "label": "motion" }
+  ],
+  "20260827_155032_xm126-00124a_alternate_still_move_positions_wall_170cm_activity_score_zones_180s.jsonl": [
+    { "start_s": 8, "end_s": 30, "label": "present_still" },
+    { "start_s": 38, "end_s": 60, "label": "motion" },
+    { "start_s": 68, "end_s": 90, "label": "present_still" },
+    { "start_s": 98, "end_s": 120, "label": "motion" },
+    { "start_s": 128, "end_s": 150, "label": "present_still" },
+    { "start_s": 158, "end_s": 175, "label": "motion" }
+  ],
+  "20260827_201317_xm126-00124a_empty_room_wall_6m_ready_bridge_restart_5min.jsonl": [
+    { "start_s": 2, "end_s": 298, "label": "empty" }
+  ],
+  "20260827_203632_xm126-00124a_alternate_still_move_wall_6m_recalibrated_180s.jsonl": [
+    { "start_s": 0, "end_s": 30, "label": "present_still" },
+    { "start_s": 30, "end_s": 60, "label": "motion" },
+    { "start_s": 60, "end_s": 90, "label": "present_still" },
+    { "start_s": 90, "end_s": 120, "label": "motion" },
+    { "start_s": 120, "end_s": 150, "label": "present_still" },
+    { "start_s": 150, "end_s": 175, "label": "motion" }
+  ],
+  "20260827_214120_xm126-00124a_alternate_still_move_wall_6m_iq_fsm_180s.jsonl": [
+    { "start_s": 0, "end_s": 30, "label": "present_still" },
+    { "start_s": 30, "end_s": 60, "label": "motion" },
+    { "start_s": 60, "end_s": 90, "label": "present_still" },
+    { "start_s": 90, "end_s": 120, "label": "motion" },
+    { "start_s": 120, "end_s": 150, "label": "present_still" },
+    { "start_s": 150, "end_s": 175, "label": "motion" }
+  ],
+  "20260827_215507_xm126-00124a_alternate_still_move_wall_6m_iq_fsm_sharp_180s.jsonl": [
+    { "start_s": 0, "end_s": 30, "label": "present_still" },
+    { "start_s": 30, "end_s": 60, "label": "motion" },
+    { "start_s": 60, "end_s": 90, "label": "present_still" },
+    { "start_s": 90, "end_s": 120, "label": "motion" },
+    { "start_s": 120, "end_s": 150, "label": "present_still" },
+    { "start_s": 150, "end_s": 175, "label": "motion" }
+  ],
+  "20260828_124914_xm126-00124a_zone_still_move_wall_6m_adaptive_180s.jsonl": [
+    { "start_s": 0, "end_s": 30, "label": "present_still" },
+    { "start_s": 30, "end_s": 60, "label": "motion" },
+    { "start_s": 60, "end_s": 90, "label": "present_still" },
+    { "start_s": 90, "end_s": 120, "label": "motion" },
+    { "start_s": 120, "end_s": 150, "label": "present_still" },
+    { "start_s": 150, "end_s": 175, "label": "motion" }
+  ],
+  "20260828_125625_xm126-00124a_zone_still_move_wall_6m_adaptive_clean_180s.jsonl": [
+    { "start_s": 0, "end_s": 30, "label": "present_still" },
+    { "start_s": 30, "end_s": 60, "label": "motion" },
+    { "start_s": 60, "end_s": 90, "label": "present_still" },
+    { "start_s": 90, "end_s": 120, "label": "motion" },
+    { "start_s": 120, "end_s": 150, "label": "present_still" },
+    { "start_s": 150, "end_s": 175, "label": "motion" }
+  ],
+  "20260828_130908_xm126-00124a_zone_still_move_wall_6m_ml_hybrid_180s.jsonl": [
+    { "start_s": 0, "end_s": 30, "label": "present_still" },
+    { "start_s": 30, "end_s": 60, "label": "motion" },
+    { "start_s": 60, "end_s": 90, "label": "present_still" },
+    { "start_s": 90, "end_s": 120, "label": "motion" },
+    { "start_s": 120, "end_s": 150, "label": "present_still" },
+    { "start_s": 150, "end_s": 175, "label": "motion" }
+  ],
+  "20260828_132238_xm126-00124a_blind_standing_motion_exit_zone3_4_tree_180s.jsonl": [
+    { "start_s": 0, "end_s": 10, "label": "present_still" },
+    { "start_s": 10, "end_s": 55, "label": "motion" },
+    { "start_s": 55, "end_s": 175, "label": "empty" }
+  ],
+  "20260828_135934_xm126-00124a_blind_standing_motion_exit_quiet_empty_fix_180s.jsonl": [
+    { "start_s": 0, "end_s": 10, "label": "present_still" },
+    { "start_s": 10, "end_s": 55, "label": "motion" },
+    { "start_s": 55, "end_s": 175, "label": "empty" }
+  ]
+}

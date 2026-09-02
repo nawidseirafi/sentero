@@ -1,0 +1,14 @@
+{
+  "20260824_120939_xm126-00124a_ml_segment_empty_corner_far_still_leave_empty_wall_330s.jsonl": {
+    "reason": "weak_or_out_of_coverage",
+    "notes": "Far corner still presence looked like empty room: still segment had presence 4.2%, raw_presence 0%, still_presence_candidate 0%, processor_inter_score p50 0.813."
+  },
+  "20260827_195922_xm126-00124a_empty_room_wall_6m_recalibrated_5min.jsonl": {
+    "reason": "aborted_or_contaminated_empty_room",
+    "notes": "Calibration/run was interrupted during the first 6m retry and should not be used as a clean empty-room reference."
+  },
+  "20260827_200832_xm126-00124a_empty_room_wall_6m_recalibrated_retry_5min.jsonl": {
+    "reason": "aborted_or_contaminated_empty_room",
+    "notes": "User entered the room during the empty-room recording, so this file is not valid as empty-room training or validation data."
+  }
+}

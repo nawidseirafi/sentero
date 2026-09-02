@@ -1,0 +1,233 @@
+{
+  "window_samples": 10,
+  "step_samples": 2,
+  "profile": "current_wall_6m",
+  "model_type": "tree",
+  "max_depth": 6,
+  "min_leaf": 16,
+  "labeled_files": {
+    "20260827_201317_xm126-00124a_empty_room_wall_6m_ready_bridge_restart_5min.jsonl": "segmented",
+    "20260827_203632_xm126-00124a_alternate_still_move_wall_6m_recalibrated_180s.jsonl": "segmented",
+    "20260827_214120_xm126-00124a_alternate_still_move_wall_6m_iq_fsm_180s.jsonl": "segmented",
+    "20260827_215507_xm126-00124a_alternate_still_move_wall_6m_iq_fsm_sharp_180s.jsonl": "segmented",
+    "20260828_124914_xm126-00124a_zone_still_move_wall_6m_adaptive_180s.jsonl": "segmented",
+    "20260828_125625_xm126-00124a_zone_still_move_wall_6m_adaptive_clean_180s.jsonl": "segmented",
+    "20260828_130908_xm126-00124a_zone_still_move_wall_6m_ml_hybrid_180s.jsonl": "segmented",
+    "20260828_132238_xm126-00124a_blind_standing_motion_exit_zone3_4_tree_180s.jsonl": "segmented",
+    "20260828_135934_xm126-00124a_blind_standing_motion_exit_quiet_empty_fix_180s.jsonl": "segmented"
+  },
+  "skipped_files": {
+    "20260822_095917_xm126-00124a_ecke_licht_an.jsonl": "outside_current_wall_6m_profile",
+    "20260822_100152_xm126-00124a_ecke_bewegung_2.jsonl": "outside_current_wall_6m_profile",
+    "20260822_100723_xm126-00124a_ecke_licht_an_wiederholung.jsonl": "outside_current_wall_6m_profile",
+    "20260822_101120_xm126-00124a_ecke_licht_an_stabilitaet.jsonl": "outside_current_wall_6m_profile",
+    "20260822_101412_xm126-00124a_ecke_licht_an_wiederholung_2.jsonl": "outside_current_wall_6m_profile",
+    "20260822_101646_xm126-00124a_falltest_nach_ecke_fix.jsonl": "outside_current_wall_6m_profile",
+    "20260822_104910_xm126-00124a_leerer_raum_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260822_105752_xm126-00124a_leerer_raum_licht_aus_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260822_110925_xm126-00124a_leerer_raum_licht_an_presence_fix_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260822_111808_xm126-00124a_sitzen_still_pc_presence_fix_60s.jsonl": "outside_current_wall_6m_profile",
+    "20260822_112410_xm126-00124a_sitzen_still_pc_acconeer_presence_60s.jsonl": "outside_current_wall_6m_profile",
+    "20260823_215543_xm126-00124a_leerer_raum_acconeer_presence_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260823_220917_xm126-00124a_leerer_raum_hybrid_anchor_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260823_222019_xm126-00124a_leerer_raum_anchor_strict_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_073357_xm126-00124a_reinkommen_sitzen_still_anchor_strict_90s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_073538_xm126-00124a_reinkommen_sitzen_still_anchor_strict_90s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_074636_xm126-00124a_ml_empty_pc_normal_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_080014_xm126-00124a_ml_empty_presence_max_pc_normal_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_080632_xm126-00124a_ml_present_still_reinkommen_pc_3min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_082701_xm126-00124a_empty_after_full_calibration_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_083618_xm126-00124a_ecke_still_microbewegung_baseline_60s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_084152_xm126-00124a_pc_arbeiten_normal_im_raum_120s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_084709_xm126-00124a_smoke_baseline_assisted_presence_10s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_084740_xm126-00124a_smoke_baseline_assisted_presence_25s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_084915_xm126-00124a_verify_baseline_assisted_presence_25s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_085248_xm126-00124a_empty_after_baseline_assisted_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_085912_xm126-00124a_empty_baseline_assisted_disabled_smoke_30s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_091917_xm126-00124a_ab_empty_a_fresh_bridge_2min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_092255_xm126-00124a_ab_present_b_pc_fresh_bridge_2min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_093207_xm126-00124a_ab_present_b_pc_naeher_dran_fresh_bridge_2min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_094606_xm126-00124a_ml_empty_wall_mount_after_calibration_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_095046_xm126-00124a_ml_empty_wall_mount_after_calibration_retry_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_095709_xm126-00124a_ml_present_wall_mount_pc_120s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_100104_xm126-00124a_ml_present_wall_mount_pc_very_still_120s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_100956_xm126-00124a_smoke_presence_confidence_10s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_102212_xm126-00124a_ml_motion_wall_mount_free_room_120s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_103603_xm126-00124a_ml_present_wall_mount_free_chair_still_120s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_104156_xm126-00124a_smoke_still_inter_rule_20s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_104316_xm126-00124a_smoke_still_inter_rule_retry_15s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_104445_xm126-00124a_empty_wall_still_inter_rule_2min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_104924_xm126-00124a_empty_wall_short_hold_fresh_bridge_2min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_105234_xm126-00124a_present_wall_free_chair_still_inter_rule_2min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_111426_xm126-00124a_wall_presence_leave_return_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_112430_xm126-00124a_ml_segment_enter_sit_leave_wall_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_113209_xm126-00124a_ml_segment_enter_sit_leave_wall_buffered_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_113324_xm126-00124a_ml_segment_enter_sit_leave_wall_buffered_retry_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_114418_xm126-00124a_ml_segment_empty_enter_sit_leave_empty_wall_buffered_330s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_114603_xm126-00124a_ml_segment_empty_enter_sit_leave_empty_wall_buffered_retry2_330s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_115656_xm126-00124a_ml_segment_empty_pc_normal_leave_empty_wall_330s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_120939_xm126-00124a_ml_segment_empty_corner_far_still_leave_empty_wall_330s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_122119_xm126-00124a_ml_motion_near_to_edge_active_wall_240s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_122909_xm126-00124a_ml_motion_near_to_edge_active_wall_reaimed_240s.jsonl": "outside_current_wall_6m_profile",
+    "20260824_151052_xm126-00124a_guided_daily_presence_wall_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_151206_xm126-00124a_guided_daily_presence_wall_retry_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260824_151939_xm126-00124a_guided_presence_decay_after_motion_wall_240s.jsonl": "outside_current_wall_6m_profile",
+    "20260825_211536_xm126-00124a_bridge_start_smoke_8s.jsonl": "outside_current_wall_6m_profile",
+    "20260825_211903_xm126-00124a_validation_10min_light_on_room_initial_empty.jsonl": "outside_current_wall_6m_profile",
+    "20260825_214033_xm126-00124a_validation_empty_enter_exit_5min_retry2.jsonl": "outside_current_wall_6m_profile",
+    "20260825_214208_xm126-00124a_validation_present_then_exit_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260825_215822_xm126-00124a_hybrid_smoke_test.jsonl": "outside_current_wall_6m_profile",
+    "20260825_215954_xm126-00124a_hybrid_validation_present_then_exit_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260825_220913_xm126-00124a_fall_wall_controlled_simulation_3min.jsonl": "outside_current_wall_6m_profile",
+    "20260825_221553_xm126-00124a_fall_wall_validation_after_rule_3min.jsonl": "outside_current_wall_6m_profile",
+    "20260825_222223_xm126-00124a_fall_wall_validation_sharpened_3min.jsonl": "outside_current_wall_6m_profile",
+    "20260825_222730_xm126-00124a_fall_wall_validation_score85_3min.jsonl": "outside_current_wall_6m_profile",
+    "20260825_223442_xm126-00124a_false_positive_hectic_motion_no_fall_3min.jsonl": "outside_current_wall_6m_profile",
+    "20260825_224025_xm126-00124a_fall_wall_short_validation_3min.jsonl": "outside_current_wall_6m_profile",
+    "20260825_224632_xm126-00124a_ml_empty_room_final_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260827_071717_xm126-00124a_ml_empty_room_wall_170cm_floor_tilt_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260827_073159_xm126-00124a_ml_empty_room_wall_170cm_floor_tilt_after_calibration_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260827_074455_xm126-00124a_hybrid_present_exit_reenter_wall_170cm_3min.jsonl": "outside_current_wall_6m_profile",
+    "20260827_075059_xm126-00124a_hybrid_empty_enter_still_wall_170cm_180s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_075202_xm126-00124a_hybrid_empty_enter_still_wall_170cm_180s_retry.jsonl": "outside_current_wall_6m_profile",
+    "20260827_075800_xm126-00124a_hybrid_alternate_still_motion_wall_170cm_180s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_080346_xm126-00124a_hybrid_alternate_still_motion_wall_170cm_after_fix_180s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_081319_xm126-00124a_motion_fix_smoke_test.jsonl": "outside_current_wall_6m_profile",
+    "20260827_081410_xm126-00124a_hybrid_alternate_still_motion_wall_170cm_motion_fix_180s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_082334_xm126-00124a_baseline_logic_smoke_20s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_082455_xm126-00124a_baseline_logic_reason_check_10s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_083030_xm126-00124a_empty_room_baseline_logic_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260827_083652_xm126-00124a_empty_room_baseline_logic_threshold_fix_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260827_084410_xm126-00124a_empty_enter_still_baseline_logic_180s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_085228_xm126-00124a_alternate_still_move_positions_wall_170cm_after_motion_fall_fix_180s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_091701_xm126-00124a_mounting_mode_state_check_8s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_102610_xm126-00124a_alternate_still_move_positions_wall_170cm_motion_retune_180s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_103339_xm126-00124a_alternate_still_move_positions_wall_170cm_motion_basis_fix_180s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_125653_xm126-00124a_alternate_still_move_positions_wall_170cm_after_ml_retrain_180s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_153840_xm126-00124a_activity_score_smoke_10s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_154303_xm126-00124a_alternate_still_move_positions_wall_170cm_activity_score_180s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_155032_xm126-00124a_alternate_still_move_positions_wall_170cm_activity_score_zones_180s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_164737_xm126-00124a_alternate_still_move_positions_wall_170cm_profile_motion_180s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_165432_xm126-00124a_empty_room_after_reposition_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260827_165813_xm126-00124a_empty_room_after_reposition_recalibrated_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260827_170642_xm126-00124a_alternate_still_move_after_reposition_profile_motion_180s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_170953_xm126-00124a_empty_room_old_position_recalibrated_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260827_171753_xm126-00124a_alternate_still_move_old_position_recalibrated_profile_motion_retry_180s.jsonl": "outside_current_wall_6m_profile",
+    "20260827_195325_xm126-00124a_calibration_status_probe.jsonl": "outside_current_wall_6m_profile",
+    "20260827_195617_xm126-00124a_post_calibration_probe.jsonl": "outside_current_wall_6m_profile",
+    "20260827_195911_xm126-00124a_post_calibration_ready_probe.jsonl": "outside_current_wall_6m_profile",
+    "20260827_195922_xm126-00124a_empty_room_wall_6m_recalibrated_5min.jsonl": "outside_current_wall_6m_profile",
+    "20260827_200508_xm126-00124a_calibration_progress_probe.jsonl": "outside_current_wall_6m_profile",
+    "20260827_200819_xm126-00124a_calibration_ready_probe.jsonl": "outside_current_wall_6m_profile",
+    "20260827_200832_xm126-00124a_empty_room_wall_6m_recalibrated_retry_5min.jsonl": "outside_current_wall_6m_profile"
+  },
+  "window_counts": {
+    "empty": 298,
+    "present_still": 324,
+    "motion": 381
+  },
+  "evaluation": {
+    "accuracy": 0.607,
+    "confusion": {
+      "empty": {
+        "motion": 62,
+        "empty": 236
+      },
+      "present_still": {
+        "present_still": 144,
+        "empty": 24,
+        "motion": 156
+      },
+      "motion": {
+        "empty": 53,
+        "present_still": 99,
+        "motion": 229
+      },
+      "fall": {}
+    },
+    "sources": [
+      {
+        "source": "20260827_201317_xm126-00124a_empty_room_wall_6m_ready_bridge_restart_5min.jsonl#segmented",
+        "label_counts": {
+          "empty": 181
+        },
+        "accuracy": 0.978,
+        "windows": 181
+      },
+      {
+        "source": "20260827_203632_xm126-00124a_alternate_still_move_wall_6m_recalibrated_180s.jsonl#segmented",
+        "label_counts": {
+          "present_still": 52,
+          "motion": 50
+        },
+        "accuracy": 0.275,
+        "windows": 102
+      },
+      {
+        "source": "20260827_214120_xm126-00124a_alternate_still_move_wall_6m_iq_fsm_180s.jsonl#segmented",
+        "label_counts": {
+          "present_still": 52,
+          "motion": 50
+        },
+        "accuracy": 0.539,
+        "windows": 102
+      },
+      {
+        "source": "20260827_215507_xm126-00124a_alternate_still_move_wall_6m_iq_fsm_sharp_180s.jsonl#segmented",
+        "label_counts": {
+          "present_still": 52,
+          "motion": 50
+        },
+        "accuracy": 0.569,
+        "windows": 102
+      },
+      {
+        "source": "20260828_124914_xm126-00124a_zone_still_move_wall_6m_adaptive_180s.jsonl#segmented",
+        "label_counts": {
+          "present_still": 52,
+          "motion": 49
+        },
+        "accuracy": 0.475,
+        "windows": 101
+      },
+      {
+        "source": "20260828_125625_xm126-00124a_zone_still_move_wall_6m_adaptive_clean_180s.jsonl#segmented",
+        "label_counts": {
+          "present_still": 52,
+          "motion": 50
+        },
+        "accuracy": 0.608,
+        "windows": 102
+      },
+      {
+        "source": "20260828_130908_xm126-00124a_zone_still_move_wall_6m_ml_hybrid_180s.jsonl#segmented",
+        "label_counts": {
+          "present_still": 52,
+          "motion": 50
+        },
+        "accuracy": 0.588,
+        "windows": 102
+      },
+      {
+        "source": "20260828_132238_xm126-00124a_blind_standing_motion_exit_zone3_4_tree_180s.jsonl#segmented",
+        "label_counts": {
+          "present_still": 6,
+          "motion": 41,
+          "empty": 58
+        },
+        "accuracy": 0.343,
+        "windows": 105
+      },
+      {
+        "source": "20260828_135934_xm126-00124a_blind_standing_motion_exit_quiet_empty_fix_180s.jsonl#segmented",
+        "label_counts": {
+          "present_still": 6,
+          "motion": 41,
+          "empty": 59
+        },
+        "accuracy": 0.802,
+        "windows": 106
+      }
+    ]
+  }
+}

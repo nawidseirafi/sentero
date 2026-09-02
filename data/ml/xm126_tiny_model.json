@@ -1,0 +1,409 @@
+{
+  "model_type": "decision_tree",
+  "classes": [
+    "empty",
+    "present_still",
+    "motion"
+  ],
+  "feature_count": 117,
+  "feature_keys": [
+    "motion_energy",
+    "motion_activity_ratio",
+    "raw_peak_delta",
+    "raw_threshold",
+    "raw_noise_floor",
+    "velocity_mps",
+    "distance_step_m",
+    "center_of_energy_m",
+    "center_step_m",
+    "center_velocity_mps",
+    "distance_m",
+    "processor_distance_m",
+    "processor_intra_score",
+    "processor_inter_score",
+    "baseline_delta_score",
+    "baseline_delta_max",
+    "baseline_changed_point_count",
+    "baseline_changed_zone_count",
+    "baseline_delta_span",
+    "profile_motion_score",
+    "profile_motion_max",
+    "profile_motion_changed_points",
+    "profile_motion_peak_shift",
+    "phase_activity_score",
+    "phase_activity_max",
+    "phase_activity_changed_points",
+    "activity_score",
+    "activity_score_raw",
+    "activity_phase_component",
+    "fall_score",
+    "fall_distance_span",
+    "fall_stable_duration"
+  ],
+  "bool_keys": [
+    "raw_presence",
+    "raw_presence_confirmed",
+    "processor_presence",
+    "person_range_presence",
+    "person_anchor_candidate",
+    "person_anchor_confirmed",
+    "anchored_processor_presence",
+    "baseline_assisted_candidate",
+    "baseline_assisted_confirmed",
+    "motion_presence_basis",
+    "motion_raw_active",
+    "wall_fall_impact"
+  ],
+  "feature_names": [
+    "motion_energy_mean",
+    "motion_energy_max",
+    "motion_energy_std",
+    "motion_activity_ratio_mean",
+    "motion_activity_ratio_max",
+    "motion_activity_ratio_std",
+    "raw_peak_delta_mean",
+    "raw_peak_delta_max",
+    "raw_peak_delta_std",
+    "raw_threshold_mean",
+    "raw_threshold_max",
+    "raw_threshold_std",
+    "raw_noise_floor_mean",
+    "raw_noise_floor_max",
+    "raw_noise_floor_std",
+    "velocity_mps_mean",
+    "velocity_mps_max",
+    "velocity_mps_std",
+    "distance_step_m_mean",
+    "distance_step_m_max",
+    "distance_step_m_std",
+    "center_of_energy_m_mean",
+    "center_of_energy_m_max",
+    "center_of_energy_m_std",
+    "center_step_m_mean",
+    "center_step_m_max",
+    "center_step_m_std",
+    "center_velocity_mps_mean",
+    "center_velocity_mps_max",
+    "center_velocity_mps_std",
+    "distance_m_mean",
+    "distance_m_max",
+    "distance_m_std",
+    "processor_distance_m_mean",
+    "processor_distance_m_max",
+    "processor_distance_m_std",
+    "processor_intra_score_mean",
+    "processor_intra_score_max",
+    "processor_intra_score_std",
+    "processor_inter_score_mean",
+    "processor_inter_score_max",
+    "processor_inter_score_std",
+    "baseline_delta_score_mean",
+    "baseline_delta_score_max",
+    "baseline_delta_score_std",
+    "baseline_delta_max_mean",
+    "baseline_delta_max_max",
+    "baseline_delta_max_std",
+    "baseline_changed_point_count_mean",
+    "baseline_changed_point_count_max",
+    "baseline_changed_point_count_std",
+    "baseline_changed_zone_count_mean",
+    "baseline_changed_zone_count_max",
+    "baseline_changed_zone_count_std",
+    "baseline_delta_span_mean",
+    "baseline_delta_span_max",
+    "baseline_delta_span_std",
+    "profile_motion_score_mean",
+    "profile_motion_score_max",
+    "profile_motion_score_std",
+    "profile_motion_max_mean",
+    "profile_motion_max_max",
+    "profile_motion_max_std",
+    "profile_motion_changed_points_mean",
+    "profile_motion_changed_points_max",
+    "profile_motion_changed_points_std",
+    "profile_motion_peak_shift_mean",
+    "profile_motion_peak_shift_max",
+    "profile_motion_peak_shift_std",
+    "phase_activity_score_mean",
+    "phase_activity_score_max",
+    "phase_activity_score_std",
+    "phase_activity_max_mean",
+    "phase_activity_max_max",
+    "phase_activity_max_std",
+    "phase_activity_changed_points_mean",
+    "phase_activity_changed_points_max",
+    "phase_activity_changed_points_std",
+    "activity_score_mean",
+    "activity_score_max",
+    "activity_score_std",
+    "activity_score_raw_mean",
+    "activity_score_raw_max",
+    "activity_score_raw_std",
+    "activity_phase_component_mean",
+    "activity_phase_component_max",
+    "activity_phase_component_std",
+    "fall_score_mean",
+    "fall_score_max",
+    "fall_score_std",
+    "fall_distance_span_mean",
+    "fall_distance_span_max",
+    "fall_distance_span_std",
+    "fall_stable_duration_mean",
+    "fall_stable_duration_max",
+    "fall_stable_duration_std",
+    "raw_presence_ratio",
+    "raw_presence_confirmed_ratio",
+    "processor_presence_ratio",
+    "person_range_presence_ratio",
+    "person_anchor_candidate_ratio",
+    "person_anchor_confirmed_ratio",
+    "anchored_processor_presence_ratio",
+    "baseline_assisted_candidate_ratio",
+    "baseline_assisted_confirmed_ratio",
+    "motion_presence_basis_ratio",
+    "motion_raw_active_ratio",
+    "wall_fall_impact_ratio",
+    "zone_1_ratio",
+    "zone_2_ratio",
+    "zone_3_ratio",
+    "zone_4_ratio",
+    "zone_5_ratio",
+    "zone_6_ratio",
+    "raw_delta_threshold_ratio_mean",
+    "raw_delta_threshold_ratio_max",
+    "raw_delta_threshold_ratio_std"
+  ],
+  "max_depth": 6,
+  "min_leaf": 16,
+  "class_counts": {
+    "empty": 298,
+    "present_still": 324,
+    "motion": 381
+  },
+  "tree": {
+    "type": "node",
+    "prediction": "motion",
+    "counts": {
+      "empty": 298,
+      "present_still": 324,
+      "motion": 381
+    },
+    "feature": 40,
+    "feature_name": "processor_inter_score_max",
+    "threshold": 0.986,
+    "gain": 0.307759,
+    "left": {
+      "type": "leaf",
+      "prediction": "empty",
+      "counts": {
+        "empty": 298,
+        "motion": 4
+      }
+    },
+    "right": {
+      "type": "node",
+      "prediction": "motion",
+      "counts": {
+        "present_still": 324,
+        "motion": 377
+      },
+      "feature": 39,
+      "feature_name": "processor_inter_score_mean",
+      "threshold": 5.7441,
+      "gain": 0.125822,
+      "left": {
+        "type": "node",
+        "prediction": "motion",
+        "counts": {
+          "motion": 372,
+          "present_still": 189
+        },
+        "feature": 76,
+        "feature_name": "phase_activity_changed_points_max",
+        "threshold": 7.5,
+        "gain": 0.04576,
+        "left": {
+          "type": "node",
+          "prediction": "motion",
+          "counts": {
+            "motion": 330,
+            "present_still": 116
+          },
+          "feature": 111,
+          "feature_name": "zone_4_ratio",
+          "threshold": 0.15,
+          "gain": 0.05254,
+          "left": {
+            "type": "node",
+            "prediction": "motion",
+            "counts": {
+              "motion": 319,
+              "present_still": 83
+            },
+            "feature": 58,
+            "feature_name": "profile_motion_score_max",
+            "threshold": 9.85,
+            "gain": 0.03628,
+            "left": {
+              "type": "node",
+              "prediction": "motion",
+              "counts": {
+                "motion": 199,
+                "present_still": 83
+              },
+              "feature": 34,
+              "feature_name": "processor_distance_m_max",
+              "threshold": 4.624,
+              "gain": 0.058945,
+              "left": {
+                "type": "leaf",
+                "prediction": "motion",
+                "counts": {
+                  "motion": 76,
+                  "present_still": 66
+                }
+              },
+              "right": {
+                "type": "leaf",
+                "prediction": "motion",
+                "counts": {
+                  "present_still": 17,
+                  "motion": 123
+                }
+              }
+            },
+            "right": {
+              "type": "leaf",
+              "prediction": "motion",
+              "counts": {
+                "motion": 120
+              }
+            }
+          },
+          "right": {
+            "type": "node",
+            "prediction": "present_still",
+            "counts": {
+              "present_still": 33,
+              "motion": 11
+            },
+            "feature": 31,
+            "feature_name": "distance_m_max",
+            "threshold": 5.105,
+            "gain": 0.160714,
+            "left": {
+              "type": "leaf",
+              "prediction": "motion",
+              "counts": {
+                "present_still": 6,
+                "motion": 10
+              }
+            },
+            "right": {
+              "type": "leaf",
+              "prediction": "present_still",
+              "counts": {
+                "present_still": 27,
+                "motion": 1
+              }
+            }
+          }
+        },
+        "right": {
+          "type": "node",
+          "prediction": "present_still",
+          "counts": {
+            "motion": 42,
+            "present_still": 73
+          },
+          "feature": 9,
+          "feature_name": "raw_threshold_mean",
+          "threshold": 37.0,
+          "gain": 0.123477,
+          "left": {
+            "type": "leaf",
+            "prediction": "motion",
+            "counts": {
+              "motion": 23,
+              "present_still": 6
+            }
+          },
+          "right": {
+            "type": "node",
+            "prediction": "present_still",
+            "counts": {
+              "present_still": 67,
+              "motion": 19
+            },
+            "feature": 1,
+            "feature_name": "motion_energy_max",
+            "threshold": 238.5,
+            "gain": 0.16416,
+            "left": {
+              "type": "leaf",
+              "prediction": "motion",
+              "counts": {
+                "motion": 14,
+                "present_still": 4
+              }
+            },
+            "right": {
+              "type": "node",
+              "prediction": "present_still",
+              "counts": {
+                "present_still": 63,
+                "motion": 5
+              },
+              "feature": 22,
+              "feature_name": "center_of_energy_m_max",
+              "threshold": 3.5067,
+              "gain": 0.024201,
+              "left": {
+                "type": "leaf",
+                "prediction": "present_still",
+                "counts": {
+                  "present_still": 47
+                }
+              },
+              "right": {
+                "type": "leaf",
+                "prediction": "present_still",
+                "counts": {
+                  "motion": 5,
+                  "present_still": 16
+                }
+              }
+            }
+          }
+        }
+      },
+      "right": {
+        "type": "node",
+        "prediction": "present_still",
+        "counts": {
+          "present_still": 135,
+          "motion": 5
+        },
+        "feature": 110,
+        "feature_name": "zone_3_ratio",
+        "threshold": 0.55,
+        "gain": 0.01977,
+        "left": {
+          "type": "leaf",
+          "prediction": "present_still",
+          "counts": {
+            "present_still": 124
+          }
+        },
+        "right": {
+          "type": "leaf",
+          "prediction": "present_still",
+          "counts": {
+            "present_still": 11,
+            "motion": 5
+          }
+        }
+      }
+    }
+  }
+}
