@@ -63,6 +63,69 @@ class TelegramAssistantTests(unittest.TestCase):
             self.assertIsNotNone(query)
             self.assertIsNotNone(log)
 
+    def test_telegram_status_question_accepts_colloquial_contraction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
+            insert_contact(mapping, queries_enabled=True)
+            notification = NotificationService(mapping)
+            provider = RecordingTelegramProvider()
+            notification.providers["telegram"] = provider
+            assistant = SenteroTelegramAssistant(
+                mapping,
+                SenteroService(mapping),
+                notification,
+                config=TelegramAssistantConfig(enabled=True, bot_token="secret"),
+            )
+
+            result = assistant.process_update(update("Mama geht's gut?"))
+
+            self.assertEqual(result["status"], "sent")
+            self.assertEqual(result["intent"], "STATUS_SUMMARY")
+            self.assertNotIn("nicht sicher einordnen", provider.sent[-1]["text"])
+
+    def test_telegram_status_question_accepts_english_short_chat_wording(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
+            insert_contact(mapping, queries_enabled=True)
+            notification = NotificationService(mapping)
+            provider = RecordingTelegramProvider()
+            notification.providers["telegram"] = provider
+            assistant = SenteroTelegramAssistant(
+                mapping,
+                SenteroService(mapping),
+                notification,
+                config=TelegramAssistantConfig(enabled=True, bot_token="secret"),
+            )
+
+            result = assistant.process_update(update("Is mom ok?"))
+
+            self.assertEqual(result["status"], "sent")
+            self.assertEqual(result["intent"], "STATUS_SUMMARY")
+            self.assertIn("not enough fresh sensor data", provider.sent[-1]["text"])
+            self.assertNotIn("nicht sicher einordnen", provider.sent[-1]["text"])
+
+    def test_telegram_today_summary_accepts_english_wording(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
+            insert_contact(mapping, queries_enabled=True)
+            notification = NotificationService(mapping)
+            provider = RecordingTelegramProvider()
+            notification.providers["telegram"] = provider
+            assistant = SenteroTelegramAssistant(
+                mapping,
+                SenteroService(mapping),
+                notification,
+                config=TelegramAssistantConfig(enabled=True, bot_token="secret"),
+            )
+
+            result = assistant.process_update(update("What happened today?"))
+
+            self.assertEqual(result["status"], "sent")
+            self.assertEqual(result["intent"], "TODAY_SUMMARY")
+
     def test_start_invite_links_contact_to_chat_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")

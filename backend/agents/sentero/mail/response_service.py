@@ -88,9 +88,15 @@ class MailResponseService:
 
     def _activity(self, result: QueryResult) -> str:
         event = result.facts.get("activity")
+        if not event:
+            return self.build(QueryResult(result.intent, "no_data", data_available=False))
+        if result.facts.get("relation") == "previous":
+            room = event.get("room_label") or event.get("room") or "einem Raum"
+            when = event.get("event_time_label") or _time_label(event.get("event_time"))
+            return f"Davor wurde um {when} Uhr Aktivität im {room} erkannt."
         context = _context_sentence(result)
         prefix = f"{context}\n" if context else ""
-        return f"Guten Tag,\n\n{prefix}{_activity_sentence(event)}\n\nViele Grüße\nSentero" if event else self.build(QueryResult(result.intent, "no_data", data_available=False))
+        return f"Guten Tag,\n\n{prefix}{_activity_sentence(event)}\n\nViele Grüße\nSentero"
 
     def _today(self, result: QueryResult) -> str:
         count = int(result.facts.get("event_count") or 0)
@@ -218,11 +224,13 @@ class MailResponseService:
         update_sentence = _sensor_update_sentence(facts)
         if update_sentence:
             lines.append(update_sentence)
-        if facts.get("unreachable"):
-            lines.append(f"{len(facts['unreachable'])} Sensoren sind momentan nicht erreichbar.")
-        if facts.get("low_battery"):
-            lines.append(f"{len(facts['low_battery'])} Sensoren melden eine schwache Batterie.")
-        if not facts.get("unreachable") and not facts.get("low_battery"):
+        unreachable = facts.get("unreachable") or []
+        low_battery = facts.get("low_battery") or []
+        if unreachable:
+            lines.append(f"{len(unreachable)} Sensoren sind momentan nicht erreichbar.")
+        if low_battery:
+            lines.append(f"{len(low_battery)} Sensoren melden eine schwache Batterie.")
+        if not unreachable and not low_battery:
             lines.append("Keine technischen Sensorwarnungen.")
         lines.extend(["", "Viele Grüße", "Sentero"])
         return "\n".join(lines)

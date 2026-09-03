@@ -10,6 +10,7 @@ from typing import Any
 import requests
 
 from backend.agents.sentero.mail.conversation_service import ConversationService
+from backend.agents.sentero.conversation_store import SenteroConversationStore
 from backend.agents.sentero.mail.intent_service import ACTION_RE, MailIntentService
 from backend.agents.sentero.mail.models import MailIntent, MailThreadContext
 from backend.agents.sentero.mail.query_service import MailQueryService
@@ -284,6 +285,7 @@ class SenteroTelegramAssistant:
         self._fixed_config = config
         self.config = config or config_from_notification_settings(mapping)
         self.store = TelegramAssistantStore(mapping)
+        self.conversation_store = SenteroConversationStore(mapping)
         self.intent = MailIntentService()
         self.query_service = MailQueryService(mapping, sentero)
         self.response = MailResponseService()
@@ -353,21 +355,41 @@ class SenteroTelegramAssistant:
             self._record(update_id, message_id, chat_id, None, None, None, question, "rejected", auth_error, started, received_at)
             return {"status": "rejected", "error": auth_error}
         contact = contact_from_row(contact_row)
+        command = telegram_command(question)
+        if command in {"start", "help"}:
+            body = telegram_welcome_text(contact.name)
+            result = self._send(chat_id, body, contact_row)
+            self._record(update_id, message_id, chat_id, contact.id, MailIntent.HELP.value, 1.0, question, "sent", None, started, received_at, response_sent_at=now())
+            self.notification._log(contact.id, "telegram", "green", "telegram_assistant_response", "Sentero Telegram Hilfe", None, outgoing_message_id=_provider_message_id(result))
+            return {"status": "sent", "intent": MailIntent.HELP.value, "intent_source": "telegram_command", "thread_context": False}
         if self.store.rate_limit_exceeded(contact.id, self.config.hourly_limit, self.config.daily_limit):
             self._send(chat_id, "Das Anfrage-Limit für Telegram-Statusabfragen ist erreicht. Bitte versuchen Sie es später erneut.", contact_row)
             self._record(update_id, message_id, chat_id, contact.id, None, None, question, "rate_limited", "rate_limit", started, received_at)
             return {"status": "rate_limited"}
-        routed = self.conversation.classify(question, self.intent)
+        conversation_key = f"telegram:{chat_id}"
+        history = self.conversation_store.recent(
+            channel="telegram", conversation_key=conversation_key, contact_id=contact.id
+        )
+        routed = self.conversation.classify(question, self.intent, history=history)
         context = self.store.find_thread_context(chat_id, reply_to_message_id(message))
         if getattr(context, "contact_id", contact.id) not in {None, contact.id}:
             context = None
+        query = None
         if routed.is_action_request or ACTION_RE.search(question.lower()):
             body = self.response.read_only_action_rejected()
             intent_name = MailIntent.UNKNOWN.value
             confidence = routed.confidence
         else:
-            query = self.query_service.query(routed.intent, contact, context=context)
-            body = self.conversation.build_response(query, self.response)
+            query = self.query_service.query(
+                routed.intent,
+                contact,
+                context=context,
+                slots=routed.slots,
+                conversation_history=history,
+            )
+            body = self.conversation.build_response(
+                query, self.response, question=question, history=history
+            )
             intent_name = routed.intent.value
             confidence = routed.confidence
         try:
@@ -376,6 +398,16 @@ class SenteroTelegramAssistant:
             self._record(update_id, message_id, chat_id, contact.id, intent_name, confidence, question, "failed", exc.__class__.__name__, started, received_at)
             raise
         self._record(update_id, message_id, chat_id, contact.id, intent_name, confidence, question, "sent", None, started, received_at, response_sent_at=now())
+        self.conversation_store.add_exchange(
+            channel="telegram",
+            conversation_key=conversation_key,
+            contact_id=contact.id,
+            question=question,
+            answer=body,
+            intent=intent_name,
+            slots=routed.slots,
+            facts=query.facts if query is not None else {},
+        )
         self.notification._log(contact.id, "telegram", "green", "telegram_assistant_response", "Sentero Telegram Antwort", None, outgoing_message_id=_provider_message_id(result))
         return {"status": "sent", "intent": intent_name, "intent_source": routed.source, "thread_context": bool(context)}
 
@@ -456,6 +488,25 @@ def reply_to_message_id(message: dict[str, Any]) -> int | None:
     except (TypeError, ValueError):
         return None
 
+
+
+def telegram_command(text: str) -> str | None:
+    token = str(text or "").strip().split(maxsplit=1)[0].lower() if str(text or "").strip() else ""
+    if token.startswith("/start"):
+        return "start"
+    if token.startswith("/help"):
+        return "help"
+    return None
+
+
+def telegram_welcome_text(contact_name: str = "") -> str:
+    greeting = f"Hallo {contact_name.strip()}," if str(contact_name or "").strip() else "Hallo,"
+    return (
+        f"{greeting} ich bin Sentero. Sie können mich zum Beispiel fragen: "
+        "‚Ist alles in Ordnung?‘, ‚Wo wurde zuletzt Aktivität erkannt?‘, "
+        "‚Wie geht es den Sensoren?‘ oder ‚Wie ist die Temperatur?‘. "
+        "Sie können auch in einer anderen Sprache schreiben."
+    )
 
 def telegram_start_code(text: str) -> str | None:
     parts = str(text or "").strip().split(maxsplit=1)

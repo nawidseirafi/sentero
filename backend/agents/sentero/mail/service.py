@@ -7,6 +7,7 @@ from email.utils import parseaddr
 from typing import Any
 
 from backend.agents.sentero.mail.conversation_service import ConversationService
+from backend.agents.sentero.conversation_store import SenteroConversationStore
 from backend.agents.sentero.mail.imap_client import ImapMailClient
 from backend.agents.sentero.mail.intent_service import MailIntentService
 from backend.agents.sentero.mail.models import InboundMail, MailAssistantConfig, MailIntent
@@ -46,6 +47,7 @@ class SenteroMailAssistant:
         self._fixed_config = config
         self.config = config or config_from_notification_settings(mapping)
         self.store = MailAssistantStore(mapping)
+        self.conversation_store = SenteroConversationStore(mapping)
         self.intent = MailIntentService()
         self.query_service = MailQueryService(
             mapping,
@@ -250,14 +252,27 @@ class SenteroMailAssistant:
                 "response_sent": True,
             }
 
-        routed = self.conversation.classify(question, self.intent)
+        conversation_key = f"mail:{contact.id}"
+        history = self.conversation_store.recent(
+            channel="email", conversation_key=conversation_key, contact_id=contact.id
+        )
+        routed = self.conversation.classify(question, self.intent, history=history)
+        query = None
         if routed.is_action_request:
             body = self.response.read_only_action_rejected()
             intent_name = MailIntent.UNKNOWN.value
             confidence = routed.confidence
         else:
-            query = self.query_service.query(routed.intent, contact, context=context)
-            body = self.conversation.build_response(query, self.response)
+            query = self.query_service.query(
+                routed.intent,
+                contact,
+                context=context,
+                slots=routed.slots,
+                conversation_history=history,
+            )
+            body = self.conversation.build_response(
+                query, self.response, question=question, history=history
+            )
             intent_name = routed.intent.value
             confidence = routed.confidence
         try:
@@ -272,6 +287,16 @@ class SenteroMailAssistant:
                 "response_sent": False,
             }
         self.store.record_query(received_at=message.received_at, message_id=message.message_id, contact_id=contact.id, sender_email=message.sender_email, intent=intent_name, confidence=confidence, question=question, response_status="sent", processing_ms=_elapsed_ms(started), response_sent_at=now())
+        self.conversation_store.add_exchange(
+            channel="email",
+            conversation_key=conversation_key,
+            contact_id=contact.id,
+            question=question,
+            answer=body,
+            intent=intent_name,
+            slots=routed.slots,
+            facts=query.facts if query is not None else {},
+        )
         logger.info(
             "Mail query answered",
             extra={

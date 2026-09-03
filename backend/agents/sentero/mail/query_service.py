@@ -26,7 +26,15 @@ class MailQueryService:
         self.recent_seconds = recent_seconds
         self.stale_seconds = stale_seconds
 
-    def query(self, intent: MailIntent, contact: AuthorizedContact, context: MailThreadContext | None = None) -> QueryResult:
+    def query(
+        self,
+        intent: MailIntent,
+        contact: AuthorizedContact,
+        context: MailThreadContext | None = None,
+        *,
+        slots: dict[str, Any] | None = None,
+        conversation_history: list[dict[str, Any]] | None = None,
+    ) -> QueryResult:
         required = INTENT_PERMISSIONS.get(intent, set())
         if required and not required.issubset(contact.permissions):
             return self._with_context(QueryResult(intent=intent, status="permission_denied", permission_denied=True), context)
@@ -41,9 +49,9 @@ class MailQueryService:
         if intent == MailIntent.CURRENT_ACTIVITY:
             return self._with_context(self._current_activity(), context)
         if intent == MailIntent.LAST_ACTIVITY:
-            return self._with_context(self._last_activity(include_room=False), context)
+            return self._with_context(self._last_activity(include_room=False, slots=slots, conversation_history=conversation_history), context)
         if intent == MailIntent.LAST_ROOM:
-            return self._with_context(self._last_activity(include_room=True), context)
+            return self._with_context(self._last_activity(include_room=True, slots=slots, conversation_history=conversation_history), context)
         if intent == MailIntent.TODAY_SUMMARY:
             return self._with_context(self._today_summary(), context)
         if intent == MailIntent.ANOMALIES:
@@ -98,13 +106,25 @@ class MailQueryService:
         event["historical"] = True
         return QueryResult(intent=MailIntent.CURRENT_ACTIVITY, status="ok", facts={"activity": event})
 
-    def _last_activity(self, include_room: bool) -> QueryResult:
-        event = self._latest_activity_event()
+    def _last_activity(
+        self,
+        include_room: bool,
+        *,
+        slots: dict[str, Any] | None = None,
+        conversation_history: list[dict[str, Any]] | None = None,
+    ) -> QueryResult:
         intent = MailIntent.LAST_ROOM if include_room else MailIntent.LAST_ACTIVITY
+        relation = str((slots or {}).get("relation") or "").strip().lower()
+        anchor_time = self._conversation_activity_anchor(conversation_history) if relation == "previous" else None
+        event = self._activity_event_before(anchor_time) if anchor_time else self._latest_activity_event()
         if not event:
             return QueryResult(intent=intent, status="no_data", data_available=False)
         event["freshness"] = self._freshness(event.get("event_time"))
-        return QueryResult(intent=intent, status="ok", facts={"activity": event})
+        facts: dict[str, Any] = {"activity": event}
+        if anchor_time:
+            facts["relation"] = "previous"
+            facts["before_event_time"] = anchor_time
+        return QueryResult(intent=intent, status="ok", facts=facts)
 
     def _today_summary(self) -> QueryResult:
         timeline = self.sentero.behavior_timeline_today(live_snapshot=False)
@@ -333,6 +353,49 @@ class MailQueryService:
             readings.append(dedicated)
         return readings
 
+    def _conversation_activity_anchor(self, history: list[dict[str, Any]] | None) -> str | None:
+        for turn in reversed(history or []):
+            if str(turn.get("role") or "") != "assistant":
+                continue
+            facts = turn.get("facts")
+            if not isinstance(facts, dict):
+                continue
+            candidates = [facts.get("activity"), facts.get("last_activity")]
+            dashboard = facts.get("dashboard")
+            if isinstance(dashboard, dict):
+                candidates.extend([dashboard.get("last_activity"), dashboard.get("first_activity")])
+            for candidate in candidates:
+                if isinstance(candidate, dict) and candidate.get("event_time"):
+                    return str(candidate.get("event_time"))
+        return None
+
+    def _activity_event_before(self, before_event_time: str) -> dict[str, Any] | None:
+        before = self._parse_time(before_event_time)
+        if not before:
+            return None
+        with self.mapping.connect() as con:
+            rows = con.execute(
+                """select *
+                   from sentero_sensor_events
+                   where event_time < ?
+                     and (device_class in ('presence', 'motion', 'occupancy')
+                          or role like '%presence%'
+                          or role like '%motion%'
+                          or role like '%occupancy%')
+                     and lower(coalesce(state, '')) not in ('off', 'false', '0', 'clear', 'none', 'unknown', 'unavailable')
+                   order by event_time desc, id desc
+                   limit 20""",
+                (before.isoformat(timespec="seconds"),),
+            ).fetchall()
+        for row in rows:
+            event = dict(row)
+            if not self._is_activity_event(event):
+                continue
+            event["room_label"] = self._room_label(event.get("room"))
+            self._add_time_labels(event)
+            return event
+        return None
+
     def _latest_activity_event(self) -> dict[str, Any] | None:
         with self.mapping.connect() as con:
             rows = con.execute(
@@ -407,7 +470,9 @@ class MailQueryService:
         return name or "Person"
 
     def _location_label(self, room: Any) -> str:
-        return f"Im {self._room_label(room)}" if room else "Nicht im Haus"
+        # Missing live presence is not proof that the person has left home.
+        # Door/contact evidence would be needed for a reliable away statement.
+        return f"Im {self._room_label(room)}" if room else "Kein aktueller Präsenznachweis"
 
     def _behavior_label(self, status: Any) -> str:
         value = str(status or "").lower()
