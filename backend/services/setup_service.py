@@ -31,10 +31,13 @@ class SenteroSetupService:
             notifications = con.execute('select * from notification_preferences where id = 1').fetchone()
         profile_data = dict(profile) if profile else None
         contact_data = [public_contact(dict(contact)) for contact in contacts]
+        completed_steps = json.loads(row['completed_steps'] or '[]')
         notification_data = dict(notifications) if notifications else None
+        if notification_data is not None and 'notifications' not in completed_steps:
+            notification_data['daily_summary'] = 1
         status = {
             'current_step': row['current_step'],
-            'completed_steps': json.loads(row['completed_steps'] or '[]'),
+            'completed_steps': completed_steps,
             'selected_rooms': json.loads(row['selected_rooms_json'] or '[]'),
             'is_complete': bool(row['is_complete']),
             'home': self.mapping.home_status(),
@@ -217,7 +220,7 @@ class SenteroSetupService:
     def notifications(self, payload: dict[str, Any]) -> dict[str, Any]:
         logger.debug("Wizard notifications save start", extra={"component": "wizard", "fields": sorted(payload.keys())})
         with self.mapping.connect() as con:
-            con.execute('''insert into notification_preferences (id, anomalies, critical, daily_summary, updated_at) values (1, ?, ?, ?, ?) on conflict(id) do update set anomalies = excluded.anomalies, critical = excluded.critical, daily_summary = excluded.daily_summary, updated_at = excluded.updated_at''', (int(bool(payload.get('anomalies', True))), int(bool(payload.get('critical', True))), int(bool(payload.get('daily_summary', False))), now()))
+            con.execute('''insert into notification_preferences (id, anomalies, critical, daily_summary, updated_at) values (1, ?, ?, ?, ?) on conflict(id) do update set anomalies = excluded.anomalies, critical = excluded.critical, daily_summary = excluded.daily_summary, updated_at = excluded.updated_at''', (int(bool(payload.get('anomalies', True))), int(bool(payload.get('critical', True))), int(bool(payload.get('daily_summary', True))), now()))
             con.commit()
         logger.debug("Wizard notifications saved", extra={"component": "wizard"})
         return self.set_step('complete', 'notifications')

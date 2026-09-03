@@ -56,7 +56,7 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [contactForm, setContactForm] = useState<Contact>({ id: '', name: '', relation: 'Tochter', phone: '', email: '', channels: ['E-Mail'], primary: true });
   const [contactFormOpen, setContactFormOpen] = useState(false);
-  const [notification, setNotification] = useState<NotificationPreferences>({ anomalies: true, critical: true, daily_summary: false });
+  const [notification, setNotification] = useState<NotificationPreferences>({ anomalies: true, critical: true, daily_summary: true });
   const [confirmed, setConfirmed] = useState(false);
   const [emailSetupRequired, setEmailSetupRequired] = useState(false);
   const [networkStatus, setNetworkStatus] = useState<NetworkStatus | null>(null);
@@ -111,6 +111,13 @@ export function SetupWizard({ onFinish }: { onFinish: () => void }) {
           channels: contact.email ? ['E-Mail'] : [],
           primary: Boolean(contact.primary_contact),
         })));
+      }
+      if (status.notifications) {
+        setNotification({
+          anomalies: Boolean(status.notifications.anomalies ?? true),
+          critical: Boolean(status.notifications.critical ?? true),
+          daily_summary: Boolean(status.notifications.daily_summary ?? true),
+        });
       }
     }).catch(() => undefined);
     void api.senteroSensorManagerStatus().then((status) => {

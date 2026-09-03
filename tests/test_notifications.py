@@ -461,6 +461,32 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
             self.assertEqual(json.loads(row["preferred_channels"]), ["email", "telegram"])
 
+    def test_setup_notifications_default_daily_summary_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
+            setup = SenteroSetupService(mapping)
+
+            setup.notifications({"anomalies": True, "critical": True})
+
+            with mapping.connect() as con:
+                row = con.execute("select daily_summary from notification_preferences where id = 1").fetchone()
+
+            self.assertEqual(row["daily_summary"], 1)
+
+    def test_setup_status_uses_daily_summary_default_until_notifications_saved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
+            setup = SenteroSetupService(mapping)
+            with mapping.connect() as con:
+                con.execute("update notification_preferences set daily_summary = 0 where id = 1")
+                con.commit()
+
+            status = setup.status()
+
+            self.assertEqual(status["notifications"]["daily_summary"], 1)
+
     def test_whatsapp_channel_can_be_saved_tested_and_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
@@ -1167,9 +1193,6 @@ class NotificationSystemWarningTests(unittest.TestCase):
             mapping.sensor_source = NoNetworkSensorSource()
             contact_id = insert_contact(mapping)
             ConsentService(mapping).grant({"contact_id": contact_id})
-            with mapping.connect() as con:
-                con.execute("update notification_preferences set daily_summary = 1 where id = 1")
-                con.commit()
 
             provider = RecordingProvider()
             service = NotificationService(mapping)
@@ -1193,6 +1216,9 @@ class NotificationSystemWarningTests(unittest.TestCase):
             provider = RecordingProvider()
             service = NotificationService(mapping)
             service.providers["email"] = provider
+            with mapping.connect() as con:
+                con.execute("update notification_preferences set daily_summary = 0 where id = 1")
+                con.commit()
 
             result = service.send_daily_summary_if_due(datetime(2026, 8, 18, 18, 1, tzinfo=timezone.utc))
 

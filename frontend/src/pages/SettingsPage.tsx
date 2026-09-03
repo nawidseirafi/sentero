@@ -76,7 +76,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [editingContactId, setEditingContactId] = useState<number | null>(null);
   const [editContactForm, setEditContactForm] = useState(emptyContactForm());
   const [roomDraft, setRoomDraft] = useState('');
-  const [notifications, setNotifications] = useState({ anomalies: true, critical: true, daily_summary: false });
+  const [notifications, setNotifications] = useState({ anomalies: true, critical: true, daily_summary: true });
   const [accountForm, setAccountForm] = useState({ display_name: '', email: '' });
   const [networkForm, setNetworkForm] = useState({ wifi_ssid: '', wifi_password: '' });
   const [networkStatus, setNetworkStatus] = useState<SenteroSensorNetworkSettings | null>(null);
@@ -263,7 +263,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
       setNotifications({
         anomalies: Boolean(nextStatus.notifications?.anomalies ?? true),
         critical: Boolean(nextStatus.notifications?.critical ?? true),
-        daily_summary: Boolean(nextStatus.notifications?.daily_summary ?? false),
+        daily_summary: Boolean(nextStatus.notifications?.daily_summary ?? true),
       });
       setError('');
     } catch (err) {

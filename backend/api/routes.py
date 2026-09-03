@@ -163,7 +163,7 @@ class MailContactSettingsPayload(BaseModel):
 class NotificationPayload(BaseModel):
     anomalies: bool = True
     critical: bool = True
-    daily_summary: bool = False
+    daily_summary: bool = True
 
 
 class SensorRoleNamePayload(BaseModel):

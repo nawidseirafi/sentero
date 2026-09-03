@@ -1640,7 +1640,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             con.execute(statement)
         except sqlite3.OperationalError:
             pass
-    con.execute('''create table if not exists notification_preferences (id integer primary key check (id = 1), anomalies integer not null default 1, critical integer not null default 1, daily_summary integer not null default 0, updated_at text not null)''')
+    con.execute('''create table if not exists notification_preferences (id integer primary key check (id = 1), anomalies integer not null default 1, critical integer not null default 1, daily_summary integer not null default 1, updated_at text not null)''')
     con.execute('''create table if not exists notification_channel_settings (
         id integer primary key autoincrement,
         channel text not null unique,
