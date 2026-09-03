@@ -3,14 +3,14 @@ export type SenteroSettingsTab = 'profile' | 'sensors' | 'network' | 'contacts' 
 export type SenteroRoute =
   | { name: 'setup' }
   | { name: 'dashboard' }
-  | { name: 'history' }
+  | { name: 'notifications' }
   | { name: 'rooms' }
   | { name: 'contacts' }
   | { name: 'settings'; tab?: SenteroSettingsTab };
 
 export type SenteroRouteName = SenteroRoute['name'];
 
-const routeNames: SenteroRouteName[] = ['setup', 'dashboard', 'history', 'rooms', 'contacts', 'settings'];
+const routeNames: SenteroRouteName[] = ['setup', 'dashboard', 'notifications', 'rooms', 'contacts', 'settings'];
 const settingsTabs: SenteroSettingsTab[] = ['profile', 'sensors', 'network', 'contacts', 'notifications', 'transparency', 'account', 'system'];
 
 export function parseSenteroRoute(): SenteroRoute {

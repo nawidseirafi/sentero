@@ -210,17 +210,121 @@ class SenteroBehaviorAgent:
             rows = con.execute("select * from behavior_assessments order by assessment_time desc, id desc limit ?", (limit,)).fetchall()
         return [self._row_to_assessment(row) for row in rows]
 
-    def timeline_today(self, live_snapshot: bool = False) -> dict[str, Any]:
-        if live_snapshot:
+    def timeline_today(self, live_snapshot: bool = False, day: str | None = None) -> dict[str, Any]:
+        return self.behavior_day(day=day, live_snapshot=live_snapshot)
+
+    def behavior_day(self, day: str | None = None, live_snapshot: bool = False) -> dict[str, Any]:
+        target_day = self._target_date(day)
+        if live_snapshot and target_day == datetime.now(timezone.utc).date():
             self.record_current_snapshot()
-        start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        events = [event for event in self._history(days=1) if self._parse_time(event.get("event_time")) >= start]
-        if events:
-            self._upsert_daily_summary(events, dry_run=False)
-        logger.debug("Behavior timeline built", extra={"component": "behavior", "event_count": len(events)})
+        events = self._events_for_day(target_day)
+        summary = self._build_daily_summary(target_day, events)
+        if target_day == datetime.now(timezone.utc).date() and events:
+            summary = self._upsert_daily_summary(events, dry_run=False)
+        profile = self._update_behavior_profile(dry_run=True)
+        deviations = self._behavior_deviations(summary, profile, self.mapping.roles(dev=True, include_state=True))
+        summary["anomaly_score"] = int(deviations.get("anomaly_score") or 0)
+        timeline_events = self._timeline_events_for_day(target_day, events, summary, profile, deviations)
+        data_quality = self._dashboard_data_quality(profile, [summary], deviations.get("data_quality") or {}, len(events))
+        logger.debug("Behavior day built", extra={"component": "behavior", "event_count": len(events), "timeline_event_count": len(timeline_events)})
         return {
+            "date": target_day.isoformat(),
             "events": events,
+            "timeline_events": timeline_events,
+            "summary": self._ui_daily_summary(summary, profile, deviations, timeline_events),
+            "profile": self._ui_profile(profile),
+            "deviations": deviations,
+            "data_quality": data_quality,
             "assessment": self.latest(),
+        }
+
+    def behavior_trends(self, days: int = 14) -> dict[str, Any]:
+        self.ensure_schema()
+        today = datetime.now(timezone.utc).date()
+        start = today - timedelta(days=days - 1)
+        profile = self._update_behavior_profile(dry_run=True)
+        with self.mapping.connect() as con:
+            rows = con.execute(
+                "select * from behavior_daily_summary where date >= ? order by date asc",
+                (start.isoformat(),),
+            ).fetchall()
+        summaries = [self._summary_row_to_dict(row) for row in rows]
+        by_date = {str(item.get("date")): item for item in summaries}
+        data_quality = self._dashboard_data_quality(profile, summaries, self._sensor_data_quality(self.mapping.roles(dev=True, include_state=True)), None)
+        points = []
+        for offset in range(days):
+            current = start + timedelta(days=offset)
+            item = by_date.get(current.isoformat()) or {"date": current.isoformat()}
+            points.append({
+                "date": current.isoformat(),
+                "wakeup_time": item.get("wakeup_time"),
+                "wakeup_minutes": self._minutes_of_day(item.get("wakeup_time")),
+                "active_minutes": int(item.get("active_minutes") or 0),
+                "longest_inactivity_minutes": max([int(period.get("minutes") or 0) for period in item.get("inactivity_periods", [])], default=0),
+                "night_activity_count": self._night_activity_count(item),
+                "away_minutes": int(item.get("door_events") or 0) * 30,
+                "door_events": int(item.get("door_events") or 0),
+                "anomaly_score": int(item.get("anomaly_score") or 0),
+                "has_data": bool(item.get("first_activity") or item.get("active_minutes") or item.get("door_events")),
+            })
+        previous = summaries[:max(0, len(summaries) - 7)]
+        current_week = summaries[-7:]
+        return {
+            "days": days,
+            "profile": self._ui_profile(profile),
+            "data_quality": data_quality,
+            "points": points,
+            "cards": [
+                self._trend_card("wakeup", "Aufstehzeit", previous, current_week, profile),
+                self._trend_card("activity", "Aktivität", previous, current_week, profile),
+                self._trend_card("door", "Zeit außer Haus", previous, current_week, profile),
+                self._trend_card("night", "Nächtliche Aktivität", previous, current_week, profile),
+            ],
+            "series": [
+                self._trend_series("wake_time", "Aufstehzeit", "time", points, profile),
+                self._trend_series("activity", "Aktivität", "minutes", points, profile),
+                self._trend_series("longest_rest", "Längste Ruhephase", "minutes", points, profile),
+                self._trend_series("night_activity", "Nächtliche Aktivität", "count", points, profile),
+                self._trend_series("away_time", "Zeit außer Haus", "minutes", points, profile),
+            ],
+        }
+
+    def behavior_hints(self, days: int = 14) -> dict[str, Any]:
+        self.ensure_schema()
+        today = datetime.now(timezone.utc).date()
+        start = today - timedelta(days=days - 1)
+        hints: list[dict[str, Any]] = []
+        with self.mapping.connect() as con:
+            rows = con.execute(
+                "select * from behavior_daily_summary where date >= ? order by date desc",
+                (start.isoformat(),),
+            ).fetchall()
+        profile = self._update_behavior_profile(dry_run=True)
+        for row in rows:
+            summary = self._summary_row_to_dict(row)
+            target_day = self._summary_date(summary)
+            deviations = self._behavior_deviations(summary, profile, [])
+            for event in self._anomaly_events_for_summary(target_day, summary, profile, deviations):
+                hints.append({**event, "day": target_day.isoformat()})
+        latest = self.latest()
+        if latest and str(latest.get("status")) in {"yellow", "orange", "red"}:
+            hints.insert(0, {
+                "id": f"assessment-{latest.get('id') or latest.get('assessment_time')}",
+                "day": str(latest.get("assessment_time") or "")[:10],
+                "severity": self._severity_from_status(latest.get("status")),
+                "title": self._status_title(latest.get("status")),
+                "description": latest.get("summary") or "Sentero hat eine Auffälligkeit erkannt.",
+                "start_time": latest.get("assessment_time"),
+                "end_time": None,
+                "time_label": self._time_label(latest.get("assessment_time")),
+                "status": "observed",
+                "status_label": "Beobachtet",
+                "room": None,
+            })
+        return {
+            "current": [item for item in hints if item.get("status") == "active"],
+            "observed": [item for item in hints if item.get("status") == "observed"],
+            "resolved": [item for item in hints if item.get("status") == "resolved"],
         }
 
     def record_current_snapshot(self) -> int:
@@ -1012,6 +1116,40 @@ class SenteroBehaviorAgent:
             "activity_limited": self._compact_roles(activity_limited),
         }
 
+    def _dashboard_data_quality(
+        self,
+        profile: dict[str, Any],
+        summaries: list[dict[str, Any]],
+        sensor_quality: dict[str, Any],
+        selected_event_count: int | None,
+    ) -> dict[str, Any]:
+        learning = profile.get("learning") or {}
+        usable_days = sum(1 for item in summaries if item.get("first_activity") or int(item.get("active_minutes") or 0) > 0 or int(item.get("door_events") or 0) > 0)
+        baseline_available = any([
+            profile.get("average_wakeup_time"),
+            float(profile.get("average_active_minutes") or 0) > 0,
+            bool((profile.get("normal_door_usage") or {}).get("average_daily_events")),
+        ])
+        if sensor_quality.get("monitoring_reliable") is False:
+            text = "Sensordaten derzeit nicht vollständig verfügbar. Die Tagesbewertung ist nur eingeschränkt belastbar."
+        elif selected_event_count == 0:
+            text = "Für diesen Tag liegen keine ausreichenden Aktivitätsdaten vor."
+        elif bool(learning.get("completed")) and baseline_available:
+            text = f"Sentero verfügt über {usable_days} verwertbare Tage im ausgewählten Zeitraum und kann den Verlauf mit dem persönlichen Verhalten vergleichen."
+        elif usable_days:
+            text = f"Sentero lernt das persönliche Verhalten noch kennen. Im ausgewählten Zeitraum liegen {usable_days} verwertbare Tage vor."
+        else:
+            text = "Noch nicht genügend Verlaufsdaten für einen persönlichen Vergleich."
+        return {
+            "usable_days": usable_days,
+            "learning_completed": bool(learning.get("completed")),
+            "learning_day": int(learning.get("day") or 1),
+            "learning_days": int(learning.get("days") or self._learning_days()),
+            "baseline_available": baseline_available,
+            "sensor_quality": sensor_quality,
+            "message": text,
+        }
+
     def _data_quality_findings(self, data_quality: dict[str, Any]) -> list[str]:
         findings: list[str] = []
         if data_quality.get("activity_sensors") == 0:
@@ -1085,6 +1223,466 @@ class SenteroBehaviorAgent:
             "occupancy_score": occupancy_score,
             "anomaly_score": 0,
         }
+
+    def _target_date(self, value: str | None) -> date:
+        if not value:
+            return datetime.now(timezone.utc).date()
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except ValueError:
+            return datetime.now(timezone.utc).date()
+
+    def _events_for_day(self, target_day: date) -> list[dict[str, Any]]:
+        start = datetime.combine(target_day, time.min, tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
+        with self.mapping.connect() as con:
+            rows = con.execute(
+                "select * from sentero_sensor_events where event_time >= ? and event_time < ? order by event_time asc",
+                (start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds")),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _timeline_events_for_day(
+        self,
+        target_day: date,
+        events: list[dict[str, Any]],
+        summary: dict[str, Any],
+        profile: dict[str, Any],
+        deviations: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        timeline: list[dict[str, Any]] = []
+        activity_events = [(self._parse_time(event.get("event_time")), event) for event in events if self._is_activity_event(event)]
+        if activity_events:
+            first_time, first_event = activity_events[0]
+            timeline.append(self._timeline_event(
+                target_day, "day-start", first_time, None, "routine", "info",
+                "Tag begonnen", "Erste Aktivität nach der Nacht.",
+                room=first_event.get("room"), status="resolved",
+                observations=[self._observation_label(first_event)],
+                source_entities=[first_event.get("entity_id")],
+                baseline_comparison=self._wakeup_comparison(summary, profile),
+            ))
+        timeline.extend(self._room_episode_events(target_day, activity_events))
+        timeline.extend(self._door_timeline_events(target_day, events))
+        timeline.extend(self._environment_timeline_events(target_day, events))
+        timeline.extend(self._anomaly_events_for_summary(target_day, summary, profile, deviations))
+        if summary.get("last_activity"):
+            last_time = self._parse_time(summary.get("last_activity"))
+            if last_time.hour >= 20:
+                timeline.append(self._timeline_event(
+                    target_day, "night-rest", last_time, None, "routine", "info",
+                    "Nachtruhe erkannt", "Seitdem wurde keine spätere Alltagsaktivität erfasst.",
+                    room=None, status="observed",
+                    baseline_comparison=self._sleep_comparison(summary, profile),
+                ))
+        return sorted(timeline, key=lambda item: item.get("start_time") or "")
+
+    def _room_episode_events(self, target_day: date, activity_events: list[tuple[datetime, dict[str, Any]]]) -> list[dict[str, Any]]:
+        episodes: list[dict[str, Any]] = []
+        current: list[tuple[datetime, dict[str, Any]]] = []
+        for item in activity_events:
+            event_time, event = item
+            if not current:
+                current = [item]
+                continue
+            previous_time, previous_event = current[-1]
+            same_room = str(previous_event.get("room") or "") == str(event.get("room") or "")
+            close = (event_time - previous_time).total_seconds() <= 45 * 60
+            if same_room and close:
+                current.append(item)
+            else:
+                episodes.append(self._room_episode(target_day, current))
+                current = [item]
+        if current:
+            episodes.append(self._room_episode(target_day, current))
+        return [episode for episode in episodes if episode]
+
+    def _room_episode(self, target_day: date, items: list[tuple[datetime, dict[str, Any]]]) -> dict[str, Any] | None:
+        if not items:
+            return None
+        start, first = items[0]
+        end, _ = items[-1]
+        minutes = max(1, int((end - start).total_seconds() / 60) + 1)
+        room = first.get("room")
+        return self._timeline_event(
+            target_day,
+            f"room-{room or 'unknown'}-{start.strftime('%H%M')}",
+            start,
+            end if len(items) > 1 else None,
+            "activity",
+            "normal",
+            self._room_label(room) or "Aktivität",
+            f"Aktivität {self._room_preposition(room)} erkannt.",
+            room=room,
+            duration_minutes=minutes,
+            status="resolved",
+            baseline_comparison="Im üblichen Bereich" if minutes < 70 else "Länger als eine kurze Alltagsaktivität.",
+            observations=[self._observation_label(event) for _, event in items[:4]],
+            source_entities=[event.get("entity_id") for _, event in items],
+        )
+
+    def _door_timeline_events(self, target_day: date, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        door_events = [(self._parse_time(event.get("event_time")), event) for event in events if self._is_door_event(event) and self._is_on(event.get("state"))]
+        activity = [self._parse_time(event.get("event_time")) for event in events if self._is_activity_event(event) and not self._is_door_event(event)]
+        for event_time, event in door_events:
+            next_activity = min((item for item in activity if item > event_time), default=None)
+            left_home = bool(next_activity and (next_activity - event_time).total_seconds() > 30 * 60)
+            result.append(self._timeline_event(
+                target_day,
+                f"door-{event_time.strftime('%H%M%S')}",
+                event_time,
+                None,
+                "door",
+                "info",
+                "Wohnungstür geöffnet" if not left_home else "Wohnung verlassen",
+                "Danach wurde längere Zeit keine Aktivität in der Wohnung erkannt." if left_home else "Türkontakt hat eine Öffnung erfasst.",
+                room=event.get("room"),
+                status="observed",
+                observations=[self._observation_label(event)],
+                source_entities=[event.get("entity_id")],
+            ))
+        return result
+
+    def _environment_timeline_events(self, target_day: date, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for event in events:
+            device_class = self._device_class(event)
+            value = self._number(event.get("state"))
+            if device_class == "humidity" and value is not None and value >= 70:
+                event_time = self._parse_time(event.get("event_time"))
+                result.append(self._timeline_event(
+                    target_day, f"humidity-{event_time.strftime('%H%M%S')}", event_time, None,
+                    "environment", "notice", "Luftfeuchtigkeit erhöht",
+                    f"{self._room_label(event.get('room')) or 'Raum'} · {round(value)} %",
+                    room=event.get("room"), status="observed",
+                    baseline_comparison="Bitte lüften oder Verlauf prüfen, falls der Wert lange erhöht bleibt.",
+                    observations=[self._observation_label(event)],
+                    source_entities=[event.get("entity_id")],
+                ))
+            if self._is_smoke_role(event) and self._is_on(event.get("state")):
+                event_time = self._parse_time(event.get("event_time"))
+                result.append(self._timeline_event(
+                    target_day, f"safety-{event_time.strftime('%H%M%S')}", event_time, None,
+                    "safety", "critical", "Sicherheitsereignis erkannt",
+                    "Ein Sicherheitsmelder hat ausgelöst.",
+                    room=event.get("room"), status="active",
+                    observations=[self._observation_label(event)],
+                    source_entities=[event.get("entity_id")],
+                ))
+        return result
+
+    def _anomaly_events_for_summary(
+        self,
+        target_day: date,
+        summary: dict[str, Any],
+        profile: dict[str, Any],
+        deviations: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for index, period in enumerate(summary.get("inactivity_periods") or []):
+            minutes = int(period.get("minutes") or 0)
+            if minutes < 180:
+                continue
+            start = self._parse_time(period.get("from"))
+            end = self._parse_time(period.get("to"))
+            severity = "warning" if minutes >= 300 else "notice"
+            result.append(self._timeline_event(
+                target_day, f"quiet-{index}-{start.strftime('%H%M')}", start, end,
+                "anomaly", severity, "Ungewöhnlich lange Ruhephase",
+                f"{self._duration_label(minutes)} ohne erkannte Alltagsaktivität.",
+                room=None, duration_minutes=minutes, status="resolved",
+                status_label=f"Normalisiert um {self._time_label(end.isoformat(timespec='seconds'))}",
+                baseline_comparison="Üblich sind deutlich kürzere Ruhephasen zwischen erkannten Aktivitäten.",
+                observations=["Keine Aktivitätssensoren mit Bewegung oder Präsenz in diesem Zeitraum"],
+                source_entities=[],
+            ))
+        if int(deviations.get("wakeup_deviation_minutes") or 0) >= 90 and summary.get("wakeup_time"):
+            start = self._parse_time(f"{target_day.isoformat()}T{summary['wakeup_time']}:00+00:00")
+            result.append(self._timeline_event(
+                target_day, "wakeup-late", start, None, "anomaly", "notice",
+                "Aufstehzeit ungewohnt", "Der Tag begann deutlich anders als im persönlichen Muster.",
+                room=None, status="observed", baseline_comparison=self._wakeup_comparison(summary, profile),
+            ))
+        if int(summary.get("active_minutes") or 0) == 0:
+            noon = datetime.combine(target_day, time(hour=12), tzinfo=timezone.utc)
+            result.append(self._timeline_event(
+                target_day, "no-activity", noon, None, "anomaly", "warning",
+                "Keine Aktivität erfasst", "Für diesen Tag liegen keine verwertbaren Alltagsaktivitäten vor.",
+                room=None, status="active" if target_day == datetime.now(timezone.utc).date() else "observed",
+                baseline_comparison="Vergleich mit persönlichem Verhalten ist ohne Tagesaktivität nur eingeschränkt möglich.",
+            ))
+        return result
+
+    def _timeline_event(
+        self,
+        target_day: date,
+        stable_key: str,
+        start_time: datetime,
+        end_time: datetime | None,
+        category: str,
+        severity: str,
+        title: str,
+        description: str,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        duration = extra.pop("duration_minutes", None)
+        if duration is None and end_time is not None:
+            duration = max(1, int((end_time - start_time).total_seconds() / 60))
+        return {
+            "id": f"{target_day.isoformat()}-{stable_key}",
+            "type": category,
+            "category": category,
+            "severity": severity,
+            "title": title,
+            "description": description,
+            "room": extra.pop("room", None),
+            "start_time": start_time.isoformat(timespec="seconds"),
+            "end_time": end_time.isoformat(timespec="seconds") if end_time else None,
+            "duration_minutes": duration,
+            "duration": self._duration_label(duration) if duration else None,
+            "status": extra.pop("status", "observed"),
+            "status_label": extra.pop("status_label", None),
+            "baseline_comparison": extra.pop("baseline_comparison", None),
+            "observations": [item for item in extra.pop("observations", []) if item],
+            "source_entities": sorted({str(item) for item in extra.pop("source_entities", []) if item}),
+            **extra,
+        }
+
+    def _ui_daily_summary(self, summary: dict[str, Any], profile: dict[str, Any], deviations: dict[str, Any], timeline_events: list[dict[str, Any]]) -> dict[str, Any]:
+        severity_rank = {"normal": 0, "info": 0, "notice": 1, "warning": 2, "critical": 3}
+        max_severity = max((severity_rank.get(str(event.get("severity")), 0) for event in timeline_events), default=0)
+        headline = "Überwiegend typischer Tagesablauf"
+        if max_severity >= 3:
+            headline = "Kritischer Hinweis im Tagesverlauf"
+        elif max_severity == 2:
+            headline = "Auffälligkeit im Tagesverlauf"
+        elif max_severity == 1:
+            headline = "Kleinere Abweichungen erkannt"
+        anomaly_count = sum(1 for event in timeline_events if event.get("category") in {"anomaly", "safety", "environment"} and event.get("severity") != "normal")
+        critical_count = sum(1 for event in timeline_events if event.get("severity") == "critical")
+        longest = max([int(item.get("minutes") or 0) for item in summary.get("inactivity_periods", [])], default=0)
+        return {
+            "date": summary.get("date"),
+            "headline": headline,
+            "wakeup_time": summary.get("wakeup_time"),
+            "first_activity": summary.get("first_activity"),
+            "last_activity": summary.get("last_activity"),
+            "active_minutes": int(summary.get("active_minutes") or 0),
+            "longest_inactivity_minutes": longest,
+            "longest_inactivity": self._duration_label(longest) if longest else None,
+            "door_events": int(summary.get("door_events") or 0),
+            "anomaly_count": anomaly_count,
+            "critical_count": critical_count,
+            "status_text": f"{anomaly_count} kleinere Abweichungen erkannt" if anomaly_count else "Keine relevanten Abweichungen erkannt",
+            "critical_text": "Keine kritischen Ereignisse" if critical_count == 0 else f"{critical_count} kritische Ereignisse",
+            "baseline": self._ui_profile(profile),
+            "deviations": deviations,
+        }
+
+    def _ui_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "average_wakeup_time": profile.get("average_wakeup_time"),
+            "average_sleep_time": profile.get("average_sleep_time"),
+            "average_active_minutes": profile.get("average_active_minutes"),
+            "normal_door_usage": profile.get("normal_door_usage") or {},
+            "learning": profile.get("learning") or {},
+        }
+
+    def _trend_card(self, key: str, label: str, previous: list[dict[str, Any]], current: list[dict[str, Any]], profile: dict[str, Any]) -> dict[str, Any]:
+        if key == "wakeup":
+            current_avg = self._average_time([item.get("wakeup_time") for item in current])
+            previous_avg = self._average_time([item.get("wakeup_time") for item in previous])
+            baseline = profile.get("average_wakeup_time")
+            comparison = self._compare_time_label(current_avg, baseline)
+            return {"key": key, "label": label, "baseline": baseline, "previous": previous_avg, "current": current_avg, "comparison": comparison}
+        if key == "activity":
+            current_avg = self._avg([item.get("active_minutes") for item in current])
+            previous_avg = self._avg([item.get("active_minutes") for item in previous])
+            baseline = float(profile.get("average_active_minutes") or 0)
+            return {"key": key, "label": label, "baseline": self._duration_label(round(baseline)), "previous": self._duration_label(round(previous_avg)), "current": self._duration_label(round(current_avg)), "comparison": self._compare_number_label(current_avg, baseline, "Aktivität")}
+        if key == "door":
+            current_avg = self._avg([item.get("door_events") for item in current])
+            previous_avg = self._avg([item.get("door_events") for item in previous])
+            baseline = float((profile.get("normal_door_usage") or {}).get("average_daily_events") or 0)
+            return {"key": key, "label": label, "baseline": self._count_label(baseline), "previous": self._count_label(previous_avg), "current": self._count_label(current_avg), "comparison": self._compare_number_label(current_avg, baseline, "Türereignisse")}
+        current_nights = sum(1 for item in current if self._has_night_activity(item))
+        previous_nights = sum(1 for item in previous if self._has_night_activity(item))
+        return {"key": key, "label": label, "baseline": "persönlicher Normalbereich", "previous": f"{previous_nights} Nächte", "current": f"{current_nights} Nächte", "comparison": "häufiger als gewöhnlich" if current_nights >= 3 else "im üblichen Bereich"}
+
+    def _trend_series(self, metric: str, label: str, unit: str, points: list[dict[str, Any]], profile: dict[str, Any]) -> dict[str, Any]:
+        value_key = {
+            "wake_time": "wakeup_minutes",
+            "activity": "active_minutes",
+            "longest_rest": "longest_inactivity_minutes",
+            "night_activity": "night_activity_count",
+            "away_time": "away_minutes",
+        }[metric]
+        values = [point.get(value_key) for point in points if point.get("has_data") and point.get(value_key) is not None]
+        baseline = self._series_baseline(metric, values, profile)
+        latest = values[-1] if values else None
+        return {
+            "metric": metric,
+            "label": label,
+            "unit": unit,
+            "points": [
+                {
+                    "timestamp": point["date"],
+                    "value": point.get(value_key),
+                    "label": point["date"],
+                    "has_data": bool(point.get("has_data") and point.get(value_key) is not None),
+                }
+                for point in points
+            ],
+            "baseline": baseline,
+            "interpretation": self._series_interpretation(label, latest, baseline, unit, bool(values)),
+        }
+
+    def _series_baseline(self, metric: str, values: list[Any], profile: dict[str, Any]) -> dict[str, Any]:
+        if metric == "wake_time":
+            average = self._minutes_of_day(profile.get("average_wakeup_time"))
+            if average is None:
+                average = round(sum(float(value) for value in values) / len(values)) if values else None
+            return self._baseline_band(average, 30)
+        if metric == "activity":
+            average = float(profile.get("average_active_minutes") or 0) or (sum(float(value) for value in values) / len(values) if values else None)
+            return self._baseline_band(average, max(20, round(float(average or 0) * 0.25)))
+        if metric == "longest_rest":
+            average = sum(float(value) for value in values) / len(values) if values else None
+            return self._baseline_band(average, 45)
+        if metric == "night_activity":
+            return {"lower": 0, "upper": 2, "average": 1}
+        average_door = float((profile.get("normal_door_usage") or {}).get("average_daily_events") or 0)
+        average = average_door * 30 if average_door else (sum(float(value) for value in values) / len(values) if values else None)
+        return self._baseline_band(average, max(30, round(float(average or 0) * 0.3)))
+
+    def _baseline_band(self, average: float | int | None, spread: float | int) -> dict[str, Any]:
+        if average is None:
+            return {"lower": None, "upper": None, "average": None}
+        return {
+            "lower": max(0, round(float(average) - float(spread))),
+            "upper": round(float(average) + float(spread)),
+            "average": round(float(average)),
+        }
+
+    def _series_interpretation(self, label: str, latest: Any, baseline: dict[str, Any], unit: str, has_values: bool) -> str:
+        if not has_values:
+            return "Noch nicht genügend Verlaufsdaten für einen belastbaren Vergleich."
+        lower = baseline.get("lower")
+        upper = baseline.get("upper")
+        if latest is None or lower is None or upper is None:
+            return "Persönlicher Normalbereich wird noch aufgebaut."
+        latest_value = float(latest)
+        if latest_value < float(lower):
+            direction = "früher" if unit == "time" else "geringer"
+            return f"{label} aktuell {direction} als gewöhnlich."
+        if latest_value > float(upper):
+            direction = "später" if unit == "time" else "höher"
+            return f"{label} aktuell {direction} als gewöhnlich."
+        return f"{label} im persönlichen Bereich."
+
+    def _night_activity_count(self, summary: dict[str, Any]) -> int:
+        count = 0
+        for period in summary.get("inactivity_periods") or []:
+            if str(period.get("label") or "") == "night_activity":
+                count += 1
+        first = self._parse_time(summary.get("first_activity")) if summary.get("first_activity") else None
+        last = self._parse_time(summary.get("last_activity")) if summary.get("last_activity") else None
+        return max(count, int(bool((first and first.hour < 5) or (last and last.hour >= 23))))
+
+    def _avg(self, values: list[Any]) -> float:
+        numbers = [float(value or 0) for value in values if value is not None]
+        return round(sum(numbers) / len(numbers), 1) if numbers else 0
+
+    def _compare_time_label(self, current: str | None, baseline: str | None) -> str:
+        diff = self._minute_deviation(current, baseline)
+        if not current or not baseline:
+            return "noch nicht vergleichbar"
+        if diff < 30:
+            return "im üblichen Bereich"
+        return "etwas später" if self._minutes_of_day(current) and self._minutes_of_day(baseline) and self._minutes_of_day(current) > self._minutes_of_day(baseline) else "anders als gewöhnlich"
+
+    def _compare_number_label(self, current: float, baseline: float, noun: str) -> str:
+        if baseline <= 0:
+            return "noch nicht vergleichbar"
+        change = self._percent_change(current, baseline)
+        if abs(change) < 25:
+            return "im üblichen Bereich"
+        return f"{noun} weniger als gewöhnlich" if change < 0 else f"{noun} häufiger als gewöhnlich"
+
+    def _count_label(self, value: float) -> str:
+        return f"{round(value, 1)} pro Tag"
+
+    def _wakeup_comparison(self, summary: dict[str, Any], profile: dict[str, Any]) -> str | None:
+        current = summary.get("wakeup_time")
+        baseline = profile.get("average_wakeup_time")
+        if not current or not baseline:
+            return None
+        return f"Persönlich typisch: {baseline}. Heute: {current}."
+
+    def _sleep_comparison(self, summary: dict[str, Any], profile: dict[str, Any]) -> str | None:
+        baseline = profile.get("average_sleep_time")
+        if not summary.get("last_activity") or not baseline:
+            return None
+        return f"Persönlich typische letzte Aktivität: {baseline}."
+
+    def _observation_label(self, event: dict[str, Any]) -> str:
+        room = self._room_label(event.get("room"))
+        role = str(event.get("role") or event.get("device_class") or "Sensor").replace("_", " ")
+        state = str(event.get("state") or "").strip()
+        return " · ".join(item for item in [room, role, state] if item)
+
+    def _room_label(self, room: Any) -> str:
+        labels = {
+            "living_room": "Wohnzimmer",
+            "kitchen": "Küche",
+            "bathroom": "Badezimmer",
+            "bedroom": "Schlafzimmer",
+            "hallway": "Flur",
+            "entrance": "Eingang",
+        }
+        value = str(room or "")
+        return labels.get(value, value)
+
+    def _room_preposition(self, room: Any) -> str:
+        label = self._room_label(room)
+        if label in {"Eingang"}:
+            return "am Eingang"
+        if label in {"Badezimmer", "Wohnzimmer"}:
+            return f"im {label}"
+        return f"in der {label}" if label in {"Küche"} else f"im {label}" if label else "in der Wohnung"
+
+    def _duration_label(self, minutes: int | float | None) -> str:
+        value = int(minutes or 0)
+        if value <= 0:
+            return ""
+        if value < 60:
+            return f"{value} Min."
+        hours = value // 60
+        rest = value % 60
+        return f"{hours} Std. {rest} Min." if rest else f"{hours} Std."
+
+    def _time_label(self, value: Any) -> str:
+        parsed = self._parse_time(value)
+        return f"{parsed.hour:02d}:{parsed.minute:02d}"
+
+    def _severity_from_status(self, status: Any) -> str:
+        if status == "red":
+            return "critical"
+        if status == "orange":
+            return "warning"
+        if status == "yellow":
+            return "notice"
+        return "normal"
+
+    def _status_title(self, status: Any) -> str:
+        if status == "red":
+            return "Kritischer Hinweis"
+        if status == "orange":
+            return "Auffälligkeit"
+        if status == "yellow":
+            return "Leichte Abweichung"
+        return "Normaler Verlauf"
 
     def _cleanup_old_data(self) -> None:
         events_before = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat(timespec="seconds")
@@ -1575,7 +2173,7 @@ class SenteroBehaviorAgent:
 
     @staticmethod
     def _is_on(value: Any) -> bool:
-        return str(value or "").strip().lower() in {"on", "true", "detected", "occupied", "home", "present", "1"}
+        return str(value or "").strip().lower() in {"on", "true", "detected", "occupied", "home", "present", "open", "active", "motion", "moving", "1"}
 
     @staticmethod
     def _number(value: Any) -> float | None:

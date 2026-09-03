@@ -215,6 +215,9 @@ class MailResponseService:
             lines.append(f"{mark} {label}: {detail}" if detail else f"{mark} {label}")
         lines.append("")
         lines.append(f"Sensoren: {facts.get('sensor_count', 0)} eingerichtet.")
+        update_sentence = _sensor_update_sentence(facts)
+        if update_sentence:
+            lines.append(update_sentence)
         if facts.get("unreachable"):
             lines.append(f"{len(facts['unreachable'])} Sensoren sind momentan nicht erreichbar.")
         if facts.get("low_battery"):

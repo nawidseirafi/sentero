@@ -70,8 +70,17 @@ class SenteroService:
     def behavior_history(self, limit: int = 20) -> list[dict[str, Any]]:
         return self.behavior.history(limit=limit)
 
-    def behavior_timeline_today(self, live_snapshot: bool = False) -> dict[str, Any]:
-        return self.behavior.timeline_today(live_snapshot=live_snapshot)
+    def behavior_timeline_today(self, live_snapshot: bool = False, day: str | None = None) -> dict[str, Any]:
+        return self.behavior.timeline_today(live_snapshot=live_snapshot, day=day)
+
+    def behavior_day(self, day: str | None = None, live_snapshot: bool = False) -> dict[str, Any]:
+        return self.behavior.behavior_day(day=day, live_snapshot=live_snapshot)
+
+    def behavior_trends(self, days: int = 14) -> dict[str, Any]:
+        return self.behavior.behavior_trends(days=days)
+
+    def behavior_hints(self, days: int = 14) -> dict[str, Any]:
+        return self.behavior.behavior_hints(days=days)
 
     def record_behavior_snapshot(self) -> int:
         if not self.mapping.roles(dev=True, include_state=False):

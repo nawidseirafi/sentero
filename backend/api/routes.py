@@ -529,8 +529,23 @@ def sentero_behavior_history(limit: int = Query(20, ge=1, le=100)):
 
 
 @router.get("/behavior/timeline", tags=[TAG_BEHAVIOR])
-def sentero_behavior_timeline(live: bool = Query(False)):
-    return get_services().sentero.behavior_timeline_today(live_snapshot=live)
+def sentero_behavior_timeline(live: bool = Query(False), date: str | None = Query(None)):
+    return get_services().sentero.behavior_timeline_today(live_snapshot=live, day=date)
+
+
+@router.get("/behavior/day", tags=[TAG_BEHAVIOR])
+def sentero_behavior_day(date: str | None = Query(None), live: bool = Query(False)):
+    return get_services().sentero.behavior_day(day=date, live_snapshot=live)
+
+
+@router.get("/behavior/trends", tags=[TAG_BEHAVIOR])
+def sentero_behavior_trends(days: int = Query(14, ge=7, le=30)):
+    return get_services().sentero.behavior_trends(days=days)
+
+
+@router.get("/behavior/hints", tags=[TAG_BEHAVIOR])
+def sentero_behavior_hints(days: int = Query(14, ge=1, le=30)):
+    return get_services().sentero.behavior_hints(days=days)
 
 
 @router.get("/devices", tags=[TAG_DEVICES])

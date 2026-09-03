@@ -13,8 +13,8 @@ type Props = {
 
 const navIcons = {
   home: Home,
-  history: Sparkles,
-  rooms: Home,
+  wizard: Sparkles,
+  hints: Bell,
   more: Settings,
 };
 
@@ -85,13 +85,12 @@ function SenteroShell({ route, onNavigate, onLogout, children }: Props) {
           return (
             <button key={item.route} className={route.name === item.route ? 'active' : ''} type="button" onClick={() => onNavigate(item.route)}>
               <Icon size={22} aria-hidden="true" />
-
+              <span>{item.label}</span>
             </button>
           );
         })}
-        <button className="sc-mobile-logout" type="button" onClick={onLogout}>
+        <button className="sc-mobile-logout" type="button" onClick={onLogout} aria-label="Abmelden">
           <LogOut size={22} aria-hidden="true" />
-
         </button>
       </nav>
     </main>

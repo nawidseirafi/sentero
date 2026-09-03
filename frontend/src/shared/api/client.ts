@@ -46,6 +46,110 @@ export type SenteroBehaviorLearning = {
   data_complete?: boolean;
 };
 
+export type SenteroTimelineEvent = {
+  id: string;
+  type: string;
+  category: 'routine' | 'activity' | 'door' | 'environment' | 'anomaly' | 'safety' | string;
+  severity: 'normal' | 'info' | 'notice' | 'warning' | 'critical' | string;
+  title: string;
+  description: string;
+  room?: string | null;
+  start_time: string;
+  end_time?: string | null;
+  duration_minutes?: number | null;
+  duration?: string | null;
+  status?: 'active' | 'observed' | 'resolved' | string;
+  status_label?: string | null;
+  baseline_comparison?: string | null;
+  observations?: string[];
+  source_entities?: string[];
+};
+
+export type SenteroBehaviorDaySummary = {
+  date: string;
+  headline: string;
+  wakeup_time?: string | null;
+  first_activity?: string | null;
+  last_activity?: string | null;
+  active_minutes: number;
+  longest_inactivity_minutes?: number;
+  longest_inactivity?: string | null;
+  door_events: number;
+  anomaly_count: number;
+  critical_count: number;
+  status_text: string;
+  critical_text: string;
+  baseline?: Record<string, unknown>;
+  deviations?: Record<string, unknown>;
+};
+
+export type SenteroBehaviorDay = {
+  date: string;
+  events: Array<{ event_time: string; room?: string | null; role?: string | null; state?: string | null; device_class?: string | null; entity_id?: string | null; data_class?: string | null; aggregation_level?: string | null }>;
+  timeline_events: SenteroTimelineEvent[];
+  summary: SenteroBehaviorDaySummary;
+  profile?: Record<string, unknown>;
+  deviations?: Record<string, unknown>;
+  data_quality?: SenteroDashboardDataQuality;
+  assessment: SenteroBehaviorAssessment | null;
+};
+
+export type SenteroTrendPoint = {
+  date: string;
+  wakeup_time?: string | null;
+  wakeup_minutes?: number | null;
+  active_minutes: number;
+  longest_inactivity_minutes?: number;
+  night_activity_count?: number;
+  away_minutes?: number;
+  door_events: number;
+  anomaly_score: number;
+  has_data?: boolean;
+};
+
+export type SenteroTrendCard = {
+  key: string;
+  label: string;
+  baseline?: string | null;
+  previous?: string | null;
+  current?: string | null;
+  comparison: string;
+};
+
+export type SenteroBehaviorTrends = {
+  days: number;
+  profile?: Record<string, unknown>;
+  data_quality?: SenteroDashboardDataQuality;
+  points: SenteroTrendPoint[];
+  cards: SenteroTrendCard[];
+  series?: SenteroTrendSeries[];
+};
+
+export type SenteroDashboardDataQuality = {
+  usable_days?: number;
+  learning_completed?: boolean;
+  learning_day?: number;
+  learning_days?: number;
+  baseline_available?: boolean;
+  message?: string;
+  sensor_quality?: Record<string, unknown>;
+};
+
+export type SenteroTrendSeries = {
+  metric: 'wake_time' | 'activity' | 'longest_rest' | 'night_activity' | 'away_time' | string;
+  label: string;
+  unit: 'time' | 'minutes' | 'count' | string;
+  points: Array<{ timestamp: string; value?: number | null; label?: string; has_data?: boolean }>;
+  baseline: { lower?: number | null; upper?: number | null; average?: number | null };
+  interpretation: string;
+};
+
+export type SenteroBehaviorHints = {
+  current: SenteroTimelineEvent[];
+  observed: SenteroTimelineEvent[];
+  resolved: SenteroTimelineEvent[];
+};
+
 export type SenteroSensorRole = {
   role: string;
   room?: string | null;
@@ -618,6 +722,15 @@ function apiUrl(path: string) {
   }
 }
 
+function queryString(params: Record<string, string | undefined>) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value) search.set(key, value);
+  }
+  const value = search.toString();
+  return value ? `?${value}` : '';
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getAuthToken();
   const response = await fetch(apiUrl(path), {
@@ -668,7 +781,10 @@ export const api = {
     request<{ ok: boolean }>('/api/sentero/auth/reset-password', { method: 'POST', body: JSON.stringify(payload) }),
   senteroSetupStatus: () => request<SenteroSetupStatus>('/api/sentero/setup/status'),
   senteroBehaviorLatest: () => request<{ assessment: SenteroBehaviorAssessment | null; learning?: SenteroBehaviorLearning }>('/api/sentero/behavior/latest'),
-  senteroBehaviorTimeline: (live = false) => request<{ events: Array<{ event_time: string; room?: string | null; role?: string | null; state?: string | null; data_class?: string | null; aggregation_level?: string | null }>; assessment: SenteroBehaviorAssessment | null }>(`/api/sentero/behavior/timeline${live ? '?live=true' : ''}`),
+  senteroBehaviorTimeline: (live = false, date?: string) => request<SenteroBehaviorDay>(`/api/sentero/behavior/timeline${queryString({ live: live ? 'true' : '', date })}`),
+  senteroBehaviorDay: (date?: string, live = false) => request<SenteroBehaviorDay>(`/api/sentero/behavior/day${queryString({ date, live: live ? 'true' : '' })}`),
+  senteroBehaviorTrends: (days = 14) => request<SenteroBehaviorTrends>(`/api/sentero/behavior/trends?days=${encodeURIComponent(String(days))}`),
+  senteroBehaviorHints: (days = 14) => request<SenteroBehaviorHints>(`/api/sentero/behavior/hints?days=${encodeURIComponent(String(days))}`),
   startSenteroSetup: () => request<SenteroSetupStatus>('/api/sentero/setup/start', { method: 'POST' }),
   saveSenteroProfile: (payload: { name?: string; birth_year?: number | null; age?: number | null; notes?: string }) =>
     request<SenteroSetupStatus>('/api/sentero/setup/profile', { method: 'POST', body: JSON.stringify(payload) }),

@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { SenteroAuthProvider, useSenteroAuth } from './auth/SenteroAuthContext';
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
-import { HistoryPage } from './pages/HistoryPage';
 import { RoomsPage } from './pages/RoomsPage';
 import { ContactsPage } from './pages/ContactsPage';
+import { NotificationsPage } from './pages/NotificationsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { SetupWizardPage } from './pages/SetupWizardPage';
 import SenteroShell  from './components/SenteroShell';
@@ -79,7 +79,7 @@ function SenteroContent() {
     <SenteroShell route={route} onNavigate={navigate} onLogout={logout}>
       {route.name === 'setup' && <SetupWizardPage onFinish={() => navigate('dashboard')} />}
       {route.name === 'dashboard' && <DashboardPage />}
-      {route.name === 'history' && <HistoryPage />}
+      {route.name === 'notifications' && <NotificationsPage />}
       {route.name === 'rooms' && <RoomsPage />}
       {route.name === 'contacts' && <ContactsPage />}
       {route.name === 'settings' && <SettingsPage activeTab={route.tab || 'profile'} />}
