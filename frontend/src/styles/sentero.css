@@ -8244,6 +8244,7 @@ button:disabled {
   align-items: center;
   background: #eaf7f0;
   border: 1px solid #d7ece2;
+  border-radius: 999px;
   color: #2f7d5f;
   display: inline-flex;
   grid-column: 1;
@@ -8331,6 +8332,7 @@ button:disabled {
   align-items: center;
   background: #eaf7f0;
   border: 1px solid #d7ece2;
+  border-radius: 999px;
   color: #2f7d5f;
   display: inline-flex;
   height: 44px;
@@ -8701,65 +8703,61 @@ button:disabled {
   }
 }
 
-/* Dashboard brand health ring — restored from the earlier breathing status indicator. */
+/* Dashboard brand health indicator: filled core with a slow breathing halo. */
 .sc-dashboard-brand-line {
   align-items: center;
   display: flex;
-  gap: 10px;
+  gap: 11px;
 }
 
 .sc-brand-status-dot {
-  --sc-status-ring: #8f9d97;
-  --sc-status-ring-soft: rgba(143, 157, 151, 0.18);
-  border: 2px solid var(--sc-status-ring);
+  --sc-status-color: #8f9d97;
+  --sc-status-halo: rgba(143, 157, 151, 0.18);
+  animation: sc-brand-status-breathe 3.6s ease-in-out infinite;
+  background: var(--sc-status-color);
   border-radius: 999px;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.78),
+    0 0 0 5px var(--sc-status-halo);
   display: inline-block;
   flex: 0 0 auto;
-  height: 15px;
-  position: relative;
-  width: 15px;
-}
-
-.sc-brand-status-dot::after {
-  border: 1px solid var(--sc-status-ring);
-  border-radius: inherit;
-  content: "";
-  inset: -2px;
-  opacity: 0.28;
-  position: absolute;
-  animation: sc-brand-status-breathe 3.4s ease-in-out infinite;
+  height: 14px;
+  width: 14px;
 }
 
 .sc-brand-status-dot.green {
-  --sc-status-ring: #2f7d5f;
-  --sc-status-ring-soft: rgba(47, 125, 95, 0.16);
+  --sc-status-color: #23b26d;
+  --sc-status-halo: rgba(35, 178, 109, 0.18);
 }
 
 .sc-brand-status-dot.red {
-  --sc-status-ring: #c84f57;
-  --sc-status-ring-soft: rgba(200, 79, 87, 0.16);
+  --sc-status-color: #d9535b;
+  --sc-status-halo: rgba(217, 83, 91, 0.18);
 }
 
 .sc-brand-status-dot.gray {
-  --sc-status-ring: #8f9d97;
-  --sc-status-ring-soft: rgba(143, 157, 151, 0.16);
+  --sc-status-color: #8f9d97;
+  --sc-status-halo: rgba(143, 157, 151, 0.18);
 }
 
 @keyframes sc-brand-status-breathe {
   0%, 100% {
-    box-shadow: 0 0 0 0 var(--sc-status-ring-soft);
-    opacity: 0.36;
-    transform: scale(1);
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.78),
+      0 0 0 4px var(--sc-status-halo);
   }
   50% {
-    box-shadow: 0 0 0 5px rgba(0, 0, 0, 0);
-    opacity: 0.08;
-    transform: scale(1.48);
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.78),
+      0 0 0 10px transparent;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sc-brand-status-dot::after {
+  .sc-brand-status-dot {
     animation: none;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.78),
+      0 0 0 5px var(--sc-status-halo);
   }
 }
