@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from backend.agents.sentero.mail.conversation_service import ConversationService
 from backend.agents.sentero.telegram.service import SenteroTelegramAssistant, TelegramAssistantConfig
 from backend.services.device_mapping_service import DeviceMappingService, now
 from backend.services.notification_service import NotificationService
@@ -24,6 +25,18 @@ class RecordingTelegramProvider:
     def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> dict[str, Any]:
         self.sent.append({"contact": contact, "title": title, "text": text, "config": config})
         return {"message_id": f"telegram:{contact['telegram_chat_id']}:{len(self.sent)}"}
+
+
+class FakeLLM:
+    provider = "test"
+
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = responses
+        self.prompts: list[dict[str, Any]] = []
+
+    def generate(self, prompt: str, **kwargs: Any) -> Any:
+        self.prompts.append({"prompt": prompt, "kwargs": kwargs})
+        return type("LLMResponse", (), {"text": self.responses.pop(0)})()
 
 
 class TelegramAssistantTests(unittest.TestCase):
@@ -125,6 +138,35 @@ class TelegramAssistantTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "sent")
             self.assertEqual(result["intent"], "TODAY_SUMMARY")
+
+    def test_telegram_uses_llm_as_primary_router_for_unlisted_languages(self) -> None:
+        llm = FakeLLM(
+            [
+                '{"intent":"STATUS_SUMMARY","confidence":0.96,"is_action_request":false,"slots":{"language":"ja"}}',
+                "現時点では、信頼できる回答に十分な新しいセンサーデータがありません。",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
+            insert_contact(mapping, queries_enabled=True)
+            notification = NotificationService(mapping)
+            provider = RecordingTelegramProvider()
+            notification.providers["telegram"] = provider
+            assistant = SenteroTelegramAssistant(
+                mapping,
+                SenteroService(mapping),
+                notification,
+                config=TelegramAssistantConfig(enabled=True, bot_token="secret"),
+                conversation=ConversationService(llm),
+            )
+
+            result = assistant.process_update(update("母は大丈夫ですか？"))
+
+            self.assertEqual(result["status"], "sent")
+            self.assertEqual(result["intent"], "STATUS_SUMMARY")
+            self.assertIn("十分な新しいセンサーデータ", provider.sent[-1]["text"])
+            self.assertEqual(len(llm.prompts), 2)
 
     def test_start_invite_links_contact_to_chat_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

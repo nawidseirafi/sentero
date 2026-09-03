@@ -69,7 +69,8 @@ class ConversationService:
             confidence = float(data.get("confidence") if data.get("confidence") is not None else 0.0)
             is_action = bool(data.get("is_action_request")) or bool(ACTION_RE.search(question.lower()))
             slots = data.get("slots") if isinstance(data.get("slots"), dict) else {}
-            slots.setdefault("language", language)
+            language = str(slots.get("language") or data.get("language") or language or "de")
+            slots["language"] = language
             if confidence < ROUTER_CONFIDENCE_FLOOR and multilingual is not None:
                 return route_with_language(multilingual, language)
             if confidence < ROUTER_CONFIDENCE_FLOOR and rule.intent != MailIntent.UNKNOWN:
@@ -95,10 +96,10 @@ class ConversationService:
             return localized_fallback_response(result, fallback, language)
         try:
             text = self.llm.generate(answer_prompt(result, question=question, history=history), system=ANSWER_SYSTEM).text.strip()
-            return text[:4000] if text else fallback.build(result)
+            return text[:4000] if text else localized_fallback_response(result, fallback, language)
         except Exception:
             logger.exception("LLM response generation failed", extra={"component": "conversation_service", "intent": result.intent.value})
-            return fallback.build(result)
+            return localized_fallback_response(result, fallback, language)
 
     def _llm_enabled(self) -> bool:
         return str(getattr(self.llm, "provider", "") or "").lower() not in {"", "rule_based"}
@@ -471,7 +472,7 @@ def _answer_facts(result: QueryResult) -> dict[str, Any]:
 
 
 def llm_response_allowed(result: QueryResult) -> bool:
-    if result.permission_denied or not result.data_available:
+    if result.permission_denied:
         return False
     return result.intent not in {MailIntent.HELP, MailIntent.UNKNOWN}
 
