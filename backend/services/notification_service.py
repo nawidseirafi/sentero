@@ -608,9 +608,7 @@ class NotificationService:
                 self._log(contact.get("id"), "consent", "yellow", "skipped_no_consent", "Sentero Tageszusammenfassung", None)
                 continue
             for channel in self._channels_for_contact(contact, "yellow"):
-                before = self._log_count()
-                self._send_with_log(contact, channel, "yellow", "Sentero Tageszusammenfassung", text, fallback=False)
-                if self._log_count() > before:
+                if self._send_with_log(contact, channel, "yellow", "Sentero Tageszusammenfassung", text, fallback=False):
                     sent += 1
         if sent:
             self._mark_daily_summary_sent(summary_date)
@@ -663,9 +661,7 @@ class NotificationService:
             channels = self._channels_for_contact(contact, severity)
             for channel in channels:
                 text = email_text if channel == "email" else short_text
-                before = self._log_count()
-                self._send_with_log(contact, channel, severity, title, text, fallback=severity == "red", incident_key=incident_key)
-                if self._log_count() > before:
+                if self._send_with_log(contact, channel, severity, title, text, fallback=severity == "red", incident_key=incident_key):
                     delivered += 1
         return {"sent": delivered, "incident_action": action}
 
@@ -1090,9 +1086,7 @@ class NotificationService:
             if not bool(contact.get("notification_enabled", 1)):
                 continue
             for channel in self._channels_for_warning(contact, warning):
-                before = self._log_count()
-                self._send_with_log(contact, channel, severity, title, email_text, fallback=False, incident_key=incident_key)
-                if self._log_count() > before:
+                if self._send_with_log(contact, channel, severity, title, email_text, fallback=False, incident_key=incident_key):
                     delivered += 1
         return delivered
 
@@ -1113,20 +1107,21 @@ class NotificationService:
         lines.extend(["", str(warning.get("recommendation") or "Bitte prüfen Sie das System.")])
         return "\n".join(lines).strip()
 
-    def _send_with_log(self, contact: dict[str, Any], channel: str, severity: str, title: str, text: str, fallback: bool, incident_key: str | None = None) -> None:
+    def _send_with_log(self, contact: dict[str, Any], channel: str, severity: str, title: str, text: str, fallback: bool, incident_key: str | None = None) -> bool:
         setting = self._setting(channel)
         if not setting.get("enabled"):
-            return
+            return False
         if channel == "email":
             title = sentero_mail_subject(title, setting.get("config") or {})
             text = add_mail_assistant_footer(text, setting.get("config") or {})
         if self._should_queue_offline():
             self._enqueue(contact, channel, severity, title, text, incident_key=incident_key)
             self._log(contact.get("id"), channel, severity, "pending", title, None, incident_key=incident_key)
-            return
+            return False
         try:
             result = self.providers[channel].send(contact, title, text, setting.get("config") or {})
             self._log(contact.get("id"), channel, severity, "sent", title, None, outgoing_message_id=_provider_message_id(result), incident_key=incident_key)
+            return True
         except Exception as exc:
             safe_error = self._safe_error(exc)
             logger.exception(
@@ -1134,18 +1129,25 @@ class NotificationService:
                 extra={"component": "notification", "channel": channel, "contact_id": contact.get("id"), "severity": severity},
             )
             self._log(contact.get("id"), channel, severity, "failed", title, safe_error, incident_key=incident_key)
+            # A failed send does not necessarily mean we are offline (e.g. a
+            # transient SMTP/API error while the connection itself is fine).
+            # Queue it so process_pending_queue() retries it on the next
+            # maintenance cycle instead of silently dropping the notification.
+            self._enqueue(contact, channel, severity, title, text, incident_key=incident_key)
             if channel != "email" and fallback:
                 try:
                     email_setting = self._setting("email")
                     fallback_title = sentero_mail_subject(title, email_setting.get("config") or {})
                     result = self.providers["email"].send(contact, fallback_title, email_text_for_fallback(text), email_setting.get("config") or {})
                     self._log(contact.get("id"), "email", severity, "fallback_sent", fallback_title, None, outgoing_message_id=_provider_message_id(result), incident_key=incident_key)
+                    return True
                 except Exception as fallback_exc:
                     logger.exception(
                         "Notification fallback email failed",
                         extra={"component": "notification", "contact_id": contact.get("id"), "severity": severity},
                     )
                     self._log(contact.get("id"), "email", severity, "failed", title, self._safe_error(fallback_exc), incident_key=incident_key)
+            return False
 
     def _should_queue_offline(self) -> bool:
         if not self.connectivity:

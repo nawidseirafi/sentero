@@ -40,6 +40,11 @@ class RecordingProvider:
             return {"message_id": f"<sentero-recording-{len(self.sent)}@sentero.local>"}
 
 
+class FailingProvider:
+    def send(self, contact: dict[str, Any], title: str, text: str, config: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("temporary provider failure")
+
+
 class RecordingMessaging:
     def __init__(self) -> None:
         self.messages: list[dict[str, Any]] = []
@@ -1094,6 +1099,26 @@ class NotificationSystemWarningTests(unittest.TestCase):
 
             logs = service.logs()["logs"]
             self.assertTrue(all("data_class" in log and "aggregation_level" in log for log in logs))
+
+    def test_failed_provider_send_is_queued_but_not_counted_as_sent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
+            contact_id = insert_contact(mapping)
+            ConsentService(mapping).grant({"contact_id": contact_id})
+            service = NotificationService(mapping)
+            service.providers["email"] = FailingProvider()
+
+            result = service.notify_assessment(
+                {"status": "red", "summary": "Kritisch.", "recommendation": "Bitte pruefen."},
+                [contact(mapping, contact_id)],
+            )
+
+            self.assertEqual(result["sent"], 0)
+            self.assertEqual(service.queue_status()["queue"]["pending"], 1)
+            with mapping.connect() as con:
+                failed = con.execute("select count(*) as count from notification_logs where status = 'failed'").fetchone()["count"]
+            self.assertEqual(failed, 1)
 
     def test_behavior_warning_is_sent_once_until_resolved(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

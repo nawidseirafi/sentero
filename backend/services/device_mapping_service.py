@@ -1595,7 +1595,7 @@ def normalize_snapshot_item(item: Any) -> dict[str, Any]:
     return {
         **item,
         'entity_id': entity_id,
-        'domain': str(item.get('domain') or entity_id.split('.')[0] if '.' in entity_id else ''),
+        'domain': str(item.get('domain') or (entity_id.split('.')[0] if '.' in entity_id else '')),
         'state': item.get('state'),
         'friendly_name': item.get('friendly_name') or attrs.get('friendly_name') or entity_id,
         'device_class': item.get('device_class') or attrs.get('device_class'),
@@ -2635,7 +2635,7 @@ def latest_seen_for_entities(states: list[dict[str, Any]], entity_ids: list[str]
 
 def testable_state_entity(item: dict[str, Any]) -> bool:
     entity_id = str(item.get('entity_id') or '')
-    domain = str(item.get('domain') or entity_id.split('.', 1)[0] if '.' in entity_id else '')
+    domain = str(item.get('domain') or (entity_id.split('.', 1)[0] if '.' in entity_id else ''))
     source = str(item.get('source') or item.get('platform') or '').strip().lower()
     payload_key = str(item.get('payload_key') or '').strip().lower()
     if domain in {'button', 'update'}:

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from backend.services.device_mapping_service import DeviceMappingService, SensorTransport, mqtt_identity_values, role_candidate_matches, score_candidates
+from backend.services.device_mapping_service import DeviceMappingService, SensorTransport, mqtt_identity_values, normalize_snapshot_item, role_candidate_matches, score_candidates, testable_state_entity
 from backend.services.sensor_manager import SensorManager
 
 class FakeMessage:
@@ -45,6 +45,12 @@ class FakeSource:
         return self.rows
 
 class SensorOnboardingTests(unittest.TestCase):
+
+    def test_domain_is_preserved_for_slash_entity_ids(self) -> None:
+        item = {"entity_id": "zigbee2mqtt/Kueche Presence", "domain": "binary_sensor", "state": "online"}
+
+        self.assertEqual(normalize_snapshot_item(item)["domain"], "binary_sensor")
+        self.assertTrue(testable_state_entity(item))
 
     def test_presence_setup_uses_zigbee_discovery_by_default(self) -> None:
         manager, mapping, source, mqtt = self.manager()
