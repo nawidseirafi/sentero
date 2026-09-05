@@ -36,7 +36,7 @@ class MailIntentService:
             return IntentResult(MailIntent.LAST_ACTIVITY, 0.86)
         if any(term in text for term in ["aktivität", "aktivitaet", "bewegung", "anwesenheit", "gerade aktiv"]):
             return IntentResult(MailIntent.CURRENT_ACTIVITY, 0.8)
-        if any(term in text for term in ["alles gut", "alles in ordnung", "status", "geht es", "gehts", "ok", "okay"]):
+        if any(term in text for term in ["alles gut", "alles in ordnung", "alles im ordnung", "alles okay", "alles ok", "alles klar", "alles paletti", "paletti", "status", "geht es", "gehts", "ok", "okay"]):
             return IntentResult(MailIntent.STATUS_SUMMARY, 0.9)
         return IntentResult(MailIntent.UNKNOWN, 0.0)
 

@@ -9,10 +9,10 @@ from typing import Any
 
 import requests
 
-from backend.agents.sentero.mail.conversation_service import ConversationService
+from backend.agents.sentero.mail.conversation_service import ConversationService, detect_language
 from backend.agents.sentero.conversation_store import SenteroConversationStore
 from backend.agents.sentero.mail.intent_service import ACTION_RE, MailIntentService
-from backend.agents.sentero.mail.models import MailIntent, MailThreadContext
+from backend.agents.sentero.mail.models import MailIntent, MailThreadContext, QueryResult
 from backend.agents.sentero.mail.query_service import MailQueryService
 from backend.agents.sentero.mail.response_service import MailResponseService
 from backend.agents.sentero.mail.service import sanitize_question
@@ -390,6 +390,7 @@ class SenteroTelegramAssistant:
             body = self.conversation.build_response(
                 query, self.response, question=question, history=history
             )
+            body = telegram_response_text(query, body, question=question, language=(routed.slots or {}).get("language"))
             intent_name = routed.intent.value
             confidence = routed.confidence
         try:
@@ -517,3 +518,39 @@ def telegram_start_code(text: str) -> str | None:
 
 def telegram_text(value: str) -> str:
     return str(value or "").replace("Guten Tag,\n\n", "").replace("\n\nViele Grüße\nSentero", "").strip()[:4000]
+
+
+def telegram_response_text(result: QueryResult, body: str, *, question: str = "", language: Any = None) -> str:
+    if result.intent != MailIntent.STATUS_SUMMARY:
+        return body
+    response_language = str(language or detect_language(question) or "de").lower()
+    if response_language not in {"de", "en"}:
+        return body
+    if not result.data_available:
+        if response_language == "en":
+            return "There is not enough fresh sensor data for a reliable answer right now. Sentero is still monitoring the sensor connection."
+        return "Ich habe momentan nicht genug aktuelle Sensordaten, um das sicher zu beantworten. Sentero überwacht die Sensorverbindung weiter."
+
+    facts = result.facts or {}
+    assessment = facts.get("assessment") if isinstance(facts.get("assessment"), dict) else {}
+    dashboard = facts.get("dashboard") if isinstance(facts.get("dashboard"), dict) else {}
+    findings = assessment.get("findings") or []
+    status = str(assessment.get("status") or dashboard.get("behavior_status") or "normal").lower()
+    normal = status in {"green", "normal", "ok"} and not findings
+    person = str(dashboard.get("person_name") or "Mutter").strip()
+    activity = facts.get("last_activity") or dashboard.get("last_activity") or {}
+    location = str(dashboard.get("current_location") or "").strip()
+    room = str(activity.get("room_label") or activity.get("room") or "").strip()
+    if location:
+        detail = location
+    elif room:
+        detail = f"zuletzt Aktivität im {room}"
+    else:
+        detail = "keine aktuelle Aktivität eindeutig zuordenbar"
+    if normal:
+        if response_language == "en":
+            return f"Yes, Sentero is not seeing any notable unusual signs for {person} right now. {detail}."
+        return f"Ja, bei {person} gibt es aktuell keine auffälligen Hinweise. {detail}."
+    if response_language == "en":
+        return f"Not completely clear: Sentero sees signs that differ from the usual pattern. {detail}."
+    return f"Nicht ganz eindeutig: Sentero sieht Hinweise, die vom üblichen Verlauf abweichen. {detail}."
