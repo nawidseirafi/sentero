@@ -308,8 +308,8 @@ class MailAssistantTest(unittest.TestCase):
         with self.mapping.connect() as con:
             con.execute("delete from sentero_sensor_events")
             con.commit()
-        self._contact_event(minutes_ago=6, role="main_door", state="on", room="entrance")
-        self._contact_event(minutes_ago=1, role="window_contact", state="off", room="living_room")
+        self._contact_event(minutes_ago=6, role="main_door", state="open", room="entrance")
+        self._contact_event(minutes_ago=1, role="window_contact", state="closed", room="living_room")
 
         result = self.assistant.process_message(self._mail("Sind alle Türen zu?", message_id="<doors@example.test>"))
 

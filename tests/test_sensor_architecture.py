@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from backend.sensor_sources.base import create_sensor_source
@@ -54,11 +55,40 @@ class SensorArchitectureTests(unittest.TestCase):
         )
         devices, events = normalize_snapshot(rows)
 
-        self.assertEqual(devices[0].type, "door_contact")
-        self.assertIn("contact", devices[0].capabilities)
-        self.assertIn("battery", devices[0].capabilities)
-        self.assertIn("signal_quality", devices[0].capabilities)
-        self.assertTrue(any(event.event_type == "contact" and event.value == "open" for event in events))
+        device = next(device for device in devices if device.type == "door_contact")
+        self.assertIn("contact", device.capabilities)
+        self.assertIn("battery", device.capabilities)
+        self.assertIn("signal_quality", device.capabilities)
+        self.assertTrue(any(event.event_type == "contact" and event.value == "closed" for event in events))
+
+    def test_zigbee2mqtt_contact_boolean_uses_physical_contact_semantics(self) -> None:
+        cases = [
+            ("contact", True, "closed"),
+            ("contact", False, "open"),
+            ("open", True, "open"),
+            ("open", False, "closed"),
+            ("contact", None, "unknown"),
+        ]
+        for key, raw_value, expected in cases:
+            with self.subTest(key=key, raw_value=raw_value):
+                rows = Zigbee2MqttSensorSource(mqtt=FailingMqtt())._snapshot_from_seed(
+                    json.dumps([{"topic": "zigbee2mqtt/Haustuer", "payload": {key: raw_value}}])
+                )
+                _devices, events = normalize_snapshot(rows)
+                contact_events = [event for event in events if event.event_type == "contact"]
+                self.assertTrue(contact_events)
+                self.assertIn(expected, [event.value for event in contact_events])
+
+    def test_contact_fix_does_not_invert_presence_booleans(self) -> None:
+        rows = Zigbee2MqttSensorSource(mqtt=FailingMqtt())._snapshot_from_seed(
+            '[{"topic":"zigbee2mqtt/Wohnzimmer","payload":{"presence":true,"occupancy":false,"motion":true}}]'
+        )
+        _devices, events = normalize_snapshot(rows)
+        by_type = {(event.event_type, event.raw_payload.get("payload_key")): event.value for event in events}
+
+        self.assertEqual(by_type[("presence", "presence")], "active")
+        self.assertEqual(by_type[("presence", "occupancy")], "inactive")
+        self.assertEqual(by_type[("motion", "motion")], "active")
 
     def test_smart_meter_payload_normalizes_to_usage_events(self) -> None:
         rows = Zigbee2MqttSensorSource(mqtt=FailingMqtt())._snapshot_from_seed(
@@ -66,11 +96,11 @@ class SensorArchitectureTests(unittest.TestCase):
         )
         devices, events = normalize_snapshot(rows)
 
-        self.assertEqual(devices[0].type, "smart_meter")
-        self.assertIn("energy_consumption", devices[0].capabilities)
-        self.assertIn("power_usage", devices[0].capabilities)
-        self.assertIn("water_consumption", devices[0].capabilities)
-        self.assertIn("gas_consumption", devices[0].capabilities)
+        device = next(device for device in devices if device.type == "smart_meter")
+        self.assertIn("energy_consumption", device.capabilities)
+        self.assertIn("power_usage", device.capabilities)
+        self.assertIn("water_consumption", device.capabilities)
+        self.assertIn("gas_consumption", device.capabilities)
 
         by_type = {event.event_type: event.value for event in events}
         self.assertEqual(by_type["energy_consumption"], 1234.5)

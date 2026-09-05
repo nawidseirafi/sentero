@@ -2219,7 +2219,7 @@ function ContactQueryCard({
 
 function DoorContactStatus({ sensor }: { sensor: SenteroSensorRole }) {
   const status = doorContactStatus(sensor);
-  const Icon = status.open ? DoorOpen : DoorClosed;
+  const Icon = status.open === true ? DoorOpen : status.open === false ? DoorClosed : ShieldAlert;
   return (
     <div className={`sc-door-contact-status ${status.tone}`} aria-label={`Türkontakt ${status.label}`}>
       <Icon size={24} />
@@ -2442,13 +2442,13 @@ function canOfferLocalOnlySensorDelete(sensor: SenteroSensorRole, message: strin
 function doorContactStatus(sensor: SenteroSensorRole) {
   const state = String(sensor.state || '').toLowerCase();
   const changedAt = sensor.last_changed || sensor.last_updated || sensor.updated_at;
-  if (['open', 'on', 'opening', 'detected', 'true'].includes(state)) {
+  if (state === 'open') {
     return { open: true, tone: 'open', label: changedAt ? `Offen seit ${formatRelativeDuration(changedAt)}` : 'Offen' };
   }
-  if (['closed', 'off', 'closing', 'clear', 'false'].includes(state)) {
+  if (state === 'closed') {
     return { open: false, tone: 'closed', label: 'Geschlossen' };
   }
-  return { open: false, tone: 'unknown', label: 'Status unbekannt' };
+  return { open: null, tone: 'unknown', label: 'Status unbekannt' };
 }
 
 function batteryClass(value?: number | null) {

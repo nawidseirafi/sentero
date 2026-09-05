@@ -63,6 +63,21 @@ class BehaviorDashboardViewTests(unittest.TestCase):
         self.assertEqual(len(result["points"]), 14)
         self.assertIsNotNone(result["series"][0]["baseline"]["average"])
 
+    def test_door_behavior_counts_only_canonical_open_as_door_activity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")
+            mapping.sensor_source = NoNetworkSensorSource()
+            agent = SenteroBehaviorAgent(mapping)
+            self._insert_sensor_event(agent, "2026-09-03T08:00:00+00:00", "main_door", "entrance", "closed", "opening")
+            self._insert_sensor_event(agent, "2026-09-03T08:05:00+00:00", "main_door", "entrance", "open", "opening")
+            self._insert_sensor_event(agent, "2026-09-03T08:06:00+00:00", "main_door", "entrance", "closed", "opening")
+
+            result = agent.behavior_day(day="2026-09-03")
+
+        self.assertEqual(result["summary"]["door_events"], 1)
+        door_titles = [item["title"] for item in result["timeline_events"] if item["category"] == "door"]
+        self.assertEqual(door_titles, ["Wohnungstür geöffnet"])
+
     def test_sentero_service_exposes_dashboard_behavior_views(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mapping = DeviceMappingService(database_path=Path(tmpdir) / "sentero.db")

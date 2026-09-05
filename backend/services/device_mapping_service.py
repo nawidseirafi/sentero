@@ -1121,7 +1121,10 @@ class DeviceMappingService:
                 'entity_count': len(device_entities),
                 'stale': bool(stale_entities),
             }
-        primary = next((item for item in reachable if str(item.get('entity_id') or '') == entity_id), reachable[0])
+        if role_is_contact(role) and resolved_state in reachable:
+            primary = resolved_state
+        else:
+            primary = next((item for item in reachable if str(item.get('entity_id') or '') == entity_id), reachable[0])
         logger.info(
             "Sentero sensor test state_check role=%s entity=%s state=%s device=%s reachable_entities=%s",
             role,
@@ -1215,7 +1218,6 @@ class DeviceMappingService:
             state = resolve_role_state(dict(row), states, by_entity)
             if not state and self.uses_mqtt_source():
                 state = self._cached_discovery_state(dict(row))
-            value = state.get('state') if state else None
             reachable = sensor_reachable_status(state)
             availability = find_mqtt_availability_state({**row, **(state or {})}, states)
             if availability is not None:
@@ -1262,6 +1264,8 @@ class DeviceMappingService:
             inferred_presence = generic_presence.get('presence')
             presence = effective_presence_value(explicit_presence, inferred_presence, motion_state, motion)
             smoke = smoke_value_from_state(live_telemetry_state)
+            contact_state = contact_state_from_state(telemetry_state) if role_is_contact(str(row.get('role') or '')) else None
+            value = contact_state if contact_state is not None else state.get('state') if state else None
             logger.debug(
                 "Sensor health resolved",
                 extra={
@@ -1278,6 +1282,7 @@ class DeviceMappingService:
                     "humidity": environmental.get('humidity'),
                     "illuminance": environmental.get('illuminance'),
                     "presence": presence,
+                    "contact_state": contact_state,
                     "fall_detected": c1001_telemetry.get('fall_detected'),
                     "motion": motion,
                     "motion_state": motion_state,
@@ -2433,6 +2438,7 @@ def resolve_role_state(row: dict[str, Any], states: list[dict[str, Any]], by_ent
             if is_live_mqtt_state(item)
             and exact_mqtt_device_topic_match(row, item)
             and role_state_matches(role, item)
+            and not role_is_contact(role)
         ),
         None,
     )
@@ -2445,6 +2451,7 @@ def resolve_role_state(row: dict[str, Any], states: list[dict[str, Any]], by_ent
         and not is_metadata_only_state(direct)
         and sensor_reachable_status(direct) is not False
         and role_state_matches(role, direct)
+        and (not role_is_contact(role) or str(direct.get('payload_key') or '').strip().lower() in {'contact', 'open'})
     ):
         return direct
 
@@ -2461,11 +2468,11 @@ def resolve_role_state(row: dict[str, Any], states: list[dict[str, Any]], by_ent
             candidates,
             key=lambda item: (
                 exact_mqtt_device_topic_match(row, item),
-                is_live_mqtt_state(item),
+                role_state_priority(role, item) if role_is_contact(role) else is_live_mqtt_state(item),
+                is_live_mqtt_state(item) if role_is_contact(role) else role_state_priority(role, item),
                 sensor_reachable_status(item) is True,
                 has_presence_telemetry(item) if role_is_presence(role) else False,
                 has_smoke_telemetry(item) if role_is_smoke_detector(role) else False,
-                role_state_priority(role, item),
             ),
             reverse=True,
         )
@@ -2646,6 +2653,9 @@ def testable_state_entity(item: dict[str, Any]) -> bool:
     if payload_key == 'state' and source in {'zigbee2mqtt', 'mqtt'} and (item.get('topic') or item.get('source_ref')):
         return True
     return domain in {'binary_sensor', 'sensor', 'lock', 'switch', 'mqtt'}
+
+
+testable_state_entity.__test__ = False
 
 
 def sensor_reachable_status(state: dict[str, Any] | None) -> bool | None:
@@ -2930,6 +2940,8 @@ def combined_mqtt_telemetry_state(role: dict[str, Any], state: dict[str, Any] | 
         'signal_quality',
         'temperature',
         'voltage',
+        'contact',
+        'open',
         'last_seen',
     )
 
@@ -3109,6 +3121,51 @@ def generic_presence_telemetry_from_state(role: dict[str, Any], state: dict[str,
     if presence is True:
         return {'presence': True, 'motion': normalize_motion_state(motion_state, default='Still')}
     return {'presence': None, 'motion': normalize_motion_state(motion_state)}
+
+
+def contact_state_from_state(state: dict[str, Any] | None) -> str | None:
+    if not state:
+        return None
+    attrs = state.get('attributes') if isinstance(state.get('attributes'), dict) else {}
+    if 'contact' in attrs:
+        return canonical_contact_state('contact', attrs.get('contact'))
+    if 'contact' in state:
+        return canonical_contact_state('contact', state.get('contact'))
+    if 'open' in attrs:
+        return canonical_contact_state('open', attrs.get('open'))
+    if 'open' in state:
+        return canonical_contact_state('open', state.get('open'))
+    payload_key = str(state.get('payload_key') or attrs.get('payload_key') or '').strip().lower()
+    if payload_key in {'contact', 'open'}:
+        return canonical_contact_state(payload_key, state.get('state'))
+    device_class = str(state.get('device_class') or attrs.get('device_class') or '').strip().lower()
+    if device_class in CONTACT_CLASSES:
+        return canonical_contact_state('open', state.get('state'))
+    return None
+
+
+def canonical_contact_state(key: str, value: Any) -> str:
+    normalized_key = str(key or '').strip().lower()
+    if value is None:
+        return 'unknown'
+    text = str(value).strip().lower()
+    if text in {'', 'unknown', 'unavailable', 'none', 'null'}:
+        return 'unknown'
+    if text in {'open', 'opened', 'opening', 'offen'}:
+        return 'open'
+    if text in {'closed', 'close', 'closing', 'zu', 'geschlossen'}:
+        return 'closed'
+    if normalized_key == 'contact':
+        if text in {'true', '1', 'on', 'yes'}:
+            return 'closed'
+        if text in {'false', '0', 'off', 'no'}:
+            return 'open'
+    else:
+        if text in {'true', '1', 'on', 'yes'}:
+            return 'open'
+        if text in {'false', '0', 'off', 'no'}:
+            return 'closed'
+    return 'unknown'
 
 
 def motion_state_implies_presence(value: Any) -> bool:

@@ -47,6 +47,7 @@ def normalize_snapshot(rows: list[dict[str, Any]]) -> tuple[list[SenteroDevice],
         device_id, device_data, event = normalized
         existing = devices.setdefault(device_id, device_data)
         existing["capabilities"] = sorted(set(existing.get("capabilities", [])) | set(device_data.get("capabilities", [])))
+        existing["type"] = best_device_type(existing.get("type"), device_data.get("type"), existing["capabilities"])
         existing["battery"] = coalesce_int(existing.get("battery"), device_data.get("battery"))
         existing["signal_quality"] = coalesce_int(existing.get("signal_quality"), device_data.get("signal_quality"))
         existing["last_seen"] = newest(existing.get("last_seen"), device_data.get("last_seen"))
@@ -125,8 +126,7 @@ def event_from_value(device_class: str, key: str, state: Any, attrs: dict[str, A
     raw = state
     lowered = str(raw).strip().lower()
     if device_class in CONTACT_CLASSES or key in {"contact", "open"}:
-        is_open = lowered in {"on", "open", "true", "1"}
-        return "contact", "open" if is_open else "closed", ["contact"]
+        return "contact", canonical_contact_state(key, raw), ["contact"]
     if device_class in PRESENCE_CLASSES or key in {"occupancy", "presence", "bed_presence"}:
         return "presence", "active" if truthy(raw) else "inactive", ["presence"]
     if device_class in MOTION_CLASSES or key == "motion":
@@ -184,8 +184,29 @@ def device_type_for(device_class: str, key: str, capabilities: list[Capability])
     return "environmental_sensor" if device_class in ENVIRONMENTAL_CLASSES else "motion_sensor"
 
 
+def best_device_type(current: Any, incoming: Any, capabilities: list[Capability]) -> str:
+    if "contact" in capabilities:
+        return "door_contact"
+    if any(cap in capabilities for cap in ["energy_consumption", "power_usage", "water_consumption", "gas_consumption"]):
+        return "smart_meter"
+    if any(cap in capabilities for cap in ["presence", "fall_detection", "breathing_detection", "respiration_rate"]):
+        return "presence_radar"
+    if "motion" in capabilities:
+        return "motion_sensor"
+    if "button" in capabilities:
+        return "button"
+    if any(cap in capabilities for cap in ["temperature", "humidity", "illuminance"]):
+        return "environmental_sensor"
+    return str(current or incoming or "motion_sensor")
+
+
 def mqtt_state_key(row: dict[str, Any], attrs: dict[str, Any]) -> str:
     device_class = str(row.get("device_class") or attrs.get("device_class") or "").lower()
+    payload_key = str(row.get("payload_key") or attrs.get("payload_key") or "").strip().lower()
+    if payload_key in {"contact", "open"}:
+        return payload_key
+    if payload_key == "state":
+        return "state"
     if device_class in {"battery", "temperature", "humidity", "illuminance", "illuminance_lux", "motion", "occupancy", "presence", "linkquality", "signal_quality", *SMART_METER_CLASSES}:
         return device_class
     for key in [
@@ -202,6 +223,30 @@ def mqtt_state_key(row: dict[str, Any], attrs: dict[str, Any]) -> str:
         if key in unique:
             return key
     return str(row.get("device_class") or attrs.get("device_class") or "state").lower()
+
+
+def canonical_contact_state(key: str, value: Any) -> str:
+    normalized_key = str(key or "").strip().lower()
+    if value is None:
+        return "unknown"
+    text = str(value).strip().lower()
+    if text in {"", "unknown", "unavailable", "none", "null"}:
+        return "unknown"
+    if text in {"open", "opened", "opening", "offen"}:
+        return "open"
+    if text in {"closed", "close", "closing", "zu", "geschlossen"}:
+        return "closed"
+    if normalized_key == "contact":
+        if text in {"true", "1", "on", "yes"}:
+            return "closed"
+        if text in {"false", "0", "off", "no"}:
+            return "open"
+    else:
+        if text in {"true", "1", "on", "yes"}:
+            return "open"
+        if text in {"false", "0", "off", "no"}:
+            return "closed"
+    return "unknown"
 
 
 def stable_id(prefix: str, value: str) -> str:

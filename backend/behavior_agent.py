@@ -1209,7 +1209,7 @@ class SenteroBehaviorAgent:
         last = activity_times[-1] if activity_times else None
         inactivity_periods = self._inactivity_periods(activity_times)
         active_minutes = self._active_minutes(activity_times)
-        door_events = sum(1 for _, event in parsed if self._is_door_event(event))
+        door_events = sum(1 for _, event in parsed if self._is_door_open_event(event))
         occupancy_score = min(100, round(active_minutes / 6, 1)) if active_minutes else 0
         return {
             "date": day.isoformat(),
@@ -1323,7 +1323,7 @@ class SenteroBehaviorAgent:
 
     def _door_timeline_events(self, target_day: date, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
-        door_events = [(self._parse_time(event.get("event_time")), event) for event in events if self._is_door_event(event) and self._is_on(event.get("state"))]
+        door_events = [(self._parse_time(event.get("event_time")), event) for event in events if self._is_door_open_event(event)]
         activity = [self._parse_time(event.get("event_time")) for event in events if self._is_activity_event(event) and not self._is_door_event(event)]
         for event_time, event in door_events:
             next_activity = min((item for item in activity if item > event_time), default=None)
@@ -1777,7 +1777,14 @@ class SenteroBehaviorAgent:
         return "sensor_state"
 
     def _is_activity_event(self, event: dict[str, Any]) -> bool:
-        return self._is_on(event.get("state")) and not self._is_smoke_role(event) and (self._is_presence_role(event) or self._is_motion_entity(event) or self._is_door_event(event))
+        if self._is_smoke_role(event):
+            return False
+        if self._is_door_event(event):
+            return self._is_door_open_event(event)
+        return self._is_on(event.get("state")) and (self._is_presence_role(event) or self._is_motion_entity(event))
+
+    def _is_door_open_event(self, event: dict[str, Any]) -> bool:
+        return self._is_door_event(event) and str(event.get("state") or "").strip().lower() == "open"
 
     def _is_door_event(self, event: dict[str, Any]) -> bool:
         if self._is_smoke_role(event):

@@ -353,17 +353,31 @@ class Zigbee2MqttSensorSource:
         source = payload.get("source") or self.name
         ieee = str(payload.get("ieee_address") or "").strip()
         physical_device_id = ieee if source == self.name and ieee else device if source == "mqtt" else slug
-        clean_key = "contact" if key == "open" else "smoke" if key in {*SMOKE_STATE_KEYS, "alarm"} else key
+        clean_key = "smoke" if key in {*SMOKE_STATE_KEYS, "alarm"} else key
         is_binary = clean_key in BINARY_DEVICE_CLASSES or clean_key == "state" and str(value).lower() in {"on", "off", "true", "false"}
         domain = "button" if clean_key == "action" else "binary_sensor" if is_binary else "sensor"
         suffix = "" if is_binary else f"_{slugify(clean_key)}"
         device_class = self._device_class(clean_key, is_binary)
         friendly_key = "" if is_binary else f" {clean_key.replace('_', ' ').title()}"
         identifier_value = ieee if source == self.name and ieee else device
+        state = normalize_state(value, clean_key)
+        if clean_key in {"contact", "open"} and is_debug_logging():
+            logger.debug(
+                "Zigbee2MQTT contact state normalized",
+                extra={
+                    "component": "sensor_source",
+                    "sensor_source": self.name,
+                    "topic": payload.get("topic") or payload.get("source_ref"),
+                    "device_id": device,
+                    "payload_key": clean_key,
+                    "raw_value": value,
+                    "canonical_state": state,
+                },
+            )
         return {
             "entity_id": f"{domain}.{slug}{suffix}",
             "domain": domain,
-            "state": normalize_state(value),
+            "state": state,
             "friendly_name": f"{device}{friendly_key}".strip(),
             "device_class": device_class,
             "unit": "%" if clean_key == "battery" else None,
@@ -471,10 +485,40 @@ class Zigbee2MqttSensorSource:
         return self.name
 
 
-def normalize_state(value: Any) -> str:
+def normalize_state(value: Any, key: str | None = None) -> str:
+    normalized_key = str(key or "").strip().lower()
+    if normalized_key in {"contact", "open"}:
+        return normalize_contact_state(value, normalized_key)
     if isinstance(value, bool):
         return "on" if value else "off"
     return str(value)
+
+
+def normalize_contact_state(value: Any, key: str) -> str:
+    if value is None:
+        return "unknown"
+    if isinstance(value, bool):
+        if key == "contact":
+            return "closed" if value else "open"
+        return "open" if value else "closed"
+    text = str(value).strip().lower()
+    if text in {"", "unknown", "unavailable", "none", "null"}:
+        return "unknown"
+    if text in {"open", "opened", "opening", "offen"}:
+        return "open"
+    if text in {"closed", "close", "closing", "zu", "geschlossen"}:
+        return "closed"
+    if key == "contact":
+        if text in {"true", "1", "on", "yes"}:
+            return "closed"
+        if text in {"false", "0", "off", "no"}:
+            return "open"
+    else:
+        if text in {"true", "1", "on", "yes"}:
+            return "open"
+        if text in {"false", "0", "off", "no"}:
+            return "closed"
+    return "unknown"
 
 
 def slugify(value: Any) -> str:

@@ -685,9 +685,9 @@ class MailQueryService:
 
     def _contact_state(self, state: Any) -> str:
         value = str(state or "").strip().lower()
-        if value in {"on", "open", "true", "1", "opened"}:
+        if value in {"open", "opened"}:
             return "open"
-        if value in {"off", "closed", "false", "0", "zu"}:
+        if value in {"closed", "zu"}:
             return "closed"
         return "unknown"
 

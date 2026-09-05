@@ -190,6 +190,23 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertEqual(contact['source_ref'], 'zigbee2mqtt/Haustuer')
         self.assertEqual(contact['topic'], 'zigbee2mqtt/Haustuer')
         self.assertEqual(contact['payload_key'], 'contact')
+        self.assertEqual(contact['state'], 'open')
+
+    def test_zigbee2mqtt_contact_and_open_payloads_are_not_equivalent(self) -> None:
+        cases = [
+            ({'contact': True}, 'closed', 'contact'),
+            ({'contact': False}, 'open', 'contact'),
+            ({'open': True}, 'open', 'open'),
+            ({'open': False}, 'closed', 'open'),
+            ({'contact': None}, 'unknown', 'contact'),
+        ]
+        for payload, expected, payload_key in cases:
+            with self.subTest(payload=payload):
+                mqtt = SnapshotMqtt([FakeMessage('zigbee2mqtt/Haustuer', payload)])
+                source = Zigbee2MqttSensorSource(mqtt=mqtt)
+                rows = source.snapshot()
+                contact = next(row for row in rows if row.get('device_class') == 'opening' and row.get('payload_key') == payload_key)
+                self.assertEqual(contact['state'], expected)
 
     def test_zigbee2mqtt_payload_smoke_true_normalizes_smoke_detector_state(self) -> None:
         mqtt = SnapshotMqtt([FakeMessage('zigbee2mqtt/Kueche Rauchmelder', {'smoke': True, 'battery': 92, 'linkquality': 130})])
@@ -457,7 +474,7 @@ class MqttSensorSourceTests(unittest.TestCase):
             mapping.sensor_source = Zigbee2MqttSensorSource(mqtt=mqtt)
             mapping.upsert_role({'role': 'window_contact', 'room': 'kitchen', 'entity_id': 'zigbee2mqtt/Fensterkontakt', 'friendly_name': 'Fensterkontakt', 'device_class': 'opening', 'domain': 'mqtt', 'source': 'zigbee2mqtt', 'confidence': 100})
             role = mapping.roles(include_state=True)[0]
-        self.assertEqual(role['state'], 'on')
+        self.assertEqual(role['state'], 'closed')
         self.assertTrue(role['reachable'])
         self.assertTrue(role['stale'])
         self.assertGreaterEqual(role['stale_seconds'], 3 * 24 * 60 * 60)
@@ -780,6 +797,25 @@ class MqttSensorSourceTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertTrue(role['reachable'])
         self.assertEqual(role['battery_level'], 100)
+        self.assertEqual(role['state'], 'unknown')
+
+    def test_configured_zigbee_contact_role_exposes_canonical_state_to_api(self) -> None:
+        cases = [
+            ({'contact': True, 'battery': 91}, 'closed'),
+            ({'contact': False, 'battery': 91}, 'open'),
+            ({'open': True, 'battery': 91}, 'open'),
+            ({'open': False, 'battery': 91}, 'closed'),
+        ]
+        for payload, expected in cases:
+            with self.subTest(payload=payload):
+                mqtt = SnapshotMqtt([FakeMessage('zigbee2mqtt/Fensterkontakt', payload)])
+                with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {'SENTERO_MQTT_BOOTSTRAP_EVENTS': ''}, clear=False):
+                    mapping = DeviceMappingService(database_path=Path(tmpdir) / 'sentero.db')
+                    mapping.mqtt = mqtt
+                    mapping.sensor_source = Zigbee2MqttSensorSource(mqtt=mqtt)
+                    mapping.upsert_role({'role': 'window_contact', 'room': 'kitchen', 'entity_id': 'zigbee2mqtt/Fensterkontakt', 'friendly_name': 'Fensterkontakt', 'device_class': 'opening', 'domain': 'mqtt', 'source': 'zigbee2mqtt', 'confidence': 100})
+                    role = mapping.roles(include_state=True)[0]
+                self.assertEqual(role['state'], expected)
 
     def test_mqtt_availability_offline_marks_presence_sensor_unreachable(self) -> None:
         device_id = 'c1001-test-01'
