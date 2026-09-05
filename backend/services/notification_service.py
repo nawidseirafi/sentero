@@ -60,7 +60,7 @@ TELEGRAM_BRAND_DESCRIPTION = (
 TELEGRAM_BRAND_SHORT_DESCRIPTION = (
     "Sentero – Hinweise und Statusfragen sicher per Telegram."
 )
-TELEGRAM_PROFILE_PHOTO = Path(__file__).resolve().parents[1] / "assets" / "sentero_telegram_profile.png"
+TELEGRAM_PROFILE_PHOTO = Path(__file__).resolve().parents[1] / "assets" / "sentero_telegram_profile.jpg"
 
 EMAIL_WELCOME_TEXT = (
     "Sentero Testnachricht: Die E-Mail-Verbindung funktioniert.\n\n"
@@ -220,7 +220,7 @@ class TelegramNotificationProvider(NotificationProvider):
                     "profile_photo": (
                         TELEGRAM_PROFILE_PHOTO.name,
                         image,
-                        "image/png",
+                        "image/jpeg",
                     )
                 },
                 timeout=(5, 20),
@@ -504,7 +504,7 @@ class NotificationService:
         }[channel]
         try:
             telegram_branding: dict[str, Any] | None = None
-            if channel == "telegram" and not contact.get("telegram_chat_id"):
+            if channel == "telegram":
                 provider = self.providers[channel]
                 if not isinstance(provider, TelegramNotificationProvider):
                     raise ValueError("telegram_not_configured")
@@ -527,6 +527,17 @@ class NotificationService:
                             "channel": "telegram",
                             "method": exc.method,
                             "retry_after": exc.retry_after,
+                        },
+                    )
+                except Exception as exc:
+                    if not contact.get("telegram_chat_id"):
+                        raise
+                    logger.warning(
+                        "Telegram branding failed during test; sending test message anyway",
+                        extra={
+                            "component": "notification",
+                            "channel": "telegram",
+                            "error_type": exc.__class__.__name__,
                         },
                     )
 

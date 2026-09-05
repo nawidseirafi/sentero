@@ -14,9 +14,9 @@ from backend.services.notification_service import (
 
 
 class TelegramBrandingTests(unittest.TestCase):
-    def test_branding_asset_is_png(self) -> None:
+    def test_branding_asset_is_jpg(self) -> None:
         self.assertTrue(TELEGRAM_PROFILE_PHOTO.is_file())
-        self.assertEqual(TELEGRAM_PROFILE_PHOTO.suffix.lower(), ".png")
+        self.assertEqual(TELEGRAM_PROFILE_PHOTO.suffix.lower(), ".jpg")
 
     @patch("backend.services.notification_service.requests.post")
     @patch("backend.services.notification_service.requests.get")
@@ -67,6 +67,7 @@ class TelegramBrandingTests(unittest.TestCase):
             {"type": "static", "photo": "attach://profile_photo"},
         )
         self.assertIn("profile_photo", calls[3].kwargs["files"])
+        self.assertEqual(calls[3].kwargs["files"]["profile_photo"][2], "image/jpeg")
 
 
 if __name__ == "__main__":
