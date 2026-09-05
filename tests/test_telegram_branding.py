@@ -45,29 +45,68 @@ class TelegramBrandingTests(unittest.TestCase):
         self.assertEqual(post.call_count, 4)
 
         calls = post.call_args_list
-        self.assertTrue(calls[0].args[0].endswith("/setMyName"))
-        self.assertEqual(calls[0].kwargs["json"], {"name": TELEGRAM_BRAND_NAME})
-
-        self.assertTrue(calls[1].args[0].endswith("/setMyDescription"))
-        self.assertEqual(
-            calls[1].kwargs["json"],
-            {"description": TELEGRAM_BRAND_DESCRIPTION},
-        )
-
-        self.assertTrue(calls[2].args[0].endswith("/setMyShortDescription"))
-        self.assertEqual(
-            calls[2].kwargs["json"],
-            {"short_description": TELEGRAM_BRAND_SHORT_DESCRIPTION},
-        )
-
-        self.assertTrue(calls[3].args[0].endswith("/setMyProfilePhoto"))
-        photo = json.loads(calls[3].kwargs["data"]["photo"])
+        self.assertTrue(calls[0].args[0].endswith("/setMyProfilePhoto"))
+        photo = json.loads(calls[0].kwargs["data"]["photo"])
         self.assertEqual(
             photo,
             {"type": "static", "photo": "attach://profile_photo"},
         )
-        self.assertIn("profile_photo", calls[3].kwargs["files"])
-        self.assertEqual(calls[3].kwargs["files"]["profile_photo"][2], "image/jpeg")
+        self.assertIn("profile_photo", calls[0].kwargs["files"])
+        self.assertEqual(calls[0].kwargs["files"]["profile_photo"][2], "image/jpeg")
+
+        self.assertTrue(calls[1].args[0].endswith("/setMyName"))
+        self.assertEqual(calls[1].kwargs["json"], {"name": TELEGRAM_BRAND_NAME})
+
+        self.assertTrue(calls[2].args[0].endswith("/setMyDescription"))
+        self.assertEqual(
+            calls[2].kwargs["json"],
+            {"description": TELEGRAM_BRAND_DESCRIPTION},
+        )
+
+        self.assertTrue(calls[3].args[0].endswith("/setMyShortDescription"))
+        self.assertEqual(
+            calls[3].kwargs["json"],
+            {"short_description": TELEGRAM_BRAND_SHORT_DESCRIPTION},
+        )
+
+    @patch("backend.services.notification_service.requests.post")
+    @patch("backend.services.notification_service.requests.get")
+    def test_apply_branding_attempts_profile_photo_before_rate_limited_name(self, get: Mock, post: Mock) -> None:
+        get_response = Mock()
+        get_response.json.return_value = {
+            "ok": True,
+            "result": {"id": 123, "username": "sentero_test_bot"},
+        }
+        get_response.status_code = 200
+        get.return_value = get_response
+
+        ok_response = Mock()
+        ok_response.json.return_value = {"ok": True, "result": True}
+        ok_response.status_code = 200
+        rate_limit_response = Mock()
+        rate_limit_response.json.return_value = {
+            "ok": False,
+            "description": "Too Many Requests: retry after 86339",
+            "parameters": {"retry_after": 86339},
+        }
+        rate_limit_response.status_code = 429
+        post.side_effect = [
+            ok_response,
+            rate_limit_response,
+            ok_response,
+            ok_response,
+        ]
+
+        result = TelegramNotificationProvider().apply_branding(
+            {"bot_token": "123:TEST"}
+        )
+
+        self.assertTrue(post.call_args_list[0].args[0].endswith("/setMyProfilePhoto"))
+        self.assertTrue(post.call_args_list[1].args[0].endswith("/setMyName"))
+        self.assertTrue(result["branding_failed"])
+        self.assertTrue(result["rate_limited"])
+        self.assertEqual(result["retry_after"], 86339)
+        self.assertIn("setMyName", result["failed_methods"])
 
 
 if __name__ == "__main__":

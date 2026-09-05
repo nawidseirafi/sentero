@@ -2800,12 +2800,14 @@ function channelHelpContent(channel: 'email' | 'telegram' | 'whatsapp') {
       title: 'Telegram einrichten',
       intro: 'Telegram wird über einen eigenen Bot und persönliche Einladungslinks verbunden.',
       sections: [
-        { title: 'Was wird benötigt?', items: ['Bot Token von BotFather'] },
+        { title: 'Was wird benötigt?', items: ['Bot Token von BotFather', 'Persönlicher Link oder QR-Code je vertrauter Person'] },
         { title: 'Schritt 1', text: ['Öffnen Sie Telegram und suchen Sie nach @BotFather.'] },
-        { title: 'Schritt 2', text: ['Erstellen Sie mit BotFather einen neuen Bot. Danach erhalten Sie einen Bot Token.'] },
-        { title: 'Schritt 3', text: ['Token in Sentero eintragen und Telegram testen.'] },
-        { title: 'Schritt 4', text: ['Bei jeder vertrauten Person den persönlichen Link oder QR-Code teilen. Die Chat-ID wird nach dem Start automatisch gespeichert.'] },
-        { title: 'Hinweis', text: ['Der Bot Token bleibt geheim. Angehörige erhalten nur den Link oder QR-Code.'] },
+        { title: 'Schritt 2', text: ['Mit /newbot einen neuen Bot erstellen, einen Anzeigenamen vergeben und einen eindeutigen Benutzernamen wählen, der auf bot endet. Danach erhalten Sie den Bot Token.'] },
+        { title: 'Schritt 3', text: ['Den frisch erstellten Bot in Telegram öffnen und einmal auf Start tippen oder /start senden. Erst danach kann Telegram Nachrichten an diesen Chat zustellen.'] },
+        { title: 'Schritt 4', text: ['Token in Sentero eintragen. Eine Test Chat ID ist optional und wird nur für eine direkte Testnachricht benötigt.'] },
+        { title: 'Schritt 5', text: ['Telegram testen. Sentero prüft den Bot und richtet Profilbild, Name und Beschreibung ein.'] },
+        { title: 'Schritt 6', text: ['Bei jeder vertrauten Person den persönlichen Link oder QR-Code teilen. Der Link öffnet den Bot mit persönlichem Startcode. Die Person tippt in Telegram auf Start; danach wird die Chat-ID automatisch gespeichert.'] },
+        { title: 'Hinweis', text: ['Der Bot Token bleibt geheim. Angehörige erhalten nur den Link oder QR-Code. Das Profilbild kann in Telegram verzögert sichtbar werden.'] },
       ],
     };
   }

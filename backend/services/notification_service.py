@@ -182,25 +182,83 @@ class TelegramNotificationProvider(NotificationProvider):
         token = self._token(config)
         bot = self.get_me(config)
 
-        self._post_json(token, "setMyName", {"name": TELEGRAM_BRAND_NAME})
-        self._post_json(
-            token,
-            "setMyDescription",
-            {"description": TELEGRAM_BRAND_DESCRIPTION},
-        )
-        self._post_json(
-            token,
-            "setMyShortDescription",
-            {"short_description": TELEGRAM_BRAND_SHORT_DESCRIPTION},
-        )
-        self._set_profile_photo(token)
-
-        return {
+        result: dict[str, Any] = {
             "bot_id": bot.get("id"),
             "username": bot.get("username"),
             "name": TELEGRAM_BRAND_NAME,
             "profile_photo": TELEGRAM_PROFILE_PHOTO.name,
+            "branding_failed": False,
+            "rate_limited": False,
+            "failed_methods": [],
         }
+
+        # Send the photo first. Telegram can rate-limit name/description changes
+        # heavily, and a rate-limited setMyName must not prevent the profile
+        # photo from being attempted for a fresh bot.
+        self._apply_branding_step(result, "setMyProfilePhoto", lambda: self._set_profile_photo(token))
+        self._apply_branding_step(result, "setMyName", lambda: self._post_json(token, "setMyName", {"name": TELEGRAM_BRAND_NAME}))
+        self._apply_branding_step(
+            result,
+            "setMyDescription",
+            lambda: self._post_json(
+                token,
+                "setMyDescription",
+                {"description": TELEGRAM_BRAND_DESCRIPTION},
+            ),
+        )
+        self._apply_branding_step(
+            result,
+            "setMyShortDescription",
+            lambda: self._post_json(
+                token,
+                "setMyShortDescription",
+                {"short_description": TELEGRAM_BRAND_SHORT_DESCRIPTION},
+            ),
+        )
+
+        return result
+
+    def _apply_branding_step(self, result: dict[str, Any], method: str, action: Any) -> None:
+        try:
+            action()
+        except TelegramRateLimitError as exc:
+            result["branding_failed"] = True
+            result["rate_limited"] = True
+            result["retry_after"] = exc.retry_after
+            result["failed_methods"].append(exc.method)
+            logger.warning(
+                "Telegram branding step skipped because Telegram rate-limited the bot",
+                extra={
+                    "component": "notification",
+                    "channel": "telegram",
+                    "method": exc.method,
+                    "retry_after": exc.retry_after,
+                },
+            )
+        except TelegramApiError as exc:
+            result["branding_failed"] = True
+            result["failed_methods"].append(exc.method)
+            logger.warning(
+                "Telegram branding step failed",
+                extra={
+                    "component": "notification",
+                    "channel": "telegram",
+                    "method": exc.method,
+                    "status_code": exc.status_code,
+                },
+            )
+        except Exception as exc:
+            result["branding_failed"] = True
+            result["failed_methods"].append(method)
+            logger.warning(
+                "Telegram branding step failed",
+                extra={
+                    "component": "notification",
+                    "channel": "telegram",
+                    "method": method,
+                    "error_type": exc.__class__.__name__,
+                },
+            )
 
     def _set_profile_photo(self, token: str) -> None:
         if not TELEGRAM_PROFILE_PHOTO.is_file():
