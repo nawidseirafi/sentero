@@ -87,3 +87,9 @@ llm:
   gemini:
     api_key: GEMINI_API_KEY
     model: gemini-2.5-flash
+
+ai_shadow:
+  enabled: false
+  interval_seconds: 300
+  window_minutes: 60
+  model: SENTERO_AI_MODEL

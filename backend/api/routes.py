@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.agents.sentero.mail.discovery import get_mail_settings, verify_mail_credentials
@@ -506,6 +508,27 @@ def sentero_update_install(payload: UpdateInstallRequest, request: Request):
     if str(user.get("role") or "") not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="Nur Inhaber und Administratoren duerfen Updates installieren.")
     return get_services().update.install_update(username=str(user.get("email") or "sentero"), layer=payload.layer or "auto")
+
+
+@router.get("/admin/ai-shadow/export", tags=[TAG_SYSTEM])
+def sentero_ai_shadow_export(
+    request: Request,
+    period_from: str | None = Query(None, alias="from"),
+    period_to: str | None = Query(None, alias="to"),
+):
+    user = get_services().auth.user_from_request(request, required=True)
+    if str(user.get("role") or "") not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Nur Inhaber und Administratoren duerfen AI-Shadow-Daten exportieren.")
+    try:
+        payload = get_services().sentero.behavior.ai_shadow.export(period_from=period_from, period_to=period_to)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    filename_date = datetime.now(timezone.utc).date().isoformat()
+    return JSONResponse(
+        payload,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="sentero-shadow-export-{filename_date}.json"'},
+    )
 
 
 @router.get("/status", tags=[TAG_SENTERO])

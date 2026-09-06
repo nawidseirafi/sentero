@@ -15,6 +15,7 @@ from backend.services.device_mapping_service import DeviceMappingService, now
 from backend.logging_config import get_logger
 from backend.services.notification_service import NotificationService
 from backend.services.human_activity_service import HumanActivityScorer, reasons_json
+from backend.services.ai_shadow import AIShadowService
 
 logger = get_logger(__name__)
 
@@ -51,6 +52,7 @@ class SenteroBehaviorAgent:
         self.messaging = messaging or MessagingService()
         self.notifications = NotificationService(self.mapping, self.messaging)
         self.human_activity = HumanActivityScorer()
+        self.ai_shadow = AIShadowService(self.mapping)
         self.ensure_schema()
 
     def ensure_schema(self) -> None:
@@ -134,6 +136,7 @@ class SenteroBehaviorAgent:
             self._ensure_column(con, "behavior_assessments", "data_class", "text not null default 'health_adjacent'")
             self._ensure_column(con, "behavior_assessments", "aggregation_level", "text not null default 'summary'")
             con.commit()
+        self.ai_shadow.ensure_schema()
 
     def _ensure_column(self, con: Any, table: str, column: str, definition: str) -> None:
         columns = {str(row["name"]) for row in con.execute(f"pragma table_info({table})").fetchall()}
@@ -177,6 +180,7 @@ class SenteroBehaviorAgent:
         stored = assessment if dry_run else self._store_assessment(assessment)
         if not dry_run:
             self._notify_if_needed(stored, contacts)
+            self._run_ai_shadow_if_due(stored)
         logger.debug(
             "Behavior analysis completed",
             extra={
@@ -332,7 +336,14 @@ class SenteroBehaviorAgent:
         source_snapshot = list(sensor_snapshot)
         written = self._record_snapshot(sensor_snapshot, source_snapshot)
         self._notify_system_warnings(sensor_snapshot)
+        self._run_ai_shadow_if_due()
         return written
+
+    def _run_ai_shadow_if_due(self, current_behavior_state: dict[str, Any] | None = None) -> None:
+        try:
+            self.ai_shadow.maybe_run_async(current_behavior_state=current_behavior_state)
+        except Exception:
+            logger.exception("AI shadow trigger failed", extra={"component": "ai_shadow"})
 
     def handle_mqtt_message(self, topic: str, payload: Any, received_at: str) -> int:
         """Persist behavior-relevant MQTT changes at ingestion time.

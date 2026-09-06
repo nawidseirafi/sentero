@@ -84,3 +84,9 @@ llm:
   llama:
     base_url: SENTERO_LLM_BASE_URL
     model: SENTERO_LLM_MODEL
+
+ai_shadow:
+  enabled: false
+  interval_seconds: 300
+  window_minutes: 60
+  model: SENTERO_AI_MODEL
