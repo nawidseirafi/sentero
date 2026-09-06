@@ -73,7 +73,9 @@ esp32:
 zigbee:
   provider: auto
 
-updates: {}
+updates:
+  auto_check_enabled: true
+  check_interval_hours: 24
 
 llm:
   # rule_based keeps Sentero fully local and is the safe default.

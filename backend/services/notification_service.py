@@ -451,6 +451,21 @@ class NotificationService:
                     payload_json text not null default '{}'
                 )"""
             )
+            con.execute(
+                """create table if not exists update_notification_state (
+                    version text not null,
+                    channel text not null,
+                    contact_id integer,
+                    status text not null,
+                    attempts integer not null default 0,
+                    last_attempt_at text,
+                    sent_at text,
+                    error_message text,
+                    created_at text not null,
+                    updated_at text not null,
+                    primary key(version, channel)
+                )"""
+            )
             for statement in [
                 "alter table notification_outbox add column incident_key text",
                 "alter table notification_logs add column incident_key text",
@@ -686,6 +701,50 @@ class NotificationService:
     def send_email_direct(self, to_email: str, title: str, text: str, config: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any] | None:
         clean_config = {**(config or {}), "headers": headers or {}}
         return self.providers["email"].send({"email": to_email}, title, text, clean_config)
+
+    def notify_update_available(self, update_result: dict[str, Any]) -> dict[str, Any]:
+        self.ensure_queue_schema()
+        latest = update_result.get("latest") if isinstance(update_result.get("latest"), dict) else {}
+        version = str(update_result.get("latest_version") or latest.get("latest_version") or "").strip()
+        if not version or not bool(update_result.get("update_available") or update_result.get("available")):
+            return {"notified": 0, "skipped": "no_update"}
+        contact = self._primary_contact()
+        if not contact:
+            logger.info("Update notification skipped because no primary contact is configured", extra={"component": "update_notification", "version": version})
+            return {"notified": 0, "skipped": "no_primary_contact"}
+        if not bool(contact.get("notification_enabled", 1)):
+            logger.info("Update notification skipped because primary contact notifications are disabled", extra={"component": "update_notification", "version": version, "contact_id": contact.get("id")})
+            return {"notified": 0, "skipped": "primary_contact_disabled"}
+        channels = self._update_channels_for_contact(contact)
+        if not channels:
+            logger.info("Update notification skipped because primary contact has no ready update channel", extra={"component": "update_notification", "version": version, "contact_id": contact.get("id")})
+            return {"notified": 0, "skipped": "no_ready_channels"}
+
+        title, text, severity = self._update_message(update_result)
+        incident_key = f"update_available:{version}"
+        delivered = 0
+        attempted = 0
+        skipped_sent = 0
+        for channel in channels:
+            if self._update_channel_already_sent(version, channel):
+                skipped_sent += 1
+                continue
+            attempted += 1
+            ok = self._send_with_log(contact, channel, severity, title, text, fallback=False, incident_key=incident_key)
+            self._record_update_notification_state(version, channel, contact.get("id"), "sent" if ok else "failed", None if ok else "delivery_failed")
+            if ok:
+                delivered += 1
+        logger.info(
+            "Update notification evaluated",
+            extra={
+                "component": "update_notification",
+                "version": version,
+                "attempted": attempted,
+                "sent": delivered,
+                "skipped_already_sent": skipped_sent,
+            },
+        )
+        return {"notified": delivered, "attempted": attempted, "skipped_already_sent": skipped_sent}
 
     def notify_assessment(self, assessment: dict[str, Any], contacts: list[dict[str, Any]]) -> dict[str, Any]:
         severity = str(assessment.get("status") or "green")
@@ -1274,6 +1333,13 @@ class NotificationService:
             rows = con.execute("select * from trusted_contacts where active = 1 order by primary_contact desc, id").fetchall()
         return [dict(row) for row in rows]
 
+    def _primary_contact(self) -> dict[str, Any] | None:
+        with self.mapping.connect() as con:
+            rows = con.execute("select * from trusted_contacts where active = 1 and primary_contact = 1 order by id").fetchall()
+        if len(rows) != 1:
+            return None
+        return dict(rows[0])
+
     def _critical_notifications_enabled(self) -> bool:
         with self.mapping.connect() as con:
             row = con.execute("select critical from notification_preferences where id = 1").fetchone()
@@ -1593,6 +1659,82 @@ class NotificationService:
         if not channels:
             return []
         return channels
+
+    def _update_channels_for_contact(self, contact: dict[str, Any]) -> list[str]:
+        raw_channels = contact.get("preferred_channels")
+        preferred = self._decode_json(raw_channels) if raw_channels else []
+        channels: list[str] = []
+        for channel in preferred:
+            if channel not in {"email", "telegram"}:
+                continue
+            if not self._contact_channel_ready(contact, channel):
+                continue
+            if not self._setting(channel).get("enabled"):
+                continue
+            channels.append(channel)
+        return channels
+
+    def _update_channel_already_sent(self, version: str, channel: str) -> bool:
+        with self.mapping.connect() as con:
+            row = con.execute(
+                "select status from update_notification_state where version = ? and channel = ?",
+                (version, channel),
+            ).fetchone()
+        return bool(row and row["status"] == "sent")
+
+    def _record_update_notification_state(self, version: str, channel: str, contact_id: Any, status: str, error: str | None) -> None:
+        timestamp = now()
+        with self.mapping.connect() as con:
+            con.execute(
+                """insert into update_notification_state
+                   (version, channel, contact_id, status, attempts, last_attempt_at, sent_at, error_message, created_at, updated_at)
+                   values (?, ?, ?, ?, 1, ?, case when ? = 'sent' then ? else null end, ?, ?, ?)
+                   on conflict(version, channel) do update set
+                     contact_id = excluded.contact_id,
+                     status = excluded.status,
+                     attempts = update_notification_state.attempts + 1,
+                     last_attempt_at = excluded.last_attempt_at,
+                     sent_at = case when excluded.status = 'sent' then excluded.sent_at else update_notification_state.sent_at end,
+                     error_message = excluded.error_message,
+                     updated_at = excluded.updated_at""",
+                (version, channel, contact_id, status, timestamp, status, timestamp, error, timestamp, timestamp),
+            )
+            con.commit()
+
+    def _update_message(self, update_result: dict[str, Any]) -> tuple[str, str, str]:
+        latest = update_result.get("latest") if isinstance(update_result.get("latest"), dict) else {}
+        version = str(update_result.get("latest_version") or latest.get("latest_version") or "").strip()
+        importance = str(latest.get("importance") or "normal").strip().lower()
+        if importance not in {"normal", "important", "security"}:
+            importance = "normal"
+        title = "Sentero-Update verfügbar"
+        intro = {
+            "normal": "Ein neues Sentero-Update ist verfügbar.",
+            "important": "Ein wichtiges Sentero-Update ist verfügbar. Eine zeitnahe Installation wird empfohlen.",
+            "security": "Ein Sicherheitsupdate für Sentero ist verfügbar. Eine zeitnahe Installation wird empfohlen.",
+        }[importance]
+        severity = {"normal": "yellow", "important": "orange", "security": "red"}[importance]
+        lines = [
+            title,
+            "",
+            f"{intro} Für Ihre Sentero Box ist Version {version} verfügbar.",
+        ]
+        summary = str(latest.get("summary") or "").strip()
+        changes = latest.get("changes") if isinstance(latest.get("changes"), list) else []
+        release_notes = latest.get("release_notes") if isinstance(latest.get("release_notes"), list) else []
+        user_changes = [str(item).strip() for item in (changes or release_notes) if str(item).strip()]
+        if summary:
+            lines.extend(["", summary])
+        if user_changes:
+            lines.extend(["", "Was ist neu?"])
+            lines.extend([f"• {item}" for item in user_changes[:5]])
+        lines.extend([
+            "",
+            "Die Überwachung läuft unverändert weiter.",
+            "Das Update wird nicht automatisch installiert.",
+            "Sie können es in Sentero installieren.",
+        ])
+        return title, "\n".join(lines).strip(), severity
 
     def _contact_channel_ready(self, contact: dict[str, Any], channel: str) -> bool:
         if channel == "email":

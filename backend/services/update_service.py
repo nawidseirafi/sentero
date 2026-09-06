@@ -18,8 +18,10 @@ import yaml
 from dotenv import load_dotenv
 
 from backend.paths import CONFIG_PATH, DATA_DIR, ENV_PATH, PROJECT_DIR
+from backend.logging_config import get_logger
 
 load_dotenv(ENV_PATH)
+logger = get_logger(__name__)
 
 VERSION_FILE = PROJECT_DIR / "version.json"
 MANIFEST_FILE = PROJECT_DIR / "update-manifest.json"
@@ -59,6 +61,33 @@ def utc_now() -> str:
 
 
 class SenteroUpdateService:
+    def auto_check_and_notify(self, notification: Any) -> dict[str, Any]:
+        config = self._auto_check_config()
+        if not config["enabled"]:
+            return {"checked": False, "skipped": "disabled"}
+        state = self._read_json(STATE_FILE, {})
+        if not self._auto_check_due(state, int(config["interval_hours"])):
+            return {"checked": False, "skipped": "not_due"}
+        logger_extra = {"component": "update", "channel": self.channel()}
+        checked_at = utc_now()
+        try:
+            result = self.check_for_updates()
+            state = self._read_json(STATE_FILE, {})
+            state["last_auto_check_at"] = checked_at
+            self._write_json(STATE_FILE, state)
+            if not result.get("ok") or not result.get("update_available"):
+                return {"checked": True, "notified": 0, "update_available": False, "status": result.get("status")}
+            latest = result.get("latest") if isinstance(result.get("latest"), dict) else {}
+            notify_result = notification.notify_update_available(result)
+            return {"checked": True, "update_available": True, "latest_version": latest.get("latest_version"), **notify_result}
+        except Exception as exc:
+            state = self._read_json(STATE_FILE, {})
+            state["last_auto_check_at"] = checked_at
+            state["last_auto_check_error"] = exc.__class__.__name__
+            self._write_json(STATE_FILE, state)
+            logger.warning("Automatic update check failed", extra={**logger_extra, "error_type": exc.__class__.__name__})
+            return {"checked": True, "notified": 0, "status": "check_failed"}
+
     def status(self) -> dict[str, Any]:
         state = self._read_json(STATE_FILE, {})
         version = self.version()
@@ -521,6 +550,11 @@ class SenteroUpdateService:
             "size_bytes": int(latest.get("size_bytes") or 0),
             "mandatory": bool(latest.get("mandatory", False)),
             "release_notes": latest.get("release_notes") or [],
+            "released_at": latest.get("released_at"),
+            "title": str(latest.get("title") or ""),
+            "summary": str(latest.get("summary") or ""),
+            "changes": latest.get("changes") if isinstance(latest.get("changes"), list) else [],
+            "importance": self._valid_importance(latest.get("importance")),
             "channel": channel,
             "layers": latest.get("layers") or ["application"],
             "appliance": appliance,
@@ -577,6 +611,34 @@ class SenteroUpdateService:
         updates = data.get("updates") if isinstance(data, dict) else {}
         return updates if isinstance(updates, dict) else {}
 
+    def _auto_check_config(self) -> dict[str, Any]:
+        config = self._update_config()
+        enabled_raw = os.getenv("SENTERO_AUTO_UPDATE_CHECK")
+        enabled_value = enabled_raw if enabled_raw is not None else config.get("auto_check_enabled", True)
+        interval_raw = os.getenv("SENTERO_UPDATE_CHECK_INTERVAL_HOURS")
+        interval_value = interval_raw if interval_raw is not None else config.get("check_interval_hours", 24)
+        try:
+            interval_hours = int(interval_value)
+        except (TypeError, ValueError):
+            interval_hours = 24
+        return {
+            "enabled": str(enabled_value).strip().lower() not in {"0", "false", "no", "off", "disabled"},
+            "interval_hours": max(1, min(interval_hours, 168)),
+        }
+
+    def _auto_check_due(self, state: dict[str, Any], interval_hours: int) -> bool:
+        last = str(state.get("last_auto_check_at") or "").strip()
+        if not last:
+            return True
+        try:
+            parsed = datetime.fromisoformat(last.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        age_hours = (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 3600
+        return age_hours >= interval_hours
+
     def _read_json(self, path: Path, default: dict[str, Any]) -> dict[str, Any]:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -591,6 +653,10 @@ class SenteroUpdateService:
     def _valid_channel(self, value: Any) -> str:
         channel = str(value or DEFAULT_CHANNEL).strip().lower()
         return channel if channel in VALID_CHANNELS else DEFAULT_CHANNEL
+
+    def _valid_importance(self, value: Any) -> str:
+        importance = str(value or "normal").strip().lower()
+        return importance if importance in {"normal", "important", "security"} else "normal"
 
     def _is_newer(self, latest: str, current: str) -> bool:
         latest_parts = self._version_tuple(latest)
