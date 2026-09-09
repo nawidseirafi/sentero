@@ -827,7 +827,50 @@ class MqttSensorSourceTests(unittest.TestCase):
             mapping.upsert_role({'role': 'keller_presence', 'room': 'keller', 'entity_id': f'sentero/{device_id}/state', 'device_id': device_id, 'friendly_name': 'Keller Präsenzsensor', 'device_class': 'presence', 'domain': 'binary_sensor', 'source': 'mqtt', 'confidence': 100})
             role = mapping.roles(include_state=True)[0]
         self.assertFalse(role['reachable'])
-        self.assertEqual(role['state'], 'on')
+        self.assertIsNone(role['state'])
+        self.assertIsNone(role['presence'])
+
+    def test_offline_zigbee_contact_does_not_expose_last_closed_state_as_live(self) -> None:
+        mqtt = SnapshotMqtt([
+            FakeMessage('zigbee2mqtt/Bad Kontakt', {'contact': True, 'battery': 91}),
+            FakeMessage('zigbee2mqtt/Bad Kontakt/availability', {'state': 'offline'}),
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {'SENTERO_MQTT_BOOTSTRAP_EVENTS': ''}, clear=False):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / 'sentero.db')
+            mapping.mqtt = mqtt
+            mapping.sensor_source = Zigbee2MqttSensorSource(mqtt=mqtt)
+            mapping.upsert_role({'role': 'bathroom_contact', 'room': 'bathroom', 'entity_id': 'zigbee2mqtt/Bad Kontakt', 'device_id': 'bad_kontakt', 'friendly_name': 'Bad Kontakt', 'device_class': 'opening', 'domain': 'mqtt', 'source': 'zigbee2mqtt', 'confidence': 100})
+            role = mapping.roles(include_state=True)[0]
+        self.assertFalse(role['reachable'])
+        self.assertIsNone(role['state'])
+        self.assertEqual(role['battery_level'], 91)
+
+    def test_removed_zigbee_device_is_unreachable_despite_retained_online_topics(self) -> None:
+        removed_ieee = '0xa4c1389a3e0a13e3'
+        other_ieee = '0xa4c1380000000002'
+        mqtt = SnapshotMqtt([
+            FakeMessage('zigbee2mqtt/bridge/devices', [zigbee_bridge_device(other_ieee, 'Anderer Sensor', 'ZG-204ZH')]),
+            FakeMessage('zigbee2mqtt/Wohnzimmer Presence', {
+                'battery': 100,
+                'humidity': 51,
+                'illuminance': 395,
+                'presence': False,
+                'temperature': 24.4,
+            }),
+            FakeMessage('zigbee2mqtt/Wohnzimmer Presence/availability', {'state': 'online'}),
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {'SENTERO_MQTT_BOOTSTRAP_EVENTS': ''}, clear=False):
+            mapping = DeviceMappingService(database_path=Path(tmpdir) / 'sentero.db')
+            mapping.mqtt = mqtt
+            mapping.sensor_source = Zigbee2MqttSensorSource(mqtt=mqtt)
+            mapping.upsert_role({'role': 'living_room_presence', 'room': 'living_room', 'entity_id': 'zigbee2mqtt/Wohnzimmer Presence', 'device_id': removed_ieee, 'friendly_name': 'Wohnzimmer Presence', 'device_class': 'presence', 'domain': 'mqtt', 'source': 'zigbee2mqtt', 'confidence': 100})
+            role = mapping.roles(include_state=True)[0]
+        self.assertFalse(role['reachable'])
+        self.assertIsNone(role['state'])
+        self.assertIsNone(role['presence'])
+        self.assertIsNone(role['temperature'])
+        self.assertIsNone(role['humidity'])
+        self.assertIsNone(role['illuminance'])
 
     def test_mqtt_presence_sensor_exposes_usb_power_source(self) -> None:
         device_id = 'c1001-test-01'

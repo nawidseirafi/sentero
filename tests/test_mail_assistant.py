@@ -318,6 +318,32 @@ class MailAssistantTest(unittest.TestCase):
         self.assertIn("Offen gemeldet: main door", text)
         self.assertNotIn("nicht genügend aktuelle Sensordaten", text)
 
+    def test_contact_status_does_not_report_closed_when_device_is_unreachable(self) -> None:
+        with self.mapping.connect() as con:
+            con.execute("delete from sentero_sensor_events")
+            con.commit()
+        self._contact_event(minutes_ago=1, role="bathroom_contact", state="closed", room="bathroom")
+        live_roles = [{
+            "role": "bathroom_contact",
+            "room": "bathroom",
+            "friendly_name": "Bad Kontakt",
+            "entity_id": "binary_sensor.bathroom_contact",
+            "device_class": "opening",
+            "active": 1,
+            "enabled": 1,
+            "reachable": False,
+            "state": None,
+            "updated_at": now(),
+        }]
+
+        with patch.object(self.mapping, "roles", return_value=live_roles):
+            result = self.assistant.process_message(self._mail("Sind alle Türen zu?", message_id="<offline-door@example.test>"))
+
+        text = self.notification.sent[-1]["text"]
+        self.assertEqual(result["intent"], MailIntent.CONTACT_STATUS.value)
+        self.assertIn("Nicht erreichbar: bathroom contact (Bad)", text)
+        self.assertNotIn("melden zuletzt geschlossen", text)
+
     def test_night_intent_no_diagnosis(self) -> None:
         self.assistant.process_message(self._mail("Wie war die Nacht?"))
         self.assertNotIn("schläft schlecht", self.notification.sent[-1]["text"])

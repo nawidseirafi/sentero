@@ -180,7 +180,11 @@ class MailResponseService:
         if open_contacts:
             lines.append(f"Nicht alle Türen oder Fenster sind als geschlossen bekannt. Offen gemeldet: {', '.join(_contact_label(item) for item in open_contacts[:6])}.")
         elif unknown_contacts:
-            lines.append("Es wird aktuell kein offener Kontakt gemeldet, aber bei einzelnen Kontakten ist der letzte Zustand unklar.")
+            unavailable = [item for item in unknown_contacts if item.get("reachable") is False]
+            if unavailable:
+                lines.append(f"Der aktuelle Zustand ist nicht zuverlässig feststellbar. Nicht erreichbar: {', '.join(_contact_label(item) for item in unavailable[:6])}.")
+            else:
+                lines.append("Es wird aktuell kein offener Kontakt gemeldet, aber bei einzelnen Kontakten ist der letzte Zustand unklar.")
         else:
             lines.append("Alle bekannten Tür- und Fensterkontakte melden zuletzt geschlossen.")
         stale = [item for item in contacts if (item.get("freshness") or {}).get("bucket") in {"old", "stale", "unknown"}]

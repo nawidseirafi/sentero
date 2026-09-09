@@ -1160,7 +1160,9 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                   <summary>
                     <div>
                       <strong>{roomLabels[room] || room}</strong>
-                      <small>{roomSensors.length} Sensoren verbunden</small>
+                      <small>{roomSensors.some((sensor) => sensor.reachable === false)
+                        ? `${roomSensors.filter((sensor) => sensor.reachable === false).length} von ${roomSensors.length} Sensoren nicht erreichbar`
+                        : `${roomSensors.length} Sensoren verbunden`}</small>
                     </div>
                     <button className="sc-room-delete" type="button" onClick={(event) => { event.preventDefault(); void deleteRoom(room); }}><Trash2 size={18} /></button>
                   </summary>
@@ -2422,10 +2424,12 @@ function DoorContactStatus({ sensor }: { sensor: SenteroSensorRole }) {
 
 function SmokeStatus({ sensor }: { sensor: SenteroSensorRole }) {
   const alarm = sensor.smoke === true || ['on', 'true', '1', 'alarm', 'detected'].includes(String(sensor.state || '').toLowerCase());
+  const unknown = sensor.reachable !== true || sensor.smoke == null;
+  const label = unknown ? 'Status unbekannt' : alarm ? 'Rauch erkannt' : 'Kein Rauch erkannt';
   return (
-    <span className={`presence-status ${alarm ? 'alert' : 'away'}`} aria-label={alarm ? 'Rauch erkannt' : 'Kein Rauch erkannt'}>
+    <span className={`presence-status ${unknown ? 'unknown' : alarm ? 'alert' : 'away'}`} aria-label={label}>
       <ShieldAlert size={17} />
-      {alarm ? 'Rauch erkannt' : 'Kein Rauch erkannt'}
+      {label}
     </span>
   );
 }

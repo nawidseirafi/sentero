@@ -32,23 +32,38 @@ export function RoomsPage() {
       </div>
       <div className="sc-room-map">
         {rooms.map((room) => {
-          const count = sensors.filter((sensor) => sensor.room === room).length;
+          const roomSensors = sensors.filter((sensor) => sensor.room === room);
+          const count = roomSensors.length;
+          const unavailable = roomSensors.filter((sensor) => sensor.reachable === false).length;
+          const unknown = roomSensors.filter((sensor) => sensor.reachable == null).length;
           return (
-            <article className="sc-room-card quiet" key={room}>
+            <article className={`sc-room-card ${unavailable ? 'notice' : 'quiet'}`} key={room}>
               <div><span className="sc-room-dot" /><strong>{roomLabels[room] || room}</strong></div>
-              <p>{count} Sensoren verbunden</p>
-              {sensors.filter((sensor) => sensor.room === room && isSmokeSensor(sensor)).map((sensor) => (
-                <small key={sensor.role} className={sensor.smoke === true ? 'sc-room-alert' : undefined}>
-                  Rauchmelder · {sensor.reachable === false ? 'nicht verbunden' : 'verbunden'} · {sensor.smoke === true ? 'Rauch erkannt' : 'Kein Rauch erkannt'}{sensor.battery_level == null ? '' : ` · Akku ${sensor.battery_level}%`}
+              <p>{sensorSummary(count, unavailable, unknown)}</p>
+              {roomSensors.filter(isSmokeSensor).map((sensor) => (
+                <small key={sensor.role} className={sensor.reachable === true && sensor.smoke === true ? 'sc-room-alert' : undefined}>
+                  Rauchmelder · {smokeStatus(sensor)}{sensor.battery_level == null ? '' : ` · Akku ${sensor.battery_level}%`}
                 </small>
               ))}
-              <small>{lastSeen(sensors.filter((sensor) => sensor.room === room))}</small>
+              <small>{lastSeen(roomSensors)}</small>
             </article>
           );
         })}
       </div>
     </section>
   );
+}
+
+function sensorSummary(count: number, unavailable: number, unknown: number) {
+  if (unavailable) return `${unavailable} von ${count} Sensoren nicht erreichbar`;
+  if (unknown) return `${unknown} von ${count} Sensorstatus unbekannt`;
+  return `${count} Sensoren verbunden`;
+}
+
+function smokeStatus(sensor: SenteroSensorRole) {
+  if (sensor.reachable === false) return 'nicht erreichbar · Zustand unbekannt';
+  if (sensor.reachable == null) return 'Verbindung unklar · Zustand unbekannt';
+  return sensor.smoke === true ? 'Rauch erkannt' : sensor.smoke === false ? 'Kein Rauch erkannt' : 'Zustand unbekannt';
 }
 
 function isSmokeSensor(sensor: SenteroSensorRole) {

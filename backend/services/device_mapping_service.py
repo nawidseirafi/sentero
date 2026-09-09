@@ -1215,14 +1215,15 @@ class DeviceMappingService:
         result = []
         for row in rows:
             entity_id = str(row.get('entity_id') or '')
-            state = resolve_role_state(dict(row), states, by_entity)
-            if not state and self.uses_mqtt_source():
+            missing_from_registry = zigbee2mqtt_device_missing_from_registry(dict(row), states)
+            state = None if missing_from_registry else resolve_role_state(dict(row), states, by_entity)
+            if not state and self.uses_mqtt_source() and not missing_from_registry:
                 state = self._cached_discovery_state(dict(row))
-            reachable = sensor_reachable_status(state)
-            availability = find_mqtt_availability_state({**row, **(state or {})}, states)
+            reachable = False if missing_from_registry else sensor_reachable_status(state)
+            availability = None if missing_from_registry else find_mqtt_availability_state({**row, **(state or {})}, states)
             if availability is not None:
                 reachable = availability
-            telemetry_state = combined_mqtt_telemetry_state(dict(row), state, states)
+            telemetry_state = None if missing_from_registry else combined_mqtt_telemetry_state(dict(row), state, states)
             if reachable is None and mqtt_item_has_telemetry(telemetry_state):
                 reachable = True
             stale = mqtt_state_is_health_stale(dict(row), telemetry_state)
@@ -1248,9 +1249,15 @@ class DeviceMappingService:
             # change) must keep showing its last known presence/motion value
             # instead of being blanked to "unknown" every few minutes.
             confirmed_online = availability is True
-            live_telemetry_state = None if (stale and not confirmed_online) else telemetry_state
+            live_telemetry_state = None if (
+                reachable is False
+                or (stale and role_is_presence(str(row.get('role') or '')) and not confirmed_online)
+            ) else telemetry_state
+            live_related_states = states if live_telemetry_state is not None else []
+            if live_telemetry_state is None:
+                environmental = {'temperature': None, 'humidity': None, 'illuminance': None}
             c1001_telemetry = c1001_telemetry_from_state(live_telemetry_state)
-            generic_presence = generic_presence_telemetry_from_state(dict(row), live_telemetry_state, states if (not stale or confirmed_online) else [])
+            generic_presence = generic_presence_telemetry_from_state(dict(row), live_telemetry_state, live_related_states)
             data_age_seconds = sensor_state_age_seconds(telemetry_state)
             soft_warning_threshold_seconds = soft_stale_warning_threshold_seconds(dict(row))
             stale_warning = (
@@ -1264,8 +1271,8 @@ class DeviceMappingService:
             inferred_presence = generic_presence.get('presence')
             presence = effective_presence_value(explicit_presence, inferred_presence, motion_state, motion)
             smoke = smoke_value_from_state(live_telemetry_state)
-            contact_state = contact_state_from_state(telemetry_state) if role_is_contact(str(row.get('role') or '')) else None
-            value = contact_state if contact_state is not None else state.get('state') if state else None
+            contact_state = contact_state_from_state(live_telemetry_state) if role_is_contact(str(row.get('role') or '')) else None
+            value = contact_state if contact_state is not None else live_telemetry_state.get('state') if live_telemetry_state else None
             logger.debug(
                 "Sensor health resolved",
                 extra={
@@ -1275,6 +1282,7 @@ class DeviceMappingService:
                     "resolved_entity": state.get('entity_id') if state else None,
                     "reachable": reachable,
                     "availability": availability,
+                    "missing_from_registry": missing_from_registry,
                     "battery_entity": battery_entity.get('entity_id') if battery_entity else None,
                     "battery_level": battery_level,
                     "power_source": power_source,
@@ -3431,6 +3439,34 @@ def find_mqtt_availability_state(role: dict[str, Any], states: list[dict[str, An
         if value in {'online', 'available', 'on', 'true', '1', 'connected'}:
             return True
     return None
+
+
+def zigbee2mqtt_device_missing_from_registry(role: dict[str, Any], states: list[dict[str, Any]]) -> bool:
+    """Treat Zigbee2MQTT's current device registry as authoritative.
+
+    MQTT brokers can retain a device's last state and `availability=online` even
+    after Zigbee2MQTT removed that device. Metadata rows generated from the
+    retained `bridge/devices` payload represent the current registry and prevent
+    those orphaned topics from resurrecting a removed sensor.
+    """
+    if not is_zigbee2mqtt_mapping(role):
+        return False
+    registry = [
+        state
+        for state in states
+        if is_metadata_only_state(state)
+        and str(state.get('topic') or '').strip('/').lower().endswith('/bridge/devices')
+    ]
+    if not registry:
+        return False
+    wanted_physical = physical_device_identity_values(role)
+    wanted_topics = mqtt_topic_values(role)
+    for state in registry:
+        if wanted_physical and wanted_physical.intersection(physical_device_identity_values(state)):
+            return False
+        if wanted_topics and wanted_topics.intersection(mqtt_topic_values(state)):
+            return False
+    return True
 
 
 def esp32_topic_prefix() -> str:

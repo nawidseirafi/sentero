@@ -180,6 +180,14 @@ class MailQueryService:
         return QueryResult(intent=MailIntent.POWER_USAGE, status="ok", facts={"readings": readings, "today_deltas": deltas})
 
     def _contact_status(self) -> QueryResult:
+        live_roles = self._configured_roles(include_state=True)
+        live_contacts = [role for role in live_roles if self._is_contact_event(role)]
+        live_by_role = {str(role.get("role") or ""): role for role in live_contacts if role.get("role")}
+        live_by_entity = {
+            str(role.get("resolved_entity_id") or role.get("entity_id") or role.get("source_ref") or ""): role
+            for role in live_contacts
+            if role.get("resolved_entity_id") or role.get("entity_id") or role.get("source_ref")
+        }
         with self.mapping.connect() as con:
             rows = con.execute(
                 """select * from sentero_sensor_events
@@ -204,7 +212,30 @@ class MailQueryService:
                 event["room_label"] = self._room_label(event.get("room"))
                 event["contact_state"] = self._contact_state(event.get("state"))
                 event["freshness"] = self._freshness(event.get("event_time"))
+                live = live_by_role.get(str(event.get("role") or "")) or live_by_entity.get(str(event.get("entity_id") or ""))
+                if live and live.get("reachable") is False:
+                    event["contact_state"] = "unknown"
+                    event["reachable"] = False
                 latest_by_contact[key] = event
+        known_keys = {
+            str(item.get("role") or "") for item in latest_by_contact.values()
+        } | {
+            str(item.get("entity_id") or "") for item in latest_by_contact.values()
+        }
+        for role in live_contacts:
+            role_key = str(role.get("role") or "")
+            entity_key = str(role.get("resolved_entity_id") or role.get("entity_id") or role.get("source_ref") or "")
+            if role_key in known_keys or entity_key in known_keys:
+                continue
+            latest_by_contact[f"live:{role_key or entity_key}"] = {
+                "role": role_key,
+                "entity_id": entity_key,
+                "room": role.get("room"),
+                "room_label": self._room_label(role.get("room")),
+                "contact_state": self._contact_state(role.get("state")) if role.get("reachable") is not False else "unknown",
+                "reachable": role.get("reachable"),
+                "freshness": self._freshness(role.get("last_updated") or role.get("last_changed") or role.get("updated_at")),
+            }
         contacts = sorted(latest_by_contact.values(), key=lambda item: str(item.get("role") or item.get("entity_id") or ""))
         if not contacts:
             return QueryResult(intent=MailIntent.CONTACT_STATUS, status="no_data", data_available=False)
