@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import functools
 import http.server
 import io
 import json
@@ -30,6 +31,16 @@ _CAPTIVE_REDIRECT_DEVICE: str | None = None
 _DIRECT_CAPTIVE_SERVER: http.server.ThreadingHTTPServer | None = None
 _DIRECT_CAPTIVE_THREAD: threading.Thread | None = None
 _WIFI_AP_CACHE: dict[str, Any] = {"device": None, "supported": False, "checked_at": 0.0}
+_NETWORK_LOCK = threading.RLock()
+_RECOVERY_MARKER = SOCKET_PATH.parent / "automatic-recovery"
+
+
+def serialized_network(fn):
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        with _NETWORK_LOCK:
+            return fn(*args, **kwargs)
+    return wrapped
 
 sys.path.insert(0, str(BOX_DIR / "scripts"))
 try:
@@ -511,6 +522,7 @@ def _enable_captive_redirect(device: str) -> bool:
     return ok
 
 
+@serialized_network
 def _sync_captive_portal() -> None:
     current = status()
     if current.get("setup_ap_active"):
@@ -556,6 +568,7 @@ def scan_wifi() -> dict[str, Any]:
     return {"ok": result.returncode == 0, "networks": sorted(networks.values(), key=lambda x: x["signal"], reverse=True)}
 
 
+@serialized_network
 def stop_setup_ap() -> dict[str, Any]:
     _disable_captive_redirect()
     _stop_direct_captive_server()
@@ -564,7 +577,8 @@ def stop_setup_ap() -> dict[str, Any]:
     return {"ok": result.returncode in {0, 10}, "active": False, "message": "Setup-WLAN beendet."}
 
 
-def start_setup_ap() -> dict[str, Any]:
+@serialized_network
+def start_setup_ap(automatic: bool = False) -> dict[str, Any]:
     dev = wifi_device()
     if not dev:
         return {"ok": False, "active": False, "message": "Kein WLAN-Adapter gefunden."}
@@ -585,6 +599,11 @@ def start_setup_ap() -> dict[str, Any]:
     if result.returncode != 0:
         return {"ok": False, "active": False, "message": "Setup-WLAN konnte nicht konfiguriert werden."}
     run(["nmcli", "connection", "modify", AP_CONNECTION, "802-11-wireless-security.key-mgmt", ""], 10)
+    if automatic:
+        current = recovery_snapshot(include_profiles=False)
+        if current["ready"] or current["pending"]:
+            _remove_captive_dns_config()
+            return {"ok": False, "active": False, "message": "Client-Netzwerk hat Vorrang."}
     result = run(["nmcli", "connection", "up", AP_CONNECTION], 30)
     captive = False
     if result.returncode == 0:
@@ -613,6 +632,7 @@ def post_connect_stack() -> None:
         pass
 
 
+@serialized_network
 def connect_wifi(ssid: str, password: str) -> dict[str, Any]:
     ssid = ssid.strip()
     if not ssid:
@@ -783,6 +803,173 @@ def datetime_now() -> str:
     # ISO UTC without importing a large dependency; time is only informational.
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
+
+def recovery_snapshot(include_profiles: bool = True) -> dict[str, Any]:
+    """Local addresses and numeric NM states only; never probe DNS/Internet."""
+    rows = connection_rows()
+    ready = None
+    pending = not rows
+    ap_device = None
+    device = None
+    for dev, typ, state, conn in sorted(rows, key=lambda row: row[1] != "ethernet"):
+        if typ not in {"ethernet", "wifi"}:
+            continue
+        if typ == "wifi":
+            device = device or dev
+        if conn == AP_CONNECTION:
+            ap_device = dev
+            continue
+        ip = device_ipv4(dev)
+        if ip and ready is None:
+            ready = (typ, dev, ip)
+            if typ == "ethernet":
+                # LAN readiness must not depend on another radio/profile query.
+                return {"ready": ready, "pending": False, "ap_device": None,
+                        "device": device, "profiles": []}
+        if typ == "wifi":
+            result = run(["nmcli", "-g", "GENERAL.STATE", "device", "show", dev], 5)
+            try:
+                code = int(result.stdout.split()[0])
+            except (ValueError, IndexError):
+                code = -1
+            # 40..90: prepare/auth/config/DHCP/check/secondaries; 100 may
+            # already be activated via IPv6 while DHCPv4 is still running.
+            # Unknown/deactivating states are not evidence of failure either.
+            if code not in {10, 20, 30, 120}:
+                pending = True
+    if ready or pending or not include_profiles:
+        return {"ready": ready, "pending": pending, "ap_device": ap_device,
+                "device": device, "profiles": []}
+    result = run(["nmcli", "-t", "-f", "UUID,TYPE", "connection", "show"], 5)
+    if result.returncode:
+        raise RuntimeError("NetworkManager profile query failed")
+    profiles = []
+    for row in csv.reader(io.StringIO(result.stdout), delimiter=":", escapechar="\\"):
+        if len(row) != 2 or row[1] != "802-11-wireless":
+            continue
+        mode = run(["nmcli", "-g", "802-11-wireless.mode", "connection", "show", "uuid", row[0]], 5)
+        if mode.returncode == 0 and mode.stdout.strip() in {"", "infrastructure"}:
+            profiles.append(row[0])
+    return {"ready": ready, "pending": pending, "ap_device": ap_device,
+            "device": device, "profiles": profiles}
+
+
+class NetworkRecovery:
+    GRACE = 30
+    PENDING_LOG_AFTER = 120
+    MIN_BACKOFF = 120
+    MAX_BACKOFF = 600
+
+    def __init__(self):
+        self.enabled = False
+        self.failed_since = None
+        self.retried = False
+        self.next_attempt = 0.0
+        self.backoff = self.MIN_BACKOFF
+        self.profile_index = 0
+        self.started = 0.0
+        self.reported_pending = False
+
+    def enable(self):
+        if not self.enabled:
+            _RECOVERY_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            _RECOVERY_MARKER.touch()
+            self.enabled = True
+            self.started = time.monotonic()
+
+    def cancel(self):
+        _RECOVERY_MARKER.unlink(missing_ok=True)
+        self.__init__()
+
+    def activate(self, snapshot):
+        current = recovery_snapshot(include_profiles=False)
+        if current["ready"] or current["pending"]:
+            return
+        profiles = snapshot["profiles"]
+        uuid = profiles[self.profile_index % len(profiles)]
+        self.profile_index += 1
+        # --wait 0 submits activation without imposing a shorter DHCP timeout.
+        run(["nmcli", "--wait", "0", "connection", "up", "uuid", uuid,
+             "ifname", snapshot["device"]], 5)
+        self.failed_since = None
+        self.retried = True
+        print("Sentero: erneuten WLAN-Verbindungsversuch bei NetworkManager angefordert.", flush=True)
+
+    def step(self):
+        if not self.enabled:
+            return
+        now = time.monotonic()
+        current = recovery_snapshot()
+        if current["ready"]:
+            result = stop_setup_ap()
+            if not result["ok"]:
+                return
+            result = run(["/usr/bin/docker", "compose", "--project-directory", str(BOX_DIR), "up", "-d"], 60)
+            if result.returncode:
+                print("Sentero: lokales Netzwerk bereit; Stack-Start wird erneut versucht.", flush=True)
+                return
+            print(f"Sentero: lokales Netzwerk aktiv {current['ready']}; Recovery beendet.", flush=True)
+            self.cancel()
+            return
+        if current["pending"]:
+            self.failed_since = None
+            if now - self.started >= self.PENDING_LOG_AFTER and not self.reported_pending:
+                print("Sentero: WLAN-Aufbau dauert an; Hintergrundpruefung ohne AP-Uebernahme.", flush=True)
+                self.reported_pending = True
+            return
+        if current["ap_device"]:
+            if now < self.next_attempt or not current["profiles"]:
+                return
+            # A station may be filling in the setup form without API traffic.
+            # Unsupported/failed station queries conservatively keep the AP.
+            stations = run(["iw", "dev", current["ap_device"], "station", "dump"], 5)
+            if stations.returncode or stations.stdout.strip():
+                self.next_attempt = now + self.MIN_BACKOFF
+                return
+            # Recheck immediately before changing the single radio.
+            current = recovery_snapshot()
+            if current["ready"] or current["pending"] or not current["profiles"]:
+                return
+            if not stop_setup_ap()["ok"]:
+                return
+            self.activate(current)
+            return
+        if self.failed_since is None:
+            self.failed_since = now
+        if now - self.failed_since < self.GRACE:
+            return
+        if current["profiles"] and current["device"] and not self.retried:
+            self.activate(current)
+            return
+        # No AP activation based solely on an elapsed deadline. A fresh NM
+        # observation must still show no local address and no client activation.
+        current = recovery_snapshot(include_profiles=False)
+        if current["ready"] or current["pending"]:
+            return
+        if now < self.next_attempt:
+            return
+        if start_setup_ap(automatic=True)["ok"]:
+            self.next_attempt = time.monotonic() + self.backoff
+            self.backoff = min(self.backoff * 2, self.MAX_BACKOFF)
+            self.failed_since = None
+            print("Sentero: Netzwerk nicht verfuegbar; automatisches Setup-WLAN mit Recovery aktiv.", flush=True)
+        else:
+            self.next_attempt = time.monotonic() + self.MIN_BACKOFF
+
+
+_RECOVERY = NetworkRecovery()
+
+
+def _network_recovery_loop():
+    while True:
+        try:
+            with _NETWORK_LOCK:
+                _RECOVERY.step()
+        except Exception as exc:
+            print(f"Sentero: Recovery-Pruefung verschoben ({type(exc).__name__}).", flush=True)
+        time.sleep(5)
+
+
 def handle(request: dict[str, Any]) -> dict[str, Any]:
     action = str(request.get("action") or "")
     if action == "status":
@@ -791,12 +978,21 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
         return system_status()
     if action == "scan_wifi":
         return scan_wifi()
-    if action == "start_setup_ap":
-        return start_setup_ap()
-    if action == "stop_setup_ap":
-        return stop_setup_ap()
-    if action == "connect_wifi":
-        return connect_wifi(str(request.get("ssid") or ""), str(request.get("password") or ""))
+    if action in {"ensure_network", "start_setup_ap", "stop_setup_ap", "connect_wifi"}:
+        if not _NETWORK_LOCK.acquire(blocking=False):
+            return {"ok": False, "message": "Netzwerk wird gerade konfiguriert. Bitte erneut versuchen."}
+        try:
+            if action == "ensure_network":
+                _RECOVERY.enable()
+                return {"ok": True, "pending": True}
+            _RECOVERY.cancel()
+            if action == "start_setup_ap":
+                return start_setup_ap()
+            if action == "stop_setup_ap":
+                return stop_setup_ap()
+            return connect_wifi(str(request.get("ssid") or ""), str(request.get("password") or ""))
+        finally:
+            _NETWORK_LOCK.release()
     return {"ok": False, "message": f"Unbekannte Aktion: {action}"}
 
 
@@ -824,6 +1020,10 @@ def _ensure_physical_setup_label() -> None:
 
 def serve() -> None:
     SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if _RECOVERY_MARKER.exists():
+        _RECOVERY.enable()
+        _RECOVERY.next_attempt = time.monotonic() + _RECOVERY.MIN_BACKOFF
+    threading.Thread(target=_network_recovery_loop, name="sentero-network-recovery", daemon=True).start()
     _ensure_physical_setup_label()
     _ensure_captive_http_server()
     threading.Thread(target=_captive_maintenance_loop, name="sentero-captive-maintenance", daemon=True).start()

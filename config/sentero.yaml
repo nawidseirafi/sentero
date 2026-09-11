@@ -91,7 +91,7 @@ llm:
     model: gemini-2.5-flash
 
 ai_shadow:
-  enabled: false
+  enabled: true
   interval_seconds: 300
   window_minutes: 60
   model: SENTERO_AI_MODEL

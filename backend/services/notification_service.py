@@ -6,6 +6,7 @@ import re
 import smtplib
 import sqlite3
 import socket
+import threading
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, time
@@ -29,6 +30,7 @@ from backend.services.network.connectivity_service import ConnectivityService
 from backend.services.network.models import ConnectionType, NetworkStatusCode
 
 logger = get_logger(__name__)
+_OUTBOX_WORKER_LOCK = threading.Lock()
 
 CHANNELS = ("email", "telegram", "whatsapp")
 SEVERITIES = ("green", "yellow", "orange", "red")
@@ -646,19 +648,60 @@ class NotificationService:
             rows = con.execute("select status, count(*) as count from notification_outbox group by status").fetchall()
         return {"queue": {row["status"]: row["count"] for row in rows}}
 
-    def process_pending_queue(self, limit: int = 50) -> dict[str, Any]:
+    def process_pending_queue(self, limit: int = 50, stop_event: threading.Event | None = None) -> dict[str, Any]:
+        # Shared across service instances; no DB transaction spans provider I/O.
+        if not _OUTBOX_WORKER_LOCK.acquire(blocking=False):
+            return {"sent": 0, "skipped": "worker_running"}
+        try:
+            return self._process_pending_queue(limit, stop_event)
+        finally:
+            _OUTBOX_WORKER_LOCK.release()
+
+    @staticmethod
+    def _queue_retry_seconds(error: str, attempts: int) -> int:
+        if any(marker in error.lower() for marker in (
+            "smtpauthenticationerror", "smtp anmeldung fehlgeschlagen",
+            "basic authentication is disabled", "nicht konfiguriert",
+        )):
+            return 3600
+        return min(3600, 60 * 2 ** min(max(attempts - 1, 0), 6))
+
+    def _process_pending_queue(self, limit: int, stop_event: threading.Event | None) -> dict[str, Any]:
+        if stop_event is not None and stop_event.is_set():
+            return {"sent": 0, "skipped": "stopping"}
         if self.connectivity and self.connectivity.check(ConnectionType.NONE).status in {NetworkStatusCode.OFFLINE, NetworkStatusCode.LOCAL_ONLY}:
             return {"sent": 0, "remaining": self._pending_count(), "skipped": "offline"}
+        blocked = set()
+        current = datetime.fromisoformat(now())
         with self.mapping.connect() as con:
+            # Persist channel cooldown through restarts using existing fields.
+            # One broken channel must not fill every batch and starve others.
+            for channel in CHANNELS:
+                last = con.execute(
+                    """select * from notification_outbox where channel = ? and last_attempt_at is not null
+                       order by last_attempt_at desc, id desc limit 1""", (channel,),
+                ).fetchone()
+                if last and last["status"] == "failed":
+                    delay = self._queue_retry_seconds(str(last["error_message"] or ""), int(last["attempts"]))
+                    if (current - datetime.fromisoformat(last["last_attempt_at"])).total_seconds() < delay:
+                        blocked.add(channel)
+            eligible = [channel for channel in CHANNELS if channel not in blocked]
+            if not eligible:
+                return {"sent": 0, "skipped": "backoff"}
+            placeholders = ",".join("?" for _ in eligible)
             rows = con.execute(
-                "select * from notification_outbox where status in ('pending', 'failed') order by original_created_at, id limit ?",
-                (min(max(int(limit or 50), 1), 200),),
+                f"select * from notification_outbox where status in ('pending', 'failed') and channel in ({placeholders}) order by original_created_at, id limit ?",
+                (*eligible, min(max(int(limit or 50), 1), 200)),
             ).fetchall()
         sent = 0
         for row in rows:
+            if stop_event is not None and stop_event.is_set():
+                break
             item = dict(row)
             contact = self._decode_json(item.get("contact_json"))
             channel = str(item["channel"])
+            if channel in blocked:
+                continue
             try:
                 text = add_original_timestamp(str(item["text"]), str(item["original_created_at"]))
                 result = self.providers[channel].send(contact, str(item["title"]), text, self._setting(channel).get("config") or {})
@@ -666,7 +709,14 @@ class NotificationService:
                 self._log(item.get("contact_id"), channel, str(item["severity"]), "sent", str(item["title"]), None, outgoing_message_id=_provider_message_id(result), incident_key=item.get("incident_key"))
                 sent += 1
             except Exception as exc:
-                self._mark_outbox(int(item["id"]), "failed", self._safe_error(exc))
+                error = self._safe_error(exc)
+                self._mark_outbox(int(item["id"]), "failed", error)
+                blocked.add(channel)
+                logger.warning("Notification queue channel paused after delivery failure", extra={
+                    "component": "notification", "channel": channel,
+                    "error_type": type(exc).__name__,
+                    "retry_in_seconds": self._queue_retry_seconds(error, int(item["attempts"]) + 1),
+                })
         return {"sent": sent, "remaining": self._pending_count()}
 
     def send_daily_summary_if_due(self, now_dt: datetime | None = None) -> dict[str, Any]:

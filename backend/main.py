@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import threading
 from contextlib import asynccontextmanager
 from contextlib import suppress
 
@@ -49,20 +50,19 @@ async def behavior_snapshot_loop() -> None:
 async def network_startup_check() -> None:
     try:
         await asyncio.to_thread(get_services().network.ensure_first_boot_setup)
-        await asyncio.to_thread(get_services().notification.process_pending_queue)
     except Exception:
         logger.exception("Network startup check failed", extra={"component": "network"})
 
 
 async def network_maintenance_loop() -> None:
     await asyncio.sleep(5)
+    await network_startup_check()
     while True:
         try:
             services = get_services()
             result = await asyncio.to_thread(services.network.maintain_once)
             if result.get("actions"):
                 logger.info("Network maintenance actions applied", extra={"component": "network", "actions": result.get("actions")})
-            await asyncio.to_thread(services.notification.process_pending_queue)
             await asyncio.to_thread(services.notification.send_daily_summary_if_due)
             await asyncio.to_thread(services.update.auto_check_and_notify, services.notification)
             interval = services.network.failover_config().check_interval_seconds
@@ -72,6 +72,32 @@ async def network_maintenance_loop() -> None:
             logger.exception("Network maintenance failed", extra={"component": "network"})
             interval = 30
         await asyncio.sleep(interval)
+
+
+async def notification_queue_loop(stop: threading.Event) -> None:
+    work = None
+    try:
+        # Yield startup readiness before any connectivity/provider work begins.
+        await asyncio.sleep(1)
+        while not stop.is_set():
+            try:
+                work = asyncio.create_task(asyncio.to_thread(
+                    get_services().notification.process_pending_queue, stop_event=stop,
+                ))
+                await asyncio.shield(work)
+            except Exception:
+                logger.exception("Notification queue processing failed", extra={"component": "notification"})
+            work = None
+            await asyncio.sleep(30)
+    finally:
+        stop.set()
+        # Cancelling to_thread cannot stop SMTP. Finish the current bounded
+        # provider call and its DB acknowledgement, but do not start another item.
+        if work is not None:
+            try:
+                await work
+            except Exception:
+                logger.exception("Notification queue shutdown failed", extra={"component": "notification"})
 
 
 async def mail_assistant_loop() -> None:
@@ -207,11 +233,12 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         # listener retries automatically once it has started; a hard setup error
         # is logged here and sensor endpoints will report no current state.
         logger.exception("MQTT live listener startup failed", extra={"component": "mqtt"})
-    await network_startup_check()
     behavior_task = asyncio.create_task(behavior_snapshot_loop())
     network_task = asyncio.create_task(network_maintenance_loop())
     mail_task = asyncio.create_task(mail_assistant_loop())
     telegram_task = asyncio.create_task(telegram_assistant_loop())
+    notification_stop = threading.Event()
+    notification_task = asyncio.create_task(notification_queue_loop(notification_stop))
     try:
         yield
     finally:
@@ -219,6 +246,8 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         network_task.cancel()
         mail_task.cancel()
         telegram_task.cancel()
+        notification_stop.set()
+        notification_task.cancel()
         with suppress(asyncio.CancelledError):
             await behavior_task
         with suppress(asyncio.CancelledError):
@@ -227,6 +256,8 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
             await mail_task
         with suppress(asyncio.CancelledError):
             await telegram_task
+        with suppress(asyncio.CancelledError):
+            await notification_task
         services.mapping.mqtt.remove_message_listener(services.sentero.behavior.handle_mqtt_message)
         services.mapping.stop_mqtt_listener()
         logger.info("Application stopped", extra={"component": "app"})

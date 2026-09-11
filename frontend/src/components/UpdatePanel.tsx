@@ -220,7 +220,7 @@ function titleForState(state: string, updateAvailable: boolean) {
 }
 
 function textForState(product: string, status: UpdateStatus | null, state: string, updateAvailable: boolean) {
-  if (state === 'running') return `${product} wird aktualisiert. Bitte warten Sie, bis der Vorgang abgeschlossen ist.`;
+  if (state === 'running') return `${product} wird aktualisiert. Bitte warten Sie, bis der Vorgang abgeschlossen ist. Dieser Vorgang kann einige Minuten dauern.`;
   if (state === 'success' || state === 'completed') return `${product} wurde erfolgreich aktualisiert.`;
   if (state === 'failed' || state === 'error') return 'Das Update konnte nicht vollständig installiert werden. Bitte versuchen Sie es erneut oder kontaktieren Sie den Support.';
   if (state === 'check_failed') return status?.message || 'Die Update-Prüfung konnte nicht abgeschlossen werden. Bitte versuchen Sie es später erneut.';
