@@ -5,3 +5,4 @@ PyYAML
 httpx
 requests
 paho-mqtt
+msal>=1.31,<2

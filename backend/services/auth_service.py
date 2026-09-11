@@ -5,9 +5,7 @@ import hmac
 import json
 import os
 import secrets
-import smtplib
 from datetime import datetime, timedelta, timezone
-from email.message import EmailMessage
 from typing import Any
 
 from fastapi import HTTPException, Request, Response
@@ -258,22 +256,14 @@ class SenteroAuthService:
         }
 
     def _send_reset_email(self, email: str, reset_url: str, config: dict[str, Any]) -> None:
-        message = EmailMessage()
-        message["Subject"] = "Sentero Passwort zurücksetzen"
-        message["From"] = EMAIL_FROM
-        message["To"] = email
-        message.set_content(
+        from backend.services.notification_service import EmailNotificationProvider
+        EmailNotificationProvider().send({"email": email}, "Sentero Passwort zurücksetzen",
             "\n\n".join([
                 "Sie können Ihr Sentero-Passwort über den folgenden Link zurücksetzen:",
                 reset_url,
                 "Wenn Sie diese Anfrage nicht gestellt haben, können Sie diese Nachricht ignorieren.",
             ])
-        )
-        port = int(config.get("smtp_port") or 587)
-        with smtplib.SMTP(str(config.get("smtp_host")), port, timeout=15) as smtp:
-            smtp.starttls()
-            smtp.login(str(config.get("smtp_user")), str(config.get("smtp_password") or ""))
-            smtp.send_message(message, from_addr=str(config.get("smtp_user") or EMAIL_FROM), to_addrs=[email])
+        , config)
 
 
 def normalize_email(value: Any) -> str:

@@ -2,6 +2,13 @@ const RAW_API_BASE = import.meta.env.VITE_API_BASE ?? '';
 const API_BASE = normalizeApiBase(RAW_API_BASE);
 const TOKEN_KEY = 'sentero.session-token';
 export const AUTH_EXPIRED_EVENT = 'sentero:auth-expired';
+export type MicrosoftMailStatus = {
+  status: 'pending' | 'connected' | 'expired' | 'failed' | 'reconnect_required';
+  verification_uri?: string;
+  user_code?: string;
+  expires_in?: number;
+  account?: string;
+};
 
 export type SenteroUser = {
   id: number;
@@ -857,6 +864,9 @@ export const api = {
     request<SenteroMailQuerySettings>(`/api/sentero/setup/contact/${encodeURIComponent(String(contactId))}/email-queries`, { method: 'PUT', body: JSON.stringify(payload) }),
   discoverMailSettings: (email: string) =>
     request<MailConfig>('/api/mail/discover', { method: 'POST', body: JSON.stringify({ email }) }),
+  startMicrosoftMail: (email: string) => request<MicrosoftMailStatus>('/api/mail/microsoft/connect/start', { method: 'POST', body: JSON.stringify({ email }) }),
+  microsoftMailStatus: () => request<MicrosoftMailStatus>('/api/mail/microsoft/connect/status'),
+  disconnectMicrosoftMail: () => request<MicrosoftMailStatus>('/api/mail/microsoft/disconnect', { method: 'POST' }),
   verifyMailSettings: (payload: { email: string; password: string; config: MailConfig; imap_username?: string; smtp_username?: string }) =>
     request<{ ok: boolean; message: string }>('/api/mail/verify', { method: 'POST', body: JSON.stringify(payload) }),
   saveSenteroNotifications: (payload: { anomalies: boolean; critical: boolean; daily_summary: boolean }) =>

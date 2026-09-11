@@ -22,6 +22,18 @@ notifications:
   incident_recovery:
     healthy_checks_required: 3
 
+mail:
+  microsoft:
+    # Product/operator configuration, not a family setup field.
+    # Supply the real Sentero public application ID here or through
+    # SENTERO_MICROSOFT_CLIENT_ID. Empty means Microsoft connect is not configured.
+    # Never put a client secret, account password or tokens in this section.
+    # Registration prerequisites: docs/microsoft-mail-oauth.md
+    client_id: ""
+    # Supports personal and organizational accounts when the registration allows.
+    # Can also be overridden through SENTERO_MICROSOFT_AUTHORITY.
+    authority: "https://login.microsoftonline.com/common"
+
 app:
   dev_mode: false
 

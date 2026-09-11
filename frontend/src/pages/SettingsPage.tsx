@@ -101,8 +101,8 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [transparency, setTransparency] = useState<SenteroTransparency | null>(null);
   const [emailQueries, setEmailQueries] = useState<SenteroMailQuerySettings | null>(null);
   const [meterDiscovery, setMeterDiscovery] = useState<{ type: MeterAddType; status: 'idle' | 'searching' | 'found' | 'missing'; message: string; remainingSeconds?: number } | null>(null);
-  const [setupChannel, setSetupChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
-  const [helpChannel, setHelpChannel] = useState<'email' | 'telegram' | 'whatsapp' | null>(null);
+  const [setupChannel, setSetupChannel] = useState<'email' | 'telegram' | null>(null);
+  const [helpChannel, setHelpChannel] = useState<'email' | 'telegram' | null>(null);
   const [mailDiscovery, setMailDiscovery] = useState<{ status: 'idle' | 'checking' | 'found' | 'failed'; message: string }>({ status: 'idle', message: '' });
   const [mailVerification, setMailVerification] = useState<{ busy: boolean; ok: boolean; message: string }>({ busy: false, ok: false, message: '' });
   const [emailAdvancedOpen, setEmailAdvancedOpen] = useState(false);
@@ -110,7 +110,6 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
   const [channelForms, setChannelForms] = useState({
     email: { mail_from: '', smtp_host: '', smtp_port: '587', smtp_user: '', smtp_login: '', smtp_password: '', smtp_encryption: '', smtp_starttls: 'true', smtp_ssl: 'false', imap_host: '', imap_port: '993', imap_user: '', imap_password: '', imap_encryption: '', app_password_help_url: '', test_recipient: '' },
     telegram: { bot_token: '', default_chat_id: '', test_recipient: '' },
-    whatsapp: { access_token: '', phone_number_id: '', business_account_id: '', api_version: 'v23.0', test_recipient: '' },
   });
 
   useEffect(() => {
@@ -813,12 +812,11 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
           imap_password: '',
         },
         telegram: { ...current.telegram, ...stringConfig(byChannel.telegram) },
-        whatsapp: { ...current.whatsapp, ...stringConfig(byChannel.whatsapp) },
       };
     });
   }
 
-  async function saveChannel(channel: 'email' | 'telegram' | 'whatsapp') {
+  async function saveChannel(channel: 'email' | 'telegram') {
     try {
       if (channel === 'email' && !mailVerification.ok) {
         setMailVerification({ busy: false, ok: false, message: 'Bitte prüfen Sie zuerst die Verbindung.' });
@@ -904,7 +902,7 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
     }
   }
 
-  async function testChannel(channel: 'email' | 'telegram' | 'whatsapp') {
+  async function testChannel(channel: 'email' | 'telegram') {
     try {
       const config = channel === 'email' ? emailChannelConfig(channelForms.email) : channelForms[channel];
       await api.saveSenteroNotificationChannel(channel, { enabled: false, config });
@@ -1313,7 +1311,6 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                 <label>AAL-Rolle<select value={contactForm.actor_role} onChange={(event) => setContactForm((value) => ({ ...value, actor_role: actorRoleForContact(event.target.value) }))}>{aalActorRoles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
                 {channelSelected(contactForm.preferred_channels, 'email', availableChannels) && <label>E-Mail<input type="email" value={contactForm.email} onChange={(event) => setContactForm((value) => ({ ...value, email: event.target.value }))} /></label>}
                 {channelSelected(contactForm.preferred_channels, 'telegram', availableChannels) && <label>Telegram Chat ID<input value={contactForm.telegram_chat_id} onChange={(event) => setContactForm((value) => ({ ...value, telegram_chat_id: event.target.value }))} placeholder="Wird per Einladung automatisch gesetzt" /></label>}
-                {channelSelected(contactForm.preferred_channels, 'whatsapp', availableChannels) && <label>WhatsApp Telefonnummer<input value={contactForm.whatsapp_phone_number} onChange={(event) => setContactForm((value) => ({ ...value, whatsapp_phone_number: event.target.value, phone: event.target.value }))} /></label>}
               </div>
               <ChannelChecks value={contactForm.preferred_channels} available={availableChannels} onChange={(preferred_channels) => setContactForm((value) => ({ ...value, preferred_channels }))} />
               <button className="sc-primary-button" type="button" onClick={() => void addContact()}><Save size={20} /> Speichern</button>
@@ -1330,7 +1327,6 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
                       <label>AAL-Rolle<select value={editContactForm.actor_role} onChange={(event) => setEditContactForm((value) => ({ ...value, actor_role: actorRoleForContact(event.target.value) }))}>{aalActorRoles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
                       {channelSelected(editContactForm.preferred_channels, 'email', availableChannels) && <label>E-Mail<input type="email" value={editContactForm.email} onChange={(event) => setEditContactForm((value) => ({ ...value, email: event.target.value }))} /></label>}
                       {channelSelected(editContactForm.preferred_channels, 'telegram', availableChannels) && <label>Telegram Chat ID<input value={editContactForm.telegram_chat_id} onChange={(event) => setEditContactForm((value) => ({ ...value, telegram_chat_id: event.target.value }))} placeholder="Wird per Einladung automatisch gesetzt" /></label>}
-                      {channelSelected(editContactForm.preferred_channels, 'whatsapp', availableChannels) && <label>WhatsApp Telefonnummer<input value={editContactForm.whatsapp_phone_number} onChange={(event) => setEditContactForm((value) => ({ ...value, whatsapp_phone_number: event.target.value, phone: event.target.value }))} /></label>}
                     </div>
                     <ChannelChecks value={editContactForm.preferred_channels} available={availableChannels} onChange={(preferred_channels) => setEditContactForm((value) => ({ ...value, preferred_channels }))} />
                     <ContactQueryCard
@@ -1449,7 +1445,6 @@ export function SettingsPage({ activeTab }: { activeTab: SenteroSettingsTab }) {
             <div className="sc-channel-overview-grid">
               <NotificationChannelOverviewCard channel="email" channels={channels} onOpen={() => setSetupChannel('email')} onHelp={() => setHelpChannel('email')} />
               <NotificationChannelOverviewCard channel="telegram" channels={channels} optional onOpen={() => setSetupChannel('telegram')} onHelp={() => setHelpChannel('telegram')} />
-              <NotificationChannelOverviewCard channel="whatsapp" channels={channels} optional onOpen={() => setSetupChannel('whatsapp')} onHelp={() => setHelpChannel('whatsapp')} />
             </div>
           </section>
 
@@ -2011,7 +2006,7 @@ function NotificationChannelOverviewCard({
   onOpen,
   onHelp,
 }: {
-  channel: 'email' | 'telegram' | 'whatsapp';
+  channel: 'email' | 'telegram';
   channels: SenteroNotificationChannel[];
   optional?: boolean;
   onOpen: () => void;
@@ -2035,7 +2030,7 @@ function NotificationChannelOverviewCard({
   );
 }
 
-function ChannelHelpModal({ channel, onClose }: { channel: 'email' | 'telegram' | 'whatsapp'; onClose: () => void }) {
+function ChannelHelpModal({ channel, onClose }: { channel: 'email' | 'telegram'; onClose: () => void }) {
   const help = channelHelpContent(channel);
   return (
     <div className="sc-modal-backdrop" role="presentation" onMouseDown={onClose}>
@@ -2083,7 +2078,7 @@ function ChannelSetupModal({
   onSave,
   onTest,
 }: {
-  channel: 'email' | 'telegram' | 'whatsapp';
+  channel: 'email' | 'telegram';
   form: Record<string, string>;
   recipient?: { name: string; email: string; relationship?: string; primary: boolean } | null;
   onClose: () => void;
@@ -2259,7 +2254,6 @@ function ChannelChecks({
   const options = [
     { channel: 'email' as const, label: 'E-Mail', icon: <Mail size={20} /> },
     { channel: 'telegram' as const, label: 'Telegram', icon: <Send size={20} /> },
-    { channel: 'whatsapp' as const, label: 'WhatsApp', icon: <MessageCircle size={20} /> },
   ];
   return (
     <div className="sc-channel-checks" aria-label="Benachrichtigungskanäle">
@@ -2748,7 +2742,6 @@ function contactPayload(form: ReturnType<typeof emptyContactForm>, available: Re
 function validateContactPayload(payload: ReturnType<typeof contactPayload>) {
   if (payload.preferred_channels.length === 0) return 'Bitte richten Sie zuerst mindestens einen funktionierenden Benachrichtigungskanal ein.';
   if (payload.preferred_channels.includes('email') && !payload.email) return 'Bitte geben Sie eine E-Mail-Adresse ein.';
-  if (payload.preferred_channels.includes('whatsapp') && !payload.whatsapp_phone_number) return 'Bitte geben Sie die WhatsApp Telefonnummer ein.';
   return '';
 }
 
@@ -2937,20 +2930,18 @@ function queryPermissionSummary(permissions: string[]) {
 function channelLabel(channel: string) {
   if (channel === 'email') return 'E-Mail';
   if (channel === 'telegram') return 'Telegram';
-  if (channel === 'whatsapp') return 'WhatsApp';
   return channel;
 }
 
 function channelIcon(channel: string, size = 20) {
   if (channel === 'telegram') return <Send size={size} />;
-  if (channel === 'whatsapp') return <MessageCircle size={size} />;
   return <Mail size={size} />;
 }
 
 type ChannelSetupField = { key: string; label: string; hint?: string };
 type ChannelSetupMeta = { title: string; text: string; fields: ChannelSetupField[] };
 
-function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp'): ChannelSetupMeta {
+function channelSetupMeta(channel: 'email' | 'telegram'): ChannelSetupMeta {
   if (channel === 'telegram') {
     return {
       title: 'Telegram einrichten',
@@ -2958,18 +2949,6 @@ function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp'): ChannelSe
       fields: [
         { key: 'bot_token', label: 'Bot Token', hint: 'Token von BotFather.' },
         { key: 'default_chat_id', label: 'Test Chat ID', hint: 'Optional für eine direkte Testnachricht.' },
-      ],
-    };
-  }
-  if (channel === 'whatsapp') {
-    return {
-      title: 'WhatsApp einrichten',
-      text: 'WhatsApp benötigt eigene WhatsApp Cloud API Zugangsdaten.',
-      fields: [
-        { key: 'access_token', label: 'Access Token' },
-        { key: 'phone_number_id', label: 'Phone Number ID' },
-        { key: 'business_account_id', label: 'Business Account ID' },
-        { key: 'api_version', label: 'Graph API Version' },
       ],
     };
   }
@@ -2990,7 +2969,11 @@ function channelSetupMeta(channel: 'email' | 'telegram' | 'whatsapp'): ChannelSe
   };
 }
 
-function channelHelpContent(channel: 'email' | 'telegram' | 'whatsapp') {
+function channelHelpContent(channel: 'email' | 'telegram'): {
+  title: string;
+  intro: string;
+  sections: { title: string; text?: string[]; items?: string[]; steps?: string[] }[];
+} {
   if (channel === 'telegram') {
     return {
       title: 'Telegram einrichten',
@@ -3007,27 +2990,80 @@ function channelHelpContent(channel: 'email' | 'telegram' | 'whatsapp') {
       ],
     };
   }
-  if (channel === 'whatsapp') {
-    return {
-      title: 'WhatsApp einrichten',
-      intro: 'WhatsApp-Benachrichtigungen benötigen die offizielle WhatsApp Cloud API von Meta.',
-      sections: [
-        { title: 'Was wird benötigt?', items: ['Meta Entwicklerkonto', 'WhatsApp Business Konto', 'Access Token', 'Phone Number ID', 'Business Account ID'] },
-        { title: 'Wichtig', text: ['WhatsApp kann nicht einfach mit einer privaten WhatsApp-Nummer verbunden werden.', 'Diese Funktion richtet sich an fortgeschrittene Nutzer oder Unternehmen.'] },
-        { title: 'Empfehlung', text: ['Nutzen Sie zuerst E-Mail. WhatsApp kann später zusätzlich eingerichtet werden.'] },
-      ],
-    };
-  }
   return {
     title: 'E-Mail einrichten',
-    intro: 'E-Mail ist der empfohlene Standardkanal für Sentero.',
+    intro: 'E-Mail ist ein empfohlener Kanal für Hinweise, Warnungen und Antworten von Vertrauenspersonen.',
     sections: [
-      { title: 'Warum E-Mail?', text: ['Sentero nutzt Ihre E-Mail-Zugangsdaten, um Hinweise und Warnungen zu senden und Antworten von Vertrauenspersonen zu lesen.'] },
-      { title: 'Was wird benötigt?', items: ['Server zum Senden', 'Server für Antworten', 'E-Mail-Adresse', 'App-Passwort oder E-Mail-Passwort'] },
-      { title: 'Beispiel Gmail', text: ['Server zum Senden: smtp.gmail.com', 'Server für Antworten: imap.gmail.com', 'Sendeport: 587', 'Antwortport: 993'] },
-      { title: 'Wichtig bei Gmail', text: ['Bei Gmail sollte ein App-Passwort verwendet werden. Das normale Google-Passwort funktioniert meistens nicht.'] },
-      { title: 'So erstellen Sie ein App-Passwort', steps: ['Öffnen Sie Ihr Google-Konto.', 'Aktivieren Sie die Zwei-Faktor-Authentifizierung.', 'Öffnen Sie „App-Passwörter“.', 'Erstellen Sie ein neues App-Passwort für „Mail“.', 'Tragen Sie dieses Passwort in Sentero ein.'] },
-      { title: 'Hinweis', text: ['Wenn Sie einen anderen E-Mail-Anbieter verwenden, finden Sie die Angaben zum Senden und Empfangen meist in den Hilfe-Seiten Ihres Anbieters.'] },
+      {
+        title: 'Warum E-Mail?',
+        text: [
+          'Sentero kann Hinweise und Warnungen per E-Mail senden und Antworten von Vertrauenspersonen lesen.',
+          'Die Einrichtung hängt von Ihrem E-Mail-Anbieter ab.',
+        ],
+      },
+      {
+        title: 'Microsoft Outlook und Microsoft 365',
+        text: [
+          'Bei Microsoft verbinden Sie Ihr Konto sicher über die Microsoft-Anmeldung.',
+          'Geben Sie Ihr Microsoft-Passwort nur direkt bei Microsoft ein, niemals in Sentero.',
+          'Bei Firmenkonten kann eine Freigabe durch Ihre Administration erforderlich sein.',
+        ],
+        steps: [
+          'Tragen Sie Ihre Microsoft-E-Mail-Adresse ein und wählen Sie „Mit Microsoft verbinden“.',
+          'Öffnen Sie microsoft.com/devicelogin auf Ihrem Smartphone oder im Browser und geben Sie den angezeigten Code ein.',
+          'Melden Sie sich mit demselben Microsoft-Konto an und bestätigen Sie den Zugriff.',
+          'Warten Sie in Sentero auf „Microsoft-Konto verbunden“.',
+          'Wählen Sie „Verbindung prüfen“, senden Sie eine Testmail und speichern Sie die Einstellungen.',
+        ],
+      },
+      {
+        title: 'Microsoft-Konto erneut verbinden',
+        text: [
+          'Wenn Sentero zum erneuten Verbinden auffordert, wählen Sie „Mit Microsoft verbinden“ und melden Sie sich erneut an.',
+          'Ist der angezeigte Code abgelaufen, starten Sie die Anmeldung noch einmal.',
+          'Eine bisher mit Passwort eingerichtete Outlook-Mailbox muss einmal mit Microsoft verbunden werden. Die vorhandenen Server- und Mailbox-Angaben können bestehen bleiben.',
+        ],
+      },
+      {
+        title: 'Andere E-Mail-Anbieter',
+        text: [
+          'Bei anderen Anbietern werden in der Regel die Server zum Senden und Empfangen sowie die E-Mail-Adresse benötigt.',
+          'Je nach Anbieter verwenden Sie dafür ein App-Passwort oder ein separates E-Mail-Passwort.',
+        ],
+      },
+      {
+        title: 'Beispiel Gmail',
+        text: [
+          'Server zum Senden: smtp.gmail.com',
+          'Server zum Empfangen: imap.gmail.com',
+          'Sendeport: 587',
+          'Empfangsport: 993',
+        ],
+      },
+      {
+        title: 'Wichtig bei Gmail',
+        text: [
+          'Bei Gmail sollte in der Regel ein App-Passwort verwendet werden.',
+          'Das normale Google-Passwort ist dafür meist nicht vorgesehen.',
+        ],
+      },
+      {
+        title: 'So erstellen Sie ein App-Passwort bei Gmail',
+        steps: [
+          'Öffnen Sie Ihr Google-Konto.',
+          'Aktivieren Sie die Zwei-Faktor-Authentifizierung.',
+          'Öffnen Sie „App-Passwörter“.',
+          'Erstellen Sie ein neues App-Passwort für Sentero.',
+          'Tragen Sie dieses App-Passwort bei der E-Mail-Einrichtung in Sentero ein.',
+        ],
+      },
+      {
+        title: 'Hinweis',
+        text: [
+          'Wenn Sie einen anderen E-Mail-Anbieter verwenden, finden Sie die Angaben zum Senden und Empfangen meist in den Hilfe-Seiten Ihres Anbieters.',
+          'Bei Microsoft ist keine manuelle Eingabe des Kontopassworts erforderlich.',
+        ],
+      },
     ],
   };
 }

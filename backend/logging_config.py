@@ -15,7 +15,7 @@ load_dotenv(ENV_PATH)
 
 SUPPORTED_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 STANDARD_RECORD_KEYS = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
-SENSITIVE_KEYS = {"password", "token", "access_token", "api_key", "authorization"}
+SENSITIVE_KEYS = {"password", "token", "access_token", "refresh_token", "oauth_token", "token_cache", "device_code", "user_code", "api_key", "authorization"}
 THIRD_PARTY_LOGGERS = ("httpx", "httpcore", "websockets", "urllib3", "paho", "paho.mqtt")
 
 

@@ -89,9 +89,7 @@ MAIL_PROVIDER_FALLBACKS: dict[str, MailConfig] = {
         smtp_host="smtp-mail.outlook.com",
         smtp_port=587,
         smtp_encryption=MailEncryption.STARTTLS,
-        auth_method="OAuth2/Modern Auth",
-        requires_app_password=True,
-        app_password_help_url=MICROSOFT_APP_PASSWORD_HELP_URL,
+        auth_method="microsoft_oauth2",
         source="fallback",
     ),
     "hotmail.com": MailConfig(
@@ -101,9 +99,7 @@ MAIL_PROVIDER_FALLBACKS: dict[str, MailConfig] = {
         smtp_host="smtp-mail.outlook.com",
         smtp_port=587,
         smtp_encryption=MailEncryption.STARTTLS,
-        auth_method="OAuth2/Modern Auth",
-        requires_app_password=True,
-        app_password_help_url=MICROSOFT_APP_PASSWORD_HELP_URL,
+        auth_method="microsoft_oauth2",
         source="fallback",
     ),
     "yahoo.com": MailConfig(
@@ -131,4 +127,3 @@ MAIL_PROVIDER_FALLBACKS: dict[str, MailConfig] = {
         source="fallback",
     ),
 }
-

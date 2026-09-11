@@ -13,6 +13,7 @@ import httpx
 
 from backend.agents.sentero.mail.mail_provider_fallback import MAIL_PROVIDER_FALLBACKS
 from backend.agents.sentero.mail.models import MailConfig, MailEncryption
+from backend.services.microsoft_mail_oauth import AUTH_METHOD, MicrosoftMailError, authenticate_mail, uses_microsoft, validate_mail_host
 
 ISPDB_URL = "https://autoconfig.thunderbird.net/v1.1/{domain}"
 HTTP_TIMEOUT_SECONDS = 3.0
@@ -44,12 +45,18 @@ async def get_mail_settings(email: str) -> MailConfig | None:
 
     discovered = await discover_mail_settings(email)
     if discovered:
+        if uses_microsoft({**discovered.model_dump(), "smtp_user": email}):
+            discovered.auth_method = AUTH_METHOD
+            discovered.requires_app_password = False
+            discovered.app_password_help_url = None
         return discovered
 
     domain = email_domain(email)
     if not domain:
         return None
     config = MAIL_PROVIDER_FALLBACKS.get(domain)
+    if config is None and uses_microsoft({"smtp_user": email}):
+        config = MAIL_PROVIDER_FALLBACKS["outlook.com"]
     return deepcopy(config) if config else None
 
 
@@ -105,6 +112,8 @@ def verify_mail_credentials(
     try:
         _verify_imap_login(config, imap_login, password)
         _verify_smtp_login(config, smtp_login, password)
+    except MicrosoftMailError as exc:
+        return False, str(exc)
     except UnicodeEncodeError:
         return False, "Das gespeicherte Passwort konnte nicht verwendet werden. Bitte geben Sie das Passwort oder App-Passwort erneut ein."
     except imaplib.IMAP4.error:
@@ -123,15 +132,21 @@ def verify_mail_credentials(
 
 
 def _verify_imap_login(config: MailConfig, username: str, password: str) -> None:
+    oauth = uses_microsoft({**config.model_dump(), "smtp_user": username})
+    if oauth:
+        validate_mail_host(config.imap_host, config.imap_encryption != MailEncryption.NONE)
     client: imaplib.IMAP4
     if config.imap_encryption == MailEncryption.SSL:
-        client = imaplib.IMAP4_SSL(config.imap_host, config.imap_port, timeout=MAIL_LOGIN_TIMEOUT_SECONDS)
+        client = imaplib.IMAP4_SSL(config.imap_host, config.imap_port, timeout=MAIL_LOGIN_TIMEOUT_SECONDS, **({"ssl_context": ssl.create_default_context()} if oauth else {}))
     else:
         client = imaplib.IMAP4(config.imap_host, config.imap_port, timeout=MAIL_LOGIN_TIMEOUT_SECONDS)
     try:
         if config.imap_encryption == MailEncryption.STARTTLS:
-            client.starttls()
-        client.login(username, password)
+            client.starttls(**({"ssl_context": ssl.create_default_context()} if oauth else {}))
+        if oauth:
+            authenticate_mail(client, username, "imap")
+        else:
+            client.login(username, password)
     finally:
         try:
             client.logout()
@@ -140,17 +155,23 @@ def _verify_imap_login(config: MailConfig, username: str, password: str) -> None
 
 
 def _verify_smtp_login(config: MailConfig, username: str, password: str) -> None:
+    oauth = uses_microsoft({**config.model_dump(), "smtp_user": username})
+    if oauth:
+        validate_mail_host(config.smtp_host, config.smtp_encryption != MailEncryption.NONE)
     client: smtplib.SMTP
     if config.smtp_encryption == MailEncryption.SSL:
-        client = smtplib.SMTP_SSL(config.smtp_host, config.smtp_port, timeout=MAIL_LOGIN_TIMEOUT_SECONDS)
+        client = smtplib.SMTP_SSL(config.smtp_host, config.smtp_port, timeout=MAIL_LOGIN_TIMEOUT_SECONDS, **({"context": ssl.create_default_context()} if oauth else {}))
     else:
         client = smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=MAIL_LOGIN_TIMEOUT_SECONDS)
     try:
         client.ehlo()
         if config.smtp_encryption == MailEncryption.STARTTLS:
-            client.starttls()
+            client.starttls(**({"context": ssl.create_default_context()} if oauth else {}))
             client.ehlo()
-        client.login(username, password)
+        if oauth:
+            authenticate_mail(client, username, "smtp")
+        else:
+            client.login(username, password)
     finally:
         try:
             client.quit()

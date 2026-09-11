@@ -84,6 +84,7 @@ DEFAULT_CONTACT_PERMISSIONS = {
 @dataclass(frozen=True)
 class MailAssistantConfig:
     enabled: bool = False
+    auth_method: str = "password"
     poll_interval_seconds: int = 60
     imap_host: str = ""
     imap_port: int = 993

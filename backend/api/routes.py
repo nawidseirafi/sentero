@@ -13,6 +13,7 @@ from backend.agents.sentero.mail.discovery import get_mail_settings, verify_mail
 from backend.agents.sentero.mail.models import MailConfig
 from backend.config import config_str
 from backend.services.container import get_services
+from backend.services.microsoft_mail_oauth import AUTH_METHOD, MicrosoftMailError, microsoft_mail_oauth, uses_microsoft
 
 API_PREFIX = "/api/sentero"
 
@@ -285,13 +286,19 @@ async def discover_mail(payload: MailDiscoverPayload):
 
 
 @mail_router.post("/verify", tags=[TAG_SETUP])
-async def verify_mail(payload: MailVerifyPayload):
+async def verify_mail(payload: MailVerifyPayload, request: Request = None):
     password = str(payload.password or "")
-    if not password or _looks_masked_secret(password):
+    oauth = uses_microsoft({**model_data(payload.config), "smtp_user": payload.email})
+    if oauth:
+        if request is None:
+            raise HTTPException(status_code=401, detail="Nicht angemeldet.")
+        get_services().auth.user_from_request(request, required=True)
+        password = ""
+    elif not password or _looks_masked_secret(password):
         stored = get_services().notification.stored_channel_config("email")
         password = str(stored.get("smtp_password") or stored.get("imap_password") or "")
 
-    if not password:
+    if not password and not oauth:
         return {
             "ok": False,
             "message": "Kein gespeichertes Passwort vorhanden. Bitte geben Sie das Passwort oder App-Passwort erneut ein.",
@@ -306,6 +313,26 @@ async def verify_mail(payload: MailVerifyPayload):
         payload.smtp_username,
     )
     return {"ok": ok, "message": message or "Senden und Empfangen funktioniert."}
+
+
+@mail_router.post("/microsoft/connect/start", tags=[TAG_SETUP])
+def microsoft_connect_start(payload: MailDiscoverPayload):
+    service = microsoft_mail_oauth()
+    try:
+        return service.start(payload.email)
+    except MicrosoftMailError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@mail_router.get("/microsoft/connect/status", tags=[TAG_SETUP])
+def microsoft_connect_status():
+    return microsoft_mail_oauth().status()
+
+
+@mail_router.post("/microsoft/disconnect", tags=[TAG_SETUP])
+def microsoft_disconnect():
+    microsoft_mail_oauth().disconnect()
+    return {"status": "reconnect_required"}
 
 
 def _looks_masked_secret(value: Any) -> bool:

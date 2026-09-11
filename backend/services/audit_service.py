@@ -392,7 +392,7 @@ def parse_json(value: Any) -> Any:
 
 
 def sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    blocked = {"token", "token_hash", "password", "secret", "access_token", "authorization"}
+    blocked = {"token", "token_hash", "password", "secret", "access_token", "refresh_token", "oauth_token", "token_cache", "device_code", "user_code", "authorization"}
     clean: dict[str, Any] = {}
     for key, value in metadata.items():
         if str(key).lower() in blocked:
@@ -400,7 +400,7 @@ def sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, dict):
             clean[key] = sanitize_metadata(value)
         elif isinstance(value, list):
-            clean[key] = ["[redacted]" if isinstance(item, str) and looks_secret(item) else item for item in value]
+            clean[key] = [sanitize_metadata(item) if isinstance(item, dict) else "[redacted]" if isinstance(item, str) and looks_secret(item) else item for item in value]
         elif isinstance(value, str) and looks_secret(value):
             clean[key] = "[redacted]"
         else:

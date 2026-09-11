@@ -335,6 +335,7 @@ class SenteroMailAssistant:
             subject,
             body,
             config={
+                "auth_method": self.config.auth_method,
                 "smtp_host": self.config.smtp_host,
                 "smtp_port": self.config.smtp_port,
                 "smtp_user": self.config.smtp_username,
@@ -404,6 +405,7 @@ class SenteroMailAssistant:
 
 
 def config_from_notification_settings(mapping: DeviceMappingService) -> MailAssistantConfig:
+    from backend.services.microsoft_mail_oauth import AUTH_METHOD, microsoft_mail_oauth, uses_microsoft
     with mapping.connect() as con:
         row = con.execute("select * from notification_channel_settings where channel = 'email'").fetchone()
     if not row:
@@ -417,25 +419,27 @@ def config_from_notification_settings(mapping: DeviceMappingService) -> MailAssi
     smtp_password = str(data.get("smtp_password") or "").strip()
     imap_password = str(data.get("imap_password") or smtp_password).strip()
     mail_from = sentero_mail_from({"mail_from": data.get("mail_from"), "smtp_user": smtp_user})
+    oauth = uses_microsoft(data)
+    auth_ready = microsoft_mail_oauth().status(imap_user)["status"] == "connected" if oauth else bool(smtp_password and imap_password)
     enabled = bool(row["enabled"]) and bool(
         data.get("smtp_host")
         and smtp_user
-        and smtp_password
+        and auth_ready
         and data.get("imap_host")
         and imap_user
-        and imap_password
     )
     return MailAssistantConfig(
         enabled=enabled,
+        auth_method=AUTH_METHOD if oauth else "password",
         poll_interval_seconds=_int_from_value(data.get("poll_interval_seconds"), 60, minimum=10),
         imap_host=str(data.get("imap_host") or ""),
         imap_port=_int_from_value(data.get("imap_port"), 993, minimum=1),
         imap_username=imap_user,
-        imap_password=imap_password,
+        imap_password="" if oauth else imap_password,
         smtp_host=str(data.get("smtp_host") or ""),
         smtp_port=_int_from_value(data.get("smtp_port"), 587, minimum=1),
         smtp_username=smtp_user,
-        smtp_password=smtp_password,
+        smtp_password="" if oauth else smtp_password,
         mail_from=mail_from,
         fresh_seconds=_int_from_value(data.get("fresh_seconds"), 120, minimum=10),
         recent_seconds=_int_from_value(data.get("recent_seconds"), 900, minimum=60),

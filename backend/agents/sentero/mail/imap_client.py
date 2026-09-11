@@ -2,20 +2,29 @@ from __future__ import annotations
 
 import email
 import imaplib
+import ssl
 from email.message import Message
 from email.utils import getaddresses, parsedate_to_datetime
 
 from backend.agents.sentero.mail.models import InboundMail, MailAssistantConfig
 from backend.services.device_mapping_service import now
+from backend.services.microsoft_mail_oauth import authenticate_mail, uses_microsoft, validate_mail_host
 
 
 class ImapMailClient:
     def __init__(self, config: MailAssistantConfig) -> None:
         self.config = config
 
-    def fetch_unseen(self, limit: int = 20) -> list[InboundMail]:
-        with imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port) as client:
+    def _login(self, client):
+        if uses_microsoft({"auth_method": self.config.auth_method, "imap_host": self.config.imap_host}):
+            validate_mail_host(self.config.imap_host)
+            authenticate_mail(client, self.config.imap_username, "imap")
+        else:
             client.login(self.config.imap_username, self.config.imap_password)
+
+    def fetch_unseen(self, limit: int = 20) -> list[InboundMail]:
+        with self._connection() as client:
+            self._login(client)
             client.select("INBOX")
             status, data = client.search(None, "UNSEEN")
             if status != "OK":
@@ -33,10 +42,18 @@ class ImapMailClient:
             return messages
 
     def mark_processed(self, uid: str) -> None:
-        with imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port) as client:
-            client.login(self.config.imap_username, self.config.imap_password)
+        with self._connection() as client:
+            self._login(client)
             client.select("INBOX")
             client.store(uid, "+FLAGS", "\\Seen")
+
+
+    def _connection(self):
+        options = {}
+        if uses_microsoft({"auth_method": self.config.auth_method, "imap_host": self.config.imap_host}):
+            validate_mail_host(self.config.imap_host)
+            options = {"ssl_context": ssl.create_default_context(), "timeout": 10}
+        return imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port, **options)
 
 
 def parse_message(uid: str, raw: bytes) -> InboundMail:

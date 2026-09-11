@@ -1,10 +1,10 @@
 {
   "product": "Sentero",
-  "current_version": "0.4.5",
-  "latest_version": "0.4.5",
+  "current_version": "0.4.6",
+  "latest_version": "0.4.6",
   "status": "idle",
   "state": "idle",
-  "last_checked": "2026-09-09T11:42:29+00:00",
+  "last_checked": "2026-09-11T14:07:10+00:00",
   "release_notes": [
     "* ki shadow *automatsche update"
   ],
@@ -12,21 +12,21 @@
   "message": "Ihre Installation ist auf dem neuesten Stand.",
   "version": {
     "edition": "sentero",
-    "app_version": "0.4.5",
-    "version": "0.4.5",
-    "build": "2026.09.06",
-    "commit": "e09b8c2",
+    "app_version": "0.4.6",
+    "version": "0.4.6",
+    "build": "2026.09.11",
+    "commit": "9b95e4f",
     "channel": "stable",
-    "updated_at": "2026-09-06T13:39:07+00:00"
+    "updated_at": "2026-09-11T11:48:02+00:00"
   },
   "channel": "stable",
   "execution_mode": "appliance",
   "update_server_url": "https://sentero.de/sentero/stable/latest.json",
   "latest": {
-    "latest_version": "0.4.5",
-    "download_url": "https://sentero.de/sentero/stable/releases/sentero-box-0.4.5.zip",
-    "sha256": "607bafdbaf2282cd7258dd6e543ad7f328b268046539c5f6789b009f46ff080f",
-    "size_bytes": 68092897,
+    "latest_version": "0.4.6",
+    "download_url": "https://sentero.de/sentero/stable/releases/sentero-box-0.4.6.zip",
+    "sha256": "aed350300e1f1e23c2ed6292219f8815582f355135fef2dfe843195d5e5c75d2",
+    "size_bytes": 68101832,
     "mandatory": false,
     "release_notes": [
       "* ki shadow *automatsche update"
@@ -42,11 +42,11 @@
       "host"
     ],
     "appliance": {
-      "bundle_url": "https://sentero.de/sentero/stable/releases/sentero-box-0.4.5.zip",
-      "sha256": "607bafdbaf2282cd7258dd6e543ad7f328b268046539c5f6789b009f46ff080f",
-      "size_bytes": 68092897,
+      "bundle_url": "https://sentero.de/sentero/stable/releases/sentero-box-0.4.6.zip",
+      "sha256": "aed350300e1f1e23c2ed6292219f8815582f355135fef2dfe843195d5e5c75d2",
+      "size_bytes": 68101832,
       "format": 2,
-      "image": "sentero/app:0.4.5",
+      "image": "sentero/app:0.4.6",
       "host_payload": true
     }
   },
@@ -61,5 +61,5 @@
   },
   "last_error": null,
   "dev_mode": false,
-  "last_auto_check_at": "2026-09-09T11:42:29+00:00"
+  "last_auto_check_at": "2026-09-11T14:07:10+00:00"
 }

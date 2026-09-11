@@ -6,6 +6,7 @@ import re
 import smtplib
 import sqlite3
 import socket
+import ssl
 import threading
 import uuid
 from abc import ABC, abstractmethod
@@ -21,6 +22,7 @@ import requests
 from backend.logging_config import get_logger
 from backend.config import config_float, config_int
 from backend.services.messaging import MessagingService
+from backend.services.microsoft_mail_oauth import AUTH_METHOD, MicrosoftMailError, authenticate_mail, microsoft_mail_oauth, uses_microsoft, validate_mail_host
 
 from backend.services.aal_roles import can_access_data_classes
 from backend.services.data_classification import aggregation_for_data_class, classify_notification
@@ -34,7 +36,7 @@ _OUTBOX_WORKER_LOCK = threading.Lock()
 
 CHANNELS = ("email", "telegram", "whatsapp")
 SEVERITIES = ("green", "yellow", "orange", "red")
-SECRET_KEYS = {"access_token", "bot_token", "imap_password", "smtp_password", "password", "token"}
+SECRET_KEYS = {"access_token", "bot_token", "imap_password", "smtp_password", "password", "token", "refresh_token", "oauth_token", "authorization", "token_cache", "device_code", "id_token"}
 EMAIL_FROM = "Sentero <noreply@sentero.de>"
 BATTERY_WARNING_THRESHOLD = 30
 DEFAULT_TEMPERATURE_MIN_CELSIUS = 16.0
@@ -149,11 +151,16 @@ class EmailNotificationProvider(NotificationProvider):
         smtp_cls = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
         smtp_host = str(config["smtp_host"])
         smtp_port = int(config.get("smtp_port") or 587)
+        oauth = uses_microsoft(config)
+        if oauth:
+            validate_mail_host(smtp_host, use_ssl or use_starttls)
         try:
-            with smtp_cls(smtp_host, smtp_port, timeout=10) as smtp:
+            with smtp_cls(smtp_host, smtp_port, timeout=10, **({"context": ssl.create_default_context()} if oauth and use_ssl else {})) as smtp:
                 if use_starttls:
-                    smtp.starttls()
-                if smtp_user:
+                    smtp.starttls(**({"context": ssl.create_default_context()} if oauth else {}))
+                if oauth:
+                    authenticate_mail(smtp, smtp_user, "smtp")
+                elif smtp_user:
                     smtp.login(smtp_user, str(config.get("smtp_password") or ""))
                 smtp.send_message(message, from_addr=str(config.get("smtp_user") or parseaddr(from_header)[1] or EMAIL_FROM), to_addrs=[to_email])
         except (OSError, TimeoutError) as exc:
@@ -523,6 +530,9 @@ class NotificationService:
         self._validate_channel(channel)
         existing = self._setting(channel).get("config") or {}
         clean_config = self._merge_secret_config(channel, config)
+        if channel == "email" and uses_microsoft(clean_config):
+            clean_config.update(microsoft_mail_oauth().metadata())
+            clean_config["microsoft_account"] = str(clean_config.get("smtp_login") or clean_config.get("smtp_user") or "").lower()
         still_valid = bool(self._setting(channel).get("enabled")) and clean_config == existing
         enabled_after_save = (bool(enabled) or still_valid) and self._is_configured(channel, clean_config)
         timestamp = now()
@@ -662,6 +672,7 @@ class NotificationService:
         if any(marker in error.lower() for marker in (
             "smtpauthenticationerror", "smtp anmeldung fehlgeschlagen",
             "basic authentication is disabled", "nicht konfiguriert",
+            "microsoft-konto erneut verbinden",
         )):
             return 3600
         return min(3600, 60 * 2 ** min(max(attempts - 1, 0), 6))
@@ -1677,6 +1688,10 @@ class NotificationService:
         existing = self._setting(channel).get("config") or {}
         clean: dict[str, Any] = {}
         for key, value in (config or {}).items():
+            if key.lower() in {"refresh_token", "oauth_token", "authorization", "token_cache", "device_code", "id_token"} or (channel == "email" and key.lower() in {"access_token", "token"}):
+                continue
+            if channel == "email" and uses_microsoft(config) and key in {"smtp_password", "imap_password"}:
+                continue
             if value is None:
                 continue
             if key in SECRET_KEYS and self._looks_masked(value):
@@ -1870,6 +1885,8 @@ class NotificationService:
 
     def _public_channel(self, row: dict[str, Any]) -> dict[str, Any]:
         config = self._decode_json(row.get("config_json"))
+        if row["channel"] == "email" and uses_microsoft(config):
+            config["auth_method"] = AUTH_METHOD
         return {
             "channel": row["channel"],
             "enabled": bool(row.get("enabled")) and self._is_configured(row["channel"], config),
@@ -1883,6 +1900,8 @@ class NotificationService:
 
     def _is_configured(self, channel: str, config: dict[str, Any]) -> bool:
         if channel == "email":
+            if uses_microsoft(config):
+                return bool(config.get("smtp_host") and config.get("smtp_user") and microsoft_mail_oauth().status(str(config.get("smtp_login") or config.get("smtp_user")))["status"] == "connected")
             return bool(config.get("smtp_host") and config.get("smtp_user") and config.get("smtp_password"))
         if channel == "telegram":
             return bool(config.get("bot_token"))
@@ -1929,6 +1948,8 @@ class NotificationService:
         return isinstance(value, str) and ("•" in value or value.startswith("***"))
 
     def _safe_error(self, exc: Exception) -> str:
+        if isinstance(exc, MicrosoftMailError):
+            return str(exc)
         if isinstance(exc, TelegramRateLimitError):
             suffix = f" Bitte nach {exc.retry_after} Sekunden erneut versuchen." if exc.retry_after else " Bitte später erneut versuchen."
             return f"Telegram limitiert aktuell die Anfrage.{suffix}"
@@ -1981,8 +2002,12 @@ class NotificationService:
 def mask_config(config: dict[str, Any]) -> dict[str, Any]:
     masked = dict(config or {})
     for key in list(masked.keys()):
-        if key in SECRET_KEYS:
+        if key.lower() in {"access_token", "refresh_token", "oauth_token", "authorization", "token_cache", "device_code", "id_token"}:
+            masked[key] = "***" if masked[key] else ""
+        elif key in SECRET_KEYS:
             masked[key] = mask_secret(masked.get(key))
+        elif isinstance(masked[key], dict):
+            masked[key] = mask_config(masked[key])
     return masked
 
 
