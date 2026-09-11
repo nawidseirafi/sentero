@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -125,7 +126,8 @@ class UpdateServiceTests(unittest.TestCase):
             first = service.auto_check_and_notify(notification)
             self._write_json(env["state"], {"last_auto_check_at": "2026-01-01T00:00:00+00:00"})
             notification.providers["email"] = providers["email"]
-            second = service.auto_check_and_notify(notification)
+            with patch("backend.services.notification_service.now", return_value=(datetime.now(timezone.utc) + timedelta(seconds=61)).isoformat()):
+                second = service.auto_check_and_notify(notification)
 
             self.assertEqual(first["notified"], 1)
             self.assertEqual(failing_email.attempts, 1)

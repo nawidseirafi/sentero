@@ -531,6 +531,8 @@ def sentero_update_check_post(payload: UpdateCheckRequest):
 
 @router.post("/system/update/install", tags=[TAG_SYSTEM])
 def sentero_update_install(payload: UpdateInstallRequest, request: Request):
+    from backend.logging_config import get_logger
+    get_logger(__name__).info("Install HTTP request received", extra={"component": "update"})
     user = get_services().auth.user_from_request(request, required=True)
     if str(user.get("role") or "") not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="Nur Inhaber und Administratoren duerfen Updates installieren.")

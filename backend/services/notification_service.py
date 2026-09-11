@@ -33,6 +33,11 @@ from backend.services.network.models import ConnectionType, NetworkStatusCode
 
 logger = get_logger(__name__)
 _OUTBOX_WORKER_LOCK = threading.Lock()
+_EMAIL_DELIVERY_LOCK = threading.RLock()
+
+
+class EmailChannelPaused(RuntimeError):
+    pass
 
 CHANNELS = ("email", "telegram", "whatsapp")
 SEVERITIES = ("green", "yellow", "orange", "red")
@@ -629,7 +634,7 @@ class NotificationService:
             if channel == "telegram" and not contact.get("telegram_chat_id"):
                 result = {"message_id": f"telegram:bot:{telegram_branding.get('bot_id') if telegram_branding else ''}"}
             else:
-                result = self.providers[channel].send(contact, title, text, setting.get("config") or {})
+                result = self._deliver(channel, contact, title, text, setting.get("config") or {}, manual=True)
             self._mark_channel_enabled(channel, True)
             self._log(contact.get("id"), channel, "yellow", "sent", title, None, outgoing_message_id=_provider_message_id(result))
             if channel == "telegram" and telegram_branding and telegram_branding.get("rate_limited"):
@@ -682,12 +687,14 @@ class NotificationService:
             return {"sent": 0, "skipped": "stopping"}
         if self.connectivity and self.connectivity.check(ConnectionType.NONE).status in {NetworkStatusCode.OFFLINE, NetworkStatusCode.LOCAL_ONLY}:
             return {"sent": 0, "remaining": self._pending_count(), "skipped": "offline"}
-        blocked = set()
+        blocked = {"email"} if self._email_retry_remaining() > 0 else set()
         current = datetime.fromisoformat(now())
         with self.mapping.connect() as con:
             # Persist channel cooldown through restarts using existing fields.
             # One broken channel must not fill every batch and starve others.
             for channel in CHANNELS:
+                if channel == "email":
+                    continue
                 last = con.execute(
                     """select * from notification_outbox where channel = ? and last_attempt_at is not null
                        order by last_attempt_at desc, id desc limit 1""", (channel,),
@@ -715,10 +722,12 @@ class NotificationService:
                 continue
             try:
                 text = add_original_timestamp(str(item["text"]), str(item["original_created_at"]))
-                result = self.providers[channel].send(contact, str(item["title"]), text, self._setting(channel).get("config") or {})
+                result = self._deliver(channel, contact, str(item["title"]), text, self._setting(channel).get("config") or {})
                 self._mark_outbox(int(item["id"]), "sent", None)
                 self._log(item.get("contact_id"), channel, str(item["severity"]), "sent", str(item["title"]), None, outgoing_message_id=_provider_message_id(result), incident_key=item.get("incident_key"))
                 sent += 1
+            except EmailChannelPaused:
+                blocked.add(channel)
             except Exception as exc:
                 error = self._safe_error(exc)
                 self._mark_outbox(int(item["id"]), "failed", error)
@@ -761,7 +770,55 @@ class NotificationService:
 
     def send_email_direct(self, to_email: str, title: str, text: str, config: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any] | None:
         clean_config = {**(config or {}), "headers": headers or {}}
-        return self.providers["email"].send({"email": to_email}, title, text, clean_config)
+        # The caller retains responsibility for retrying threaded assistant replies.
+        return self._deliver("email", {"email": to_email}, title, text, clean_config)
+
+    def _email_retry_remaining(self) -> float:
+        current = datetime.fromisoformat(now())
+        with self.mapping.connect() as con:
+            breaker = con.execute(
+                """select status, created_at, error_message from notification_logs
+                   where channel = 'email' and status in ('channel_failed', 'channel_ready')
+                   order by id desc limit 1"""
+            ).fetchone()
+            queued = con.execute(
+                """select status, last_attempt_at, error_message, attempts from notification_outbox
+                   where channel = 'email' and last_attempt_at is not null
+                   order by last_attempt_at desc, id desc limit 1"""
+            ).fetchone()
+        remaining = 0.0
+        if breaker and breaker["status"] == "channel_failed":
+            remaining = self._queue_retry_seconds(str(breaker["error_message"] or ""), 1) - (
+                current - datetime.fromisoformat(breaker["created_at"])
+            ).total_seconds()
+        if queued and queued["status"] == "failed":
+            cleared = breaker and breaker["status"] == "channel_ready" and breaker["created_at"] >= queued["last_attempt_at"]
+            if not cleared:
+                remaining = max(remaining, self._queue_retry_seconds(str(queued["error_message"] or ""), int(queued["attempts"])) - (
+                    current - datetime.fromisoformat(queued["last_attempt_at"])
+                ).total_seconds())
+        return max(0.0, remaining)
+
+    def _deliver(self, channel: str, contact: dict[str, Any], title: str, text: str, config: dict[str, Any], *, manual: bool = False) -> dict[str, Any] | None:
+        if channel != "email":
+            return self.providers[channel].send(contact, title, text, config)
+        # Serialize check + delivery + persisted breaker state across service
+        # instances. SQLite connections are closed before any provider I/O.
+        with _EMAIL_DELIVERY_LOCK:
+            if not manual and self._email_retry_remaining() > 0:
+                raise EmailChannelPaused("E-Mail-Versand pausiert; erneuter Versuch nach der Wartezeit.")
+            try:
+                result = self.providers[channel].send(contact, title, text, config)
+            except Exception as exc:
+                error = self._safe_error(exc)
+                self._log(None, "email", "yellow", "channel_failed", "E-Mail-Kanal", error)
+                logger.warning("Email channel paused after delivery failure", extra={
+                    "component": "notification", "channel": "email",
+                    "error_type": type(exc).__name__, "retry_in_seconds": self._queue_retry_seconds(error, 1),
+                })
+                raise
+            self._log(None, "email", "yellow", "channel_ready", "E-Mail-Kanal", None)
+            return result
 
     def notify_update_available(self, update_result: dict[str, Any]) -> dict[str, Any]:
         self.ensure_queue_schema()
@@ -1308,9 +1365,12 @@ class NotificationService:
             self._log(contact.get("id"), channel, severity, "pending", title, None, incident_key=incident_key)
             return False
         try:
-            result = self.providers[channel].send(contact, title, text, setting.get("config") or {})
+            result = self._deliver(channel, contact, title, text, setting.get("config") or {})
             self._log(contact.get("id"), channel, severity, "sent", title, None, outgoing_message_id=_provider_message_id(result), incident_key=incident_key)
             return True
+        except EmailChannelPaused:
+            self._enqueue(contact, channel, severity, title, text, incident_key=incident_key)
+            return False
         except Exception as exc:
             safe_error = self._safe_error(exc)
             logger.exception(
@@ -1327,10 +1387,13 @@ class NotificationService:
                 try:
                     email_setting = self._setting("email")
                     fallback_title = sentero_mail_subject(title, email_setting.get("config") or {})
-                    result = self.providers["email"].send(contact, fallback_title, email_text_for_fallback(text), email_setting.get("config") or {})
+                    result = self._deliver("email", contact, fallback_title, email_text_for_fallback(text), email_setting.get("config") or {})
                     self._log(contact.get("id"), "email", severity, "fallback_sent", fallback_title, None, outgoing_message_id=_provider_message_id(result), incident_key=incident_key)
                     return True
                 except Exception as fallback_exc:
+                    self._enqueue(contact, "email", severity, fallback_title, email_text_for_fallback(text), incident_key=incident_key)
+                    if isinstance(fallback_exc, EmailChannelPaused):
+                        return False
                     logger.exception(
                         "Notification fallback email failed",
                         extra={"component": "notification", "contact_id": contact.get("id"), "severity": severity},

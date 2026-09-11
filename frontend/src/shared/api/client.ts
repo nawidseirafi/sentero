@@ -758,7 +758,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     } catch {
       detail = '';
     }
-    throw new Error(detail || text || `Request failed: ${response.status}`);
+    throw Object.assign(new Error(detail || text || `Request failed: ${response.status}`), { status: response.status });
   }
   return response.json() as Promise<T>;
 }
@@ -769,9 +769,9 @@ export const api = {
   senteroFactoryResetStatus: () => request<FactoryResetResult>('/api/sentero/system/factory-reset/status'),
   senteroFactoryReset: (confirm: string) =>
     request<FactoryResetResult>('/api/sentero/system/factory-reset', { method: 'POST', body: JSON.stringify({ confirm }) }),
-  senteroUpdateStatus: () => request<UpdateStatus>('/api/sentero/system/update/status'),
+  senteroUpdateStatus: () => request<UpdateStatus>('/api/sentero/system/update/status', { signal: AbortSignal.timeout(10_000) }),
   senteroCheckUpdates: () => request<UpdateCheckResult>('/api/sentero/system/update/check'),
-  senteroInstallUpdate: () => request<UpdateStatus>('/api/sentero/system/update/install', { method: 'POST', body: JSON.stringify({}) }),
+  senteroInstallUpdate: () => request<UpdateStatus>('/api/sentero/system/update/install', { method: 'POST', body: JSON.stringify({}), signal: AbortSignal.timeout(15_000) }),
   senteroAuthStatus: () => request<SenteroAuthStatus>('/api/sentero/auth/status'),
   senteroSetup: (payload: { name: string; email: string; password: string; password_confirm: string }) =>
     request<{ authenticated: boolean; user: SenteroUser }>('/api/sentero/auth/setup', { method: 'POST', body: JSON.stringify(payload) }),

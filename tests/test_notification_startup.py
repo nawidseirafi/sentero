@@ -18,7 +18,7 @@ import uvicorn
 
 from backend import main
 from backend.services.device_mapping_service import DeviceMappingService
-from backend.services.notification_service import EmailConnectionError, NotificationService
+from backend.services.notification_service import EmailChannelPaused, EmailConnectionError, NotificationService
 
 
 class OutboxFixture:
@@ -41,6 +41,80 @@ class OutboxFixture:
 
 
 class QueueBackoffTests(OutboxFixture, unittest.TestCase):
+    def test_direct_auth_failure_pauses_other_contacts_queue_and_direct_sends(self):
+        service = self.notification
+        email = Mock(send=Mock(side_effect=smtplib.SMTPAuthenticationError(535, b"Basic authentication is disabled")))
+        telegram = Mock(send=Mock(return_value=None))
+        service.providers.update(email=email, telegram=telegram)
+        with patch.object(service, "_setting", return_value={"enabled": True, "config": {}}):
+            for contact_id in (1, 2, 3):
+                self.assertFalse(service._send_with_log({"id": contact_id, "email": "user@example.invalid"}, "email", "red", "Alarm", "Body", False, incident_key="incident"))
+            self.assertTrue(service._send_with_log({"id": 1}, "telegram", "red", "Alarm", "Body", False))
+            service.process_pending_queue()
+            with self.assertRaises(EmailChannelPaused):
+                service.send_email_direct("reply@example.invalid", "Re: Sentero", "Reply", {})
+        email.send.assert_called_once()
+        telegram.send.assert_called_once()
+        self.assertEqual(service.queue_status()["queue"], {"pending": 3})
+        restarted = NotificationService(self.mapping)
+        restarted.providers["email"] = email
+        with self.assertRaises(EmailChannelPaused):
+            restarted.send_email_direct("reply@example.invalid", "Reply", "Body", {})
+        email.send.assert_called_once()
+
+    def test_fallback_email_respects_pause_and_is_queued(self):
+        service = self.notification
+        service.providers["email"] = Mock(send=Mock(side_effect=smtplib.SMTPAuthenticationError(535, b"disabled")))
+        service.providers["telegram"] = Mock(send=Mock(side_effect=RuntimeError("unavailable")))
+        with patch.object(service, "_setting", return_value={"enabled": True, "config": {}}):
+            for contact_id in (1, 2):
+                service._send_with_log({"id": contact_id, "email": "user@example.invalid"}, "telegram", "red", "Alarm", "Body", True, incident_key="incident")
+        service.providers["email"].send.assert_called_once()
+        self.assertEqual(service._pending_count(), 4)
+
+    def test_manual_test_can_clear_pause_without_deleting_outbox(self):
+        self.seed(2)
+        email = Mock(send=Mock(side_effect=smtplib.SMTPAuthenticationError(535, b"disabled")))
+        self.notification.providers["email"] = email
+        self.notification.process_pending_queue()
+        email.send.side_effect = None
+        email.send.return_value = None
+        with patch.object(self.notification, "_setting", return_value={"enabled": True, "config": {}}), patch.object(self.notification, "_test_contact", return_value={"email": "test@example.invalid"}):
+            self.assertTrue(self.notification.test("email")["ok"])
+        self.assertEqual(self.notification.process_pending_queue()["sent"], 2)
+        self.assertEqual(self.notification.queue_status()["queue"], {"sent": 2})
+
+    def test_concurrent_direct_sends_make_only_one_auth_attempt(self):
+        entered, release = threading.Event(), threading.Event()
+        def send(*args):
+            entered.set()
+            release.wait(3)
+            raise smtplib.SMTPAuthenticationError(535, b"disabled")
+        provider = Mock(send=Mock(side_effect=send))
+        services = [self.notification, NotificationService(self.mapping)]
+        errors = []
+        def attempt(service):
+            try:
+                service.send_email_direct("test@example.invalid", "Test", "Body", {})
+            except Exception as exc:
+                errors.append(type(exc))
+        for service in services:
+            service.providers["email"] = provider
+        threads = [threading.Thread(target=attempt, args=(service,)) for service in services]
+        threads[0].start()
+        try:
+            self.assertTrue(entered.wait(2))
+            threads[1].start()
+            self.seed(1)  # no DB transaction is held during SMTP
+        finally:
+            release.set()
+            for thread in threads:
+                if thread.ident:
+                    thread.join(4)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        provider.send.assert_called_once()
+        self.assertCountEqual(errors, [smtplib.SMTPAuthenticationError, EmailChannelPaused])
+
     def test_auth_backoff_survives_service_restart_and_preserves_backlog(self):
         self.seed(885)
         provider = Mock()

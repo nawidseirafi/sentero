@@ -313,6 +313,7 @@ def install_update(payload: dict[str, Any]) -> dict[str, Any]:
         "started_at": utc_now(),
     }
     write_state(state)
+    log(f"Updater accepted: target_version={target_version}")
 
     previous_image = run(["docker", "inspect", "--format={{.Config.Image}}", "sentero"]) if container_exists("sentero") else ""
     previous_version = env.get("SENTERO_VERSION", "")
@@ -340,9 +341,14 @@ def install_update(payload: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("Update-Bundle ist groesser als erlaubt.")
 
         bundle = tmpdir / "bundle.zip"
+        log(f"Bundle download started: target_version={target_version}")
         download(bundle_url, bundle, MAX_BUNDLE_BYTES)
+        log(f"Bundle download finished: bytes={bundle.stat().st_size}")
+        if expected_size and bundle.stat().st_size != expected_size:
+            raise RuntimeError("Bundle-Groesse passt nicht zum Manifest.")
         if sha256(bundle).lower() != expected_hash:
             raise RuntimeError("SHA-256-Pruefung fehlgeschlagen.")
+        log(f"Bundle verified: target_version={target_version}")
 
         with zipfile.ZipFile(bundle) as archive:
             names = set(archive.namelist())
@@ -401,6 +407,7 @@ def install_update(payload: dict[str, Any]) -> dict[str, Any]:
         "updater_restart_required": updater_restart_required,
     }
     write_state(final)
+    log(f"Updater result: success target_version={target_version}")
     return {"ok": True, **final, "_restart_updater_after_response": updater_restart_required}
 
 
@@ -492,9 +499,11 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
             return {"ok": False, "error": str(exc)}
     if action != "install":
         return {"ok": False, "error": "Nicht unterstuetzte Aktion."}
+    log(f"Install request received: target_version={payload.get('target_version')}")
     try:
         return install_update(payload)
     except Exception as exc:
+        log(f"Updater result: failed target_version={payload.get('target_version')} error_type={type(exc).__name__}")
         write_state({
             "status": "failed",
             "target_version": str(payload.get("target_version") or ""),
@@ -527,7 +536,10 @@ def main() -> None:
             except json.JSONDecodeError:
                 response = {"ok": False, "error": "Ungueltige JSON-Anfrage."}
             restart_after_response = bool(response.pop("_restart_updater_after_response", False))
-            connection.sendall((json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8"))
+            try:
+                connection.sendall((json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8"))
+            except (BrokenPipeError, ConnectionResetError):
+                log("Updater response receiver disconnected; result remains persisted")
         if restart_after_response:
             schedule_self_restart()
 

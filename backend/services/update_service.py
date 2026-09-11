@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import socket
+import threading
 import tempfile
 import urllib.parse
 import urllib.request
@@ -22,6 +23,11 @@ from backend.logging_config import get_logger
 
 load_dotenv(ENV_PATH)
 logger = get_logger(__name__)
+_INSTALL_LOCK = threading.RLock()
+
+
+class UpdaterResponsePending(RuntimeError):
+    """The socket request was sent, but its final response was lost."""
 
 VERSION_FILE = PROJECT_DIR / "version.json"
 MANIFEST_FILE = PROJECT_DIR / "update-manifest.json"
@@ -92,6 +98,7 @@ class SenteroUpdateService:
         state = self._read_json(STATE_FILE, {})
         version = self.version()
         state = self._reconcile_appliance_state(state, version["version"])
+        state = self._clear_stale_progress(state)
         latest = state.get("latest") if isinstance(state.get("latest"), dict) else None
         return {
             "product": "Sentero",
@@ -110,11 +117,21 @@ class SenteroUpdateService:
             "latest": latest,
             "update_available": bool(state.get("update_available")),
             "install": state.get("install") or {"status": "idle", "steps": []},
+            "previous_install": state.get("previous_install"),
             "rollback": state.get("rollback") or {"status": "idle", "available": False},
             "last_error": state.get("last_error"),
             "dev_mode": self.execution_mode() == "dry_run",
         }
 
+
+    @staticmethod
+    def _clear_stale_progress(state: dict[str, Any]) -> dict[str, Any]:
+        if (state.get("status") or state.get("state")) in {"idle", "update_available", "check_failed"}:
+            previous = state.get("install") or {}
+            state = {**state, "steps": [], "install": {"status": "idle", "steps": []}}
+            if previous.get("target_version"):
+                state["previous_install"] = previous
+        return state
 
     def _reconcile_appliance_state(self, state: dict[str, Any], current_version: str) -> dict[str, Any]:
         """Merge the host updater result into the persistent app update state.
@@ -129,7 +146,9 @@ class SenteroUpdateService:
             return state
 
         install = state.get("install") if isinstance(state.get("install"), dict) else {}
-        target_from_app = str(install.get("target_version") or state.get("latest_version") or "")
+        target_from_app = str(install.get("target_version") or "")
+        if not target_from_app or not install.get("started_at"):
+            return state
         stale_state = str(state.get("status") or state.get("state") or "")
         # The new container being able to serve this request is itself strong
         # evidence that the requested image was installed. This also repairs
@@ -155,6 +174,10 @@ class SenteroUpdateService:
         host = response.get("state") if isinstance(response.get("state"), dict) else {}
         host_status = str(host.get("status") or "")
         target_version = str(host.get("target_version") or "")
+        if target_version != target_from_app:
+            return state
+        if str(host.get("finished_at") or host.get("started_at") or "") < str(install["started_at"]):
+            return state
         if not host_status:
             return state
 
@@ -216,6 +239,12 @@ class SenteroUpdateService:
         }
 
     def check_for_updates(self, channel: str | None = None) -> dict[str, Any]:
+        with _INSTALL_LOCK:
+            return self._check_for_updates(channel)
+
+    def _check_for_updates(self, channel: str | None = None) -> dict[str, Any]:
+        if self._read_json(STATE_FILE, {}).get("status") == "running":
+            return {"ok": True, **self.status()}
         selected_channel = self._valid_channel(channel or self.channel())
         checked_at = utc_now()
         current = self.version()
@@ -235,6 +264,7 @@ class SenteroUpdateService:
                 "message": "Ein Update ist verfuegbar." if available else "Ihre Installation ist auf dem neuesten Stand.",
                 "last_error": None,
             }
+            state = self._clear_stale_progress(state)
             self._write_json(STATE_FILE, state)
             return {
                 "ok": True,
@@ -282,7 +312,14 @@ class SenteroUpdateService:
             }
 
     def install_update(self, username: str = "sentero", layer: str = "auto") -> dict[str, Any]:
+        logger.info("Install request received", extra={"component": "update"})
+        with _INSTALL_LOCK:
+            return self._install_update(username, layer)
+
+    def _install_update(self, username: str, layer: str) -> dict[str, Any]:
         status = self.status()
+        if status.get("status") == "running":
+            return status
         latest = status.get("latest")
         if not latest:
             self.check_for_updates()
@@ -387,12 +424,6 @@ class SenteroUpdateService:
         layer: str,
     ) -> dict[str, Any]:
         appliance = latest.get("appliance") if isinstance(latest.get("appliance"), dict) else {}
-        if not appliance:
-            raise RuntimeError(
-                "Dieses Update enthaelt kein Appliance-Paket. "
-                "Der Update-Server muss fuer die Sentero Box ein 'appliance'-Objekt bereitstellen."
-            )
-
         steps = [
             {"key": "prepare", "label": "Vorbereitung", "status": "success"},
             {"key": "backup", "label": "Sicherung", "status": "pending"},
@@ -418,9 +449,9 @@ class SenteroUpdateService:
         }
         self._write_json(STATE_FILE, state)
 
-        request_sent = False
         try:
-            request_sent = True
+            if not appliance:
+                raise RuntimeError("Dieses Update enthaelt kein Appliance-Paket.")
             response = self._request_appliance_updater(
                 {
                     "action": "install",
@@ -430,23 +461,21 @@ class SenteroUpdateService:
             )
             if not response.get("ok"):
                 raise RuntimeError(str(response.get("error") or "Appliance-Updater hat die Anfrage abgelehnt."))
-        except (socket.timeout, TimeoutError, ConnectionResetError, BrokenPipeError, json.JSONDecodeError):
+            logger.info("Updater accepted", extra={"component": "update", "target_version": latest.get("latest_version")})
+        except UpdaterResponsePending:
             # The privileged updater works synchronously and deliberately
             # recreates this application container. A missing/late socket
             # response after the request was sent is therefore not an update
             # failure. Keep durable app state at `running`; status polling will
             # reconcile it with the host updater after Sentero is back online.
-            if request_sent:
-                pending = {
-                    **state,
-                    "status": "running",
-                    "state": "running",
-                    "message": "Update wird auf der Sentero Box weiter installiert. Sentero startet dabei automatisch neu.",
-                }
-                self._write_json(STATE_FILE, pending)
-                return {**pending, "accepted": True, "response_pending": True}
-            raise
+            pending = {
+                **state,
+                "message": "Installationsauftrag gesendet. Die Antwort des Box-Updaters steht noch aus.",
+            }
+            self._write_json(STATE_FILE, pending)
+            return {**pending, "response_pending": True}
         except Exception as exc:
+            logger.warning("Install request failed", extra={"component": "update", "target_version": latest.get("latest_version"), "error_type": type(exc).__name__})
             failed = {
                 **state,
                 "status": "failed",
@@ -480,18 +509,34 @@ class SenteroUpdateService:
         try:
             client.connect(socket_path)
             client.sendall(request)
+            if payload.get("action") == "install":
+                logger.info("Updater socket request sent", extra={"component": "update", "target_version": payload.get("target_version")})
             chunks: list[bytes] = []
-            while True:
-                chunk = client.recv(65536)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                if b"\n" in chunk:
-                    break
+            try:
+                while True:
+                    chunk = client.recv(65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    if b"\n" in chunk:
+                        break
+                if not chunks:
+                    raise ConnectionResetError("Updater closed without a response")
+            except (socket.timeout, TimeoutError, ConnectionResetError, BrokenPipeError) as exc:
+                if payload.get("action") == "install":
+                    raise UpdaterResponsePending() from exc
+                raise
         finally:
             client.close()
         raw = b"".join(chunks).split(b"\n", 1)[0].decode("utf-8", errors="replace")
-        data = json.loads(raw or "{}")
+        try:
+            data = json.loads(raw or "{}")
+        except json.JSONDecodeError as exc:
+            if payload.get("action") == "install":
+                raise UpdaterResponsePending() from exc
+            raise
+        if payload.get("action") == "install":
+            logger.info("Updater result received", extra={"component": "update", "target_version": payload.get("target_version"), "ok": bool(data.get("ok")) if isinstance(data, dict) else False})
         return data if isinstance(data, dict) else {"ok": False, "error": "Ungueltige Updater-Antwort."}
 
     def channel(self) -> str:

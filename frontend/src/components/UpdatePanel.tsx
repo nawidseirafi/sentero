@@ -20,16 +20,15 @@ export function UpdatePanel({ variant = 'sentero' }: Props) {
     }
   };
 
-  const waitForUpdateResult = async () => {
+  const waitForUpdateResult = async (target: string) => {
     const deadline = Date.now() + 15 * 60_000;
     while (Date.now() < deadline) {
       await new Promise((resolve) => window.setTimeout(resolve, 2_000));
       try {
         const next = await api.senteroUpdateStatus();
         setStatus(next);
-        const nextState = next.status || next.state || 'idle';
-        if (nextState === 'success' || nextState === 'completed') return true;
-        if (nextState === 'failed' || nextState === 'error') return false;
+        const outcome = updateAttemptOutcome(next, target);
+        if (outcome !== null) return outcome;
       } catch {
         // A short connection loss is expected while the appliance container
         // is replaced. Keep waiting until the new Sentero process is online.
@@ -56,23 +55,43 @@ export function UpdatePanel({ variant = 'sentero' }: Props) {
   };
 
   const installUpdate = async () => {
+    const target = status?.latest_version;
+    if (!target) return;
     setBusy('install');
     setError('');
     try {
       try {
         const result = await api.senteroInstallUpdate();
         setStatus(result);
-      } catch {
+        if (updateAttemptOutcome(result, target) === false) {
+          throw new Error(result.message || 'Der Installationsauftrag wurde nicht gestartet.');
+        }
+      } catch (requestError) {
         // The appliance updater deliberately restarts this very container, so
         // the initiating HTTP request may vanish even for a successful update.
+        // Explicit HTTP rejection is not a container restart.
+        if (requestError instanceof Error && 'status' in requestError) throw requestError;
+        let observed: UpdateStatus | null = null;
+        try {
+          observed = await api.senteroUpdateStatus();
+          setStatus(observed);
+        } catch {
+          // Both requests may overlap the container restart. Poll boundedly,
+          // without inventing an installation state from a local busy flag.
+        }
+        if (observed && updateAttemptOutcome(observed, target) === false) {
+          throw requestError;
+        }
       }
 
-      const outcome = await waitForUpdateResult();
+      const outcome = await waitForUpdateResult(target);
       if (outcome === false) {
         setError('Das Update konnte nicht vollständig installiert werden. Bitte versuchen Sie es erneut oder kontaktieren Sie den Support.');
       } else if (outcome === null) {
-        setError('Das Update läuft weiterhin im Hintergrund. Der Status wird nach dem Neustart automatisch aktualisiert.');
+        setError('Der Update-Abschluss konnte nicht bestätigt werden. Bitte prüfen Sie den Status erneut; starten Sie kein zweites Update.');
       }
+    } catch (installError) {
+      setError(installError instanceof Error ? installError.message : 'Der Installationsauftrag konnte nicht gestartet werden.');
     } finally {
       setBusy('');
     }
@@ -82,8 +101,9 @@ export function UpdatePanel({ variant = 'sentero' }: Props) {
   const uiState = status?.status || status?.state || 'idle';
   const updateAvailable = Boolean(status?.update_available);
   const recentSuccess = (uiState === 'success' || uiState === 'completed') && isRecent(status?.install?.finished_at, 10 * 60_000);
-  const displayState = (uiState === 'success' || uiState === 'completed') && !recentSuccess ? 'idle' : uiState;
-  const isRunning = busy === 'install' || displayState === 'running';
+  const displayState = error && uiState === 'running' ? 'unconfirmed'
+    : (uiState === 'success' || uiState === 'completed') && !recentSuccess ? 'idle' : uiState;
+  const isRunning = displayState === 'running' && !error;
   const isSuccess = recentSuccess;
   const isFailed = displayState === 'failed' || displayState === 'error';
   const title = titleForState(displayState, updateAvailable);
@@ -139,9 +159,9 @@ export function UpdatePanel({ variant = 'sentero' }: Props) {
       )}
 
       <div className="update-action-row">
-        {updateAvailable && !isRunning && (
+        {updateAvailable && !isRunning && uiState !== 'running' && (
           <button className="button primary" type="button" onClick={installUpdate} disabled={Boolean(busy)}>
-            {busy === 'install' ? <Activity size={16} /> : <CheckCircle2 size={16} />} Update installieren
+            {busy === 'install' ? <Activity size={16} /> : <CheckCircle2 size={16} />} {busy === 'install' ? 'Installationsauftrag wird geprüft' : 'Update installieren'}
           </button>
         )}
       </div>
@@ -149,6 +169,13 @@ export function UpdatePanel({ variant = 'sentero' }: Props) {
       {status?.dev_mode && <DeveloperDetails status={status} />}
     </section>
   );
+}
+
+export function updateAttemptOutcome(status: UpdateStatus, target: string): boolean | null {
+  const state = status.status || status.state || 'idle';
+  if (status.install?.target_version !== target) return false;
+  if (state === 'success' || state === 'completed') return status.current_version === target;
+  return state === 'running' ? null : false;
 }
 
 function VersionItem({ label, value }: { label: string; value: string }) {
@@ -211,6 +238,7 @@ function defaultSteps(): UpdateStep[] {
 }
 
 function titleForState(state: string, updateAvailable: boolean) {
+  if (state === 'unconfirmed') return 'Update-Status unklar';
   if (state === 'running') return 'Update wird installiert';
   if (state === 'success' || state === 'completed') return 'Update erfolgreich';
   if (state === 'failed' || state === 'error') return 'Update fehlgeschlagen';
@@ -220,6 +248,7 @@ function titleForState(state: string, updateAvailable: boolean) {
 }
 
 function textForState(product: string, status: UpdateStatus | null, state: string, updateAvailable: boolean) {
+  if (state === 'unconfirmed') return 'Der Abschluss konnte noch nicht bestätigt werden. Bitte prüfen Sie den Status erneut.';
   if (state === 'running') return `${product} wird aktualisiert. Bitte warten Sie, bis der Vorgang abgeschlossen ist. Dieser Vorgang kann einige Minuten dauern.`;
   if (state === 'success' || state === 'completed') return `${product} wurde erfolgreich aktualisiert.`;
   if (state === 'failed' || state === 'error') return 'Das Update konnte nicht vollständig installiert werden. Bitte versuchen Sie es erneut oder kontaktieren Sie den Support.';
@@ -229,6 +258,7 @@ function textForState(product: string, status: UpdateStatus | null, state: strin
 }
 
 function statusLabel(state: string, updateAvailable: boolean) {
+  if (state === 'unconfirmed') return 'Nicht bestätigt';
   if (state === 'running') return 'Update laeuft';
   if (state === 'success' || state === 'completed') return 'Aktualisiert';
   if (state === 'failed' || state === 'error') return 'Fehlgeschlagen';
@@ -255,4 +285,3 @@ function isRecent(value?: string | null, windowMs = 10 * 60_000) {
   if (Number.isNaN(timestamp)) return false;
   return Date.now() - timestamp >= 0 && Date.now() - timestamp <= windowMs;
 }
-
